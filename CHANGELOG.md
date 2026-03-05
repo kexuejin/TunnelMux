@@ -4,9 +4,13 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-03-05
+
 - Add `scripts/install.sh` for one-command install from GitHub Releases (macOS/Linux).
-- Add CI shell syntax check for install script.
-- Update README with quick install examples.
+- Add CI shell syntax check for installer script.
+- Rewrite README and core docs as professional English-first documentation.
+- Normalize integration docs to a generic third-party model.
+- Remove mixed-language sections from primary docs.
 
 ## [0.1.2] - 2026-03-05
 

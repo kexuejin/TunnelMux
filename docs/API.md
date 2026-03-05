@@ -22,7 +22,7 @@ Example response:
 {
   "ok": true,
   "service": "tunnelmuxd",
-  "version": "0.1.2"
+  "version": "0.1.3"
 }
 ```
 
@@ -184,4 +184,3 @@ curl -H 'Host: app.local' http://127.0.0.1:18080/
 WebSocket forwarding:
 - request must include `Connection: Upgrade` and `Upgrade: websocket`
 - both `ws/http` and `wss/https` upstreams are supported
-

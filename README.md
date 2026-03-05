@@ -45,7 +45,7 @@ Examples:
 
 ```bash
 # Pin a version
-curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/install.sh | bash -s -- --version v0.1.2
+curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/install.sh | bash -s -- --version v0.1.3
 
 # Install into /usr/local/bin
 curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/install.sh | bash -s -- --prefix /usr/local
@@ -127,4 +127,3 @@ curl -H 'Host: app.local' http://127.0.0.1:18080/
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Security Policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
-
