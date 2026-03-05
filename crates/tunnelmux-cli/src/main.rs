@@ -184,6 +184,11 @@ enum RoutesCommand {
         )]
         from_json: Option<String>,
     },
+    /// Export routes as JSON payloads for --from-json reuse
+    Export {
+        #[arg(long)]
+        id: Option<String>,
+    },
     /// Remove route by id
     Remove {
         #[arg(long)]
@@ -355,6 +360,26 @@ async fn main() -> anyhow::Result<()> {
                 let response: DeleteRouteResponse =
                     delete_json(&client, &base_url, &endpoint, token.as_deref()).await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
+            }
+            RoutesCommand::Export { id } => {
+                let routes: RoutesResponse =
+                    get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+                if let Some(id) = id {
+                    let route = routes
+                        .routes
+                        .iter()
+                        .find(|item| item.id == id)
+                        .ok_or_else(|| anyhow!("route '{}' not found", id))?;
+                    let payload = route_rule_to_create_request(route);
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    let payloads = routes
+                        .routes
+                        .iter()
+                        .map(route_rule_to_create_request)
+                        .collect::<Vec<_>>();
+                    println!("{}", serde_json::to_string_pretty(&payloads)?);
+                }
             }
             RoutesCommand::Update {
                 id,
@@ -723,6 +748,19 @@ fn load_route_request_from_file(path: &Path) -> anyhow::Result<CreateRouteReques
         .with_context(|| format!("failed to parse route json file: {}", path.display()))
 }
 
+fn route_rule_to_create_request(route: &tunnelmux_core::RouteRule) -> CreateRouteRequest {
+    CreateRouteRequest {
+        id: route.id.clone(),
+        match_host: route.match_host.clone(),
+        match_path_prefix: route.match_path_prefix.clone(),
+        strip_path_prefix: route.strip_path_prefix.clone(),
+        upstream_url: route.upstream_url.clone(),
+        fallback_upstream_url: route.fallback_upstream_url.clone(),
+        health_check_path: route.health_check_path.clone(),
+        enabled: Some(route.enabled),
+    }
+}
+
 async fn decode_response<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> anyhow::Result<T> {
@@ -876,5 +914,29 @@ mod tests {
         let result = load_route_request_from_file(&path);
         assert!(result.is_err());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn route_rule_to_create_request_preserves_fields() {
+        let route = tunnelmux_core::RouteRule {
+            id: "svc-a".to_string(),
+            match_host: Some("demo.local".to_string()),
+            match_path_prefix: Some("/".to_string()),
+            strip_path_prefix: Some("/api".to_string()),
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+            health_check_path: Some("/healthz".to_string()),
+            enabled: false,
+        };
+
+        let payload = route_rule_to_create_request(&route);
+        assert_eq!(payload.id, route.id);
+        assert_eq!(payload.match_host, route.match_host);
+        assert_eq!(payload.match_path_prefix, route.match_path_prefix);
+        assert_eq!(payload.strip_path_prefix, route.strip_path_prefix);
+        assert_eq!(payload.upstream_url, route.upstream_url);
+        assert_eq!(payload.fallback_upstream_url, route.fallback_upstream_url);
+        assert_eq!(payload.health_check_path, route.health_check_path);
+        assert_eq!(payload.enabled, Some(false));
     }
 }
