@@ -653,8 +653,13 @@ async fn main() -> anyhow::Result<()> {
             let route_endpoint = build_route_update_endpoint(&id, true);
             let mut tunnel: TunnelStatusResponse =
                 get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
-            let tunnel_action =
-                decide_expose_tunnel_action(&tunnel, &provider, &target_url, restart_if_mismatch)?;
+            let tunnel_action = resolve_expose_tunnel_action(
+                &tunnel,
+                &provider,
+                &target_url,
+                restart_if_mismatch,
+                dry_run,
+            )?;
             let (wait_ready_timeout_ms, wait_ready_poll_ms) = if wait_ready {
                 (
                     normalize_wait_ready_timeout_ms(wait_ready_timeout_ms)?,
@@ -669,7 +674,8 @@ async fn main() -> anyhow::Result<()> {
                     serde_json::to_string_pretty(&json!({
                         "dry_run": true,
                         "route_action": infer_expose_route_upsert_action(route_exists),
-                        "tunnel_action": expose_tunnel_action_name(tunnel_action),
+                        "tunnel_action": expose_tunnel_action_name(tunnel_action.action_or_blocked()),
+                        "tunnel_action_error": tunnel_action.blocked_reason(),
                         "would_wait_ready": wait_ready,
                         "wait_ready_timeout_ms": wait_ready_timeout_ms,
                         "wait_ready_poll_ms": wait_ready_poll_ms,
@@ -677,6 +683,9 @@ async fn main() -> anyhow::Result<()> {
                     }))?
                 );
             } else {
+                let tunnel_action = tunnel_action
+                    .action()
+                    .ok_or_else(|| anyhow!("unexpected blocked expose action in apply mode"))?;
                 let route: tunnelmux_core::RouteRule = put_json(
                     &client,
                     &base_url,
@@ -2383,11 +2392,12 @@ fn infer_expose_route_upsert_action(route_exists: bool) -> &'static str {
     if route_exists { "update" } else { "create" }
 }
 
-fn expose_tunnel_action_name(action: ExposeTunnelAction) -> &'static str {
+fn expose_tunnel_action_name(action: ExposeTunnelActionName) -> &'static str {
     match action {
-        ExposeTunnelAction::Noop => "noop",
-        ExposeTunnelAction::Start => "start",
-        ExposeTunnelAction::Restart => "restart",
+        ExposeTunnelActionName::Action(ExposeTunnelAction::Noop) => "noop",
+        ExposeTunnelActionName::Action(ExposeTunnelAction::Start) => "start",
+        ExposeTunnelActionName::Action(ExposeTunnelAction::Restart) => "restart",
+        ExposeTunnelActionName::Blocked => "blocked",
     }
 }
 
@@ -2404,6 +2414,65 @@ enum ExposeTunnelAction {
     Noop,
     Start,
     Restart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExposeTunnelActionResolution {
+    Action(ExposeTunnelAction),
+    Blocked(String),
+}
+
+impl ExposeTunnelActionResolution {
+    fn action(&self) -> Option<ExposeTunnelAction> {
+        match self {
+            Self::Action(action) => Some(*action),
+            Self::Blocked(_) => None,
+        }
+    }
+
+    fn action_or_blocked(&self) -> ExposeTunnelActionName {
+        match self {
+            Self::Action(action) => ExposeTunnelActionName::Action(*action),
+            Self::Blocked(_) => ExposeTunnelActionName::Blocked,
+        }
+    }
+
+    fn blocked_reason(&self) -> Option<&str> {
+        match self {
+            Self::Action(_) => None,
+            Self::Blocked(reason) => Some(reason.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExposeTunnelActionName {
+    Action(ExposeTunnelAction),
+    Blocked,
+}
+
+fn resolve_expose_tunnel_action(
+    status: &TunnelStatusResponse,
+    desired_provider: &TunnelProvider,
+    desired_target_url: &str,
+    restart_if_mismatch: bool,
+    allow_blocked: bool,
+) -> anyhow::Result<ExposeTunnelActionResolution> {
+    match decide_expose_tunnel_action(
+        status,
+        desired_provider,
+        desired_target_url,
+        restart_if_mismatch,
+    ) {
+        Ok(action) => Ok(ExposeTunnelActionResolution::Action(action)),
+        Err(err) => {
+            if allow_blocked {
+                Ok(ExposeTunnelActionResolution::Blocked(err.to_string()))
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
 
 fn decide_expose_tunnel_action(
@@ -3029,6 +3098,41 @@ mod tests {
         )
         .expect("decision should succeed");
         assert_eq!(action, ExposeTunnelAction::Restart);
+    }
+
+    #[test]
+    fn resolve_expose_tunnel_action_blocks_in_dry_run_when_mismatch_without_restart() {
+        let status = sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Running,
+            Some(tunnelmux_core::TunnelProvider::Cloudflared),
+            Some("http://127.0.0.1:18080"),
+        );
+        let resolved = resolve_expose_tunnel_action(
+            &status,
+            &tunnelmux_core::TunnelProvider::Ngrok,
+            "http://127.0.0.1:18080",
+            false,
+            true,
+        )
+        .expect("dry run should capture blocked action");
+        assert!(matches!(resolved, ExposeTunnelActionResolution::Blocked(_)));
+    }
+
+    #[test]
+    fn resolve_expose_tunnel_action_errors_when_apply_mode_is_blocked() {
+        let status = sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Running,
+            Some(tunnelmux_core::TunnelProvider::Cloudflared),
+            Some("http://127.0.0.1:18080"),
+        );
+        let resolved = resolve_expose_tunnel_action(
+            &status,
+            &tunnelmux_core::TunnelProvider::Ngrok,
+            "http://127.0.0.1:18080",
+            false,
+            false,
+        );
+        assert!(resolved.is_err());
     }
 
     #[test]
