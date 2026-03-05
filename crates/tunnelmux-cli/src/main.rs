@@ -649,7 +649,8 @@ async fn main() -> anyhow::Result<()> {
             };
             let routes: RoutesResponse =
                 get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
-            let route_exists = routes.routes.iter().any(|item| item.id == id);
+            let existing_route = routes.routes.iter().find(|item| item.id == id).cloned();
+            let route_action = infer_expose_route_action(existing_route.as_ref(), &route_payload);
             let route_endpoint = build_route_update_endpoint(&id, true);
             let mut tunnel: TunnelStatusResponse =
                 get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
@@ -673,7 +674,7 @@ async fn main() -> anyhow::Result<()> {
                     "{}",
                     serde_json::to_string_pretty(&json!({
                         "dry_run": true,
-                        "route_action": infer_expose_route_upsert_action(route_exists),
+                        "route_action": expose_route_action_name(route_action),
                         "tunnel_action": expose_tunnel_action_name(tunnel_action.action_or_blocked()),
                         "tunnel_action_error": tunnel_action.blocked_reason(),
                         "would_wait_ready": wait_ready,
@@ -686,14 +687,20 @@ async fn main() -> anyhow::Result<()> {
                 let tunnel_action = tunnel_action
                     .action()
                     .ok_or_else(|| anyhow!("unexpected blocked expose action in apply mode"))?;
-                let route: tunnelmux_core::RouteRule = put_json(
-                    &client,
-                    &base_url,
-                    &route_endpoint,
-                    &route_payload,
-                    token.as_deref(),
-                )
-                .await?;
+                let route: tunnelmux_core::RouteRule = match route_action {
+                    ExposeRouteAction::Unchanged => existing_route
+                        .ok_or_else(|| anyhow!("existing route disappeared during expose apply"))?,
+                    ExposeRouteAction::Create | ExposeRouteAction::Update => {
+                        put_json(
+                            &client,
+                            &base_url,
+                            &route_endpoint,
+                            &route_payload,
+                            token.as_deref(),
+                        )
+                        .await?
+                    }
+                };
 
                 let mut tunnel_started = false;
                 let mut tunnel_restarted = false;
@@ -758,6 +765,7 @@ async fn main() -> anyhow::Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json!({
+                        "route_action": expose_route_action_name(route_action),
                         "route": route,
                         "tunnel": tunnel.tunnel,
                         "tunnel_started": tunnel_started,
@@ -2388,8 +2396,34 @@ fn should_auto_stop_tunnel_after_unexpose(
     )
 }
 
-fn infer_expose_route_upsert_action(route_exists: bool) -> &'static str {
-    if route_exists { "update" } else { "create" }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExposeRouteAction {
+    Create,
+    Update,
+    Unchanged,
+}
+
+fn infer_expose_route_action(
+    existing_route: Option<&tunnelmux_core::RouteRule>,
+    desired_route: &CreateRouteRequest,
+) -> ExposeRouteAction {
+    let Some(existing_route) = existing_route else {
+        return ExposeRouteAction::Create;
+    };
+    let current = route_rule_to_create_request(existing_route);
+    if current == *desired_route {
+        ExposeRouteAction::Unchanged
+    } else {
+        ExposeRouteAction::Update
+    }
+}
+
+fn expose_route_action_name(action: ExposeRouteAction) -> &'static str {
+    match action {
+        ExposeRouteAction::Create => "create",
+        ExposeRouteAction::Update => "update",
+        ExposeRouteAction::Unchanged => "unchanged",
+    }
 }
 
 fn expose_tunnel_action_name(action: ExposeTunnelActionName) -> &'static str {
@@ -3227,9 +3261,46 @@ mod tests {
     }
 
     #[test]
-    fn infer_expose_route_upsert_action_classifies_create_or_update() {
-        assert_eq!(infer_expose_route_upsert_action(false), "create");
-        assert_eq!(infer_expose_route_upsert_action(true), "update");
+    fn infer_expose_route_action_classifies_create_update_and_unchanged() {
+        let desired = CreateRouteRequest {
+            id: "svc-a".to_string(),
+            match_host: Some("demo.local".to_string()),
+            match_path_prefix: Some("/api".to_string()),
+            strip_path_prefix: Some("/api".to_string()),
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+            health_check_path: Some("/healthz".to_string()),
+            enabled: Some(true),
+        };
+
+        assert_eq!(
+            infer_expose_route_action(None, &desired),
+            ExposeRouteAction::Create
+        );
+
+        let unchanged = tunnelmux_core::RouteRule {
+            id: "svc-a".to_string(),
+            match_host: Some("demo.local".to_string()),
+            match_path_prefix: Some("/api".to_string()),
+            strip_path_prefix: Some("/api".to_string()),
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+            health_check_path: Some("/healthz".to_string()),
+            enabled: true,
+        };
+        assert_eq!(
+            infer_expose_route_action(Some(&unchanged), &desired),
+            ExposeRouteAction::Unchanged
+        );
+
+        let changed = tunnelmux_core::RouteRule {
+            upstream_url: "http://127.0.0.1:3010".to_string(),
+            ..unchanged
+        };
+        assert_eq!(
+            infer_expose_route_action(Some(&changed), &desired),
+            ExposeRouteAction::Update
+        );
     }
 
     #[test]
