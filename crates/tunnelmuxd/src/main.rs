@@ -2329,6 +2329,7 @@ mod tests {
     use axum::http::header::CONNECTION;
     use axum::http::header::UPGRADE;
     use futures_util::{SinkExt, StreamExt};
+    use reqwest::Client as ReqwestClient;
     use tokio::net::TcpListener;
     use tokio::process::Command as TokioCommand;
     use tokio_rustls::TlsAcceptor;
@@ -2369,6 +2370,72 @@ mod tests {
 
     fn test_health_key(upstream_url: &str, health_check_path: &str) -> UpstreamHealthKey {
         upstream_health_key(upstream_url, health_check_path)
+    }
+
+    fn test_state_with_routes(routes: Vec<RouteRule>, api_token: Option<&str>) -> Arc<AppState> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let mut http_connector = HttpConnector::new();
+        http_connector.enforce_http(false);
+        let https_connector = HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_or_http()
+            .enable_http1()
+            .wrap_connector(http_connector);
+
+        Arc::new(AppState {
+            runtime: Mutex::new(RuntimeState {
+                persisted: PersistedState {
+                    tunnel: default_tunnel_status(TunnelState::Idle),
+                    routes,
+                },
+                running_tunnel: None,
+                pending_restart: None,
+            }),
+            upstream_health: Mutex::new(HashMap::new()),
+            health_check_settings: RwLock::new(HealthCheckSettings {
+                interval_ms: 5_000,
+                timeout_ms: 2_000,
+                path: "/".to_string(),
+            }),
+            data_file: PathBuf::from("/tmp/tunnelmux-test-state.json"),
+            provider_log_file: PathBuf::from("/tmp/tunnelmux-test-provider.log"),
+            api_token: api_token.map(ToString::to_string),
+            cloudflared_bin: "cloudflared".to_string(),
+            ngrok_bin: "ngrok".to_string(),
+            ready_timeout_ms: 15_000,
+            max_auto_restarts: 10,
+            proxy_client: reqwest::Client::new(),
+            ws_proxy_client: HyperClient::builder(TokioExecutor::new()).build(https_connector),
+        })
+    }
+
+    async fn spawn_control_test_server(
+        state: Arc<AppState>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let protected_control_app = Router::new()
+            .route(
+                "/v1/settings/health-check",
+                get(get_health_check_settings).put(update_health_check_settings),
+            )
+            .route("/v1/metrics", get(get_metrics))
+            .route("/v1/routes/{id}", axum::routing::put(update_route))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                control_auth_middleware,
+            ));
+        let control_app = Router::new()
+            .route("/v1/health", get(health))
+            .merge(protected_control_app)
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind control listener");
+        let addr = listener.local_addr().expect("control listener addr");
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, control_app).await;
+        });
+        (format!("http://{}", addr), task)
     }
 
     #[test]
@@ -2549,6 +2616,252 @@ mod tests {
         let _ = client_ws.close(None).await;
         upstream_task.await.expect("upstream task completed");
         gateway_task.abort();
+    }
+
+    #[tokio::test]
+    async fn control_endpoint_rejects_unauthorized_requests() {
+        let state = test_state_with_routes(vec![], Some("secret-token"));
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .get(format!("{base_url}/v1/settings/health-check"))
+            .send()
+            .await
+            .expect("request should complete");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = client
+            .get(format!("{base_url}/v1/settings/health-check"))
+            .bearer_auth("secret-token")
+            .send()
+            .await
+            .expect("authorized request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn health_check_settings_endpoint_updates_runtime_config() {
+        let state = test_state_with_routes(vec![], None);
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let initial: HealthCheckSettingsResponse = client
+            .get(format!("{base_url}/v1/settings/health-check"))
+            .send()
+            .await
+            .expect("initial request should complete")
+            .json()
+            .await
+            .expect("initial payload should decode");
+        assert_eq!(
+            initial.health_check,
+            HealthCheckSettings {
+                interval_ms: 5_000,
+                timeout_ms: 2_000,
+                path: "/".to_string(),
+            }
+        );
+
+        let updated: HealthCheckSettingsResponse = client
+            .put(format!("{base_url}/v1/settings/health-check"))
+            .json(&UpdateHealthCheckSettingsRequest {
+                interval_ms: Some(1_000),
+                timeout_ms: Some(1_500),
+                path: Some("/ready".to_string()),
+            })
+            .send()
+            .await
+            .expect("update request should complete")
+            .json()
+            .await
+            .expect("updated payload should decode");
+        assert_eq!(
+            updated.health_check,
+            HealthCheckSettings {
+                interval_ms: 1_000,
+                timeout_ms: 1_500,
+                path: "/ready".to_string(),
+            }
+        );
+
+        let current: HealthCheckSettingsResponse = client
+            .get(format!("{base_url}/v1/settings/health-check"))
+            .send()
+            .await
+            .expect("readback request should complete")
+            .json()
+            .await
+            .expect("readback payload should decode");
+        assert_eq!(current.health_check, updated.health_check);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn update_route_endpoint_updates_existing_route() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .put(format!("{base_url}/v1/routes/svc-a"))
+            .json(&CreateRouteRequest {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3010".to_string(),
+                fallback_upstream_url: Some("http://127.0.0.1:3011".to_string()),
+                health_check_path: Some("/healthz".to_string()),
+                enabled: Some(false),
+            })
+            .send()
+            .await
+            .expect("update route request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload: RouteRule = response.json().await.expect("route response should decode");
+        assert_eq!(payload.id, "svc-a");
+        assert_eq!(payload.match_host.as_deref(), Some("demo.local"));
+        assert_eq!(payload.upstream_url, "http://127.0.0.1:3010");
+        assert!(!payload.enabled);
+
+        let runtime = state.runtime.lock().await;
+        assert_eq!(runtime.persisted.routes.len(), 1);
+        assert_eq!(
+            runtime.persisted.routes[0].upstream_url,
+            "http://127.0.0.1:3010"
+        );
+        assert_eq!(
+            runtime.persisted.routes[0].health_check_path.as_deref(),
+            Some("/healthz")
+        );
+
+        drop(runtime);
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn update_route_endpoint_rejects_id_mismatch() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .put(format!("{base_url}/v1/routes/svc-a"))
+            .json(&CreateRouteRequest {
+                id: "svc-b".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: Some(true),
+            })
+            .send()
+            .await
+            .expect("mismatch request should complete");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_returns_runtime_snapshot() {
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    id: "svc-a".to_string(),
+                    match_host: None,
+                    match_path_prefix: Some("/a".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    id: "svc-b".to_string(),
+                    match_host: None,
+                    match_path_prefix: Some("/b".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3001".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: false,
+                },
+            ],
+            None,
+        );
+        {
+            let mut health_map = state.upstream_health.lock().await;
+            health_map.insert(
+                test_health_key("http://127.0.0.1:3000", "/"),
+                test_health(true),
+            );
+        }
+        {
+            let mut settings = state.health_check_settings.write().await;
+            settings.interval_ms = 1_000;
+            settings.timeout_ms = 1_500;
+            settings.path = "/ready".to_string();
+        }
+
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+        let metrics: MetricsResponse = client
+            .get(format!("{base_url}/v1/metrics"))
+            .send()
+            .await
+            .expect("metrics request should complete")
+            .json()
+            .await
+            .expect("metrics payload should decode");
+
+        assert_eq!(metrics.route_count, 2);
+        assert_eq!(metrics.enabled_route_count, 1);
+        assert_eq!(metrics.upstream_health_entries, 1);
+        assert_eq!(metrics.tunnel_state, TunnelState::Idle);
+        assert!(!metrics.running_tunnel);
+        assert!(!metrics.pending_restart);
+        assert_eq!(
+            metrics.health_check,
+            HealthCheckSettings {
+                interval_ms: 1_000,
+                timeout_ms: 1_500,
+                path: "/ready".to_string(),
+            }
+        );
+
+        server_task.abort();
     }
 
     #[test]
