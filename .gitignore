@@ -1,0 +1,17 @@
+/target
+.DS_Store
+
+# Rust
+**/*.rs.bk
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
