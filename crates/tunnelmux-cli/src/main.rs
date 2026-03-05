@@ -115,6 +115,13 @@ enum Command {
         #[arg(
             long,
             default_value_t = false,
+            help = "Preview planned actions without applying changes"
+        )]
+        dry_run: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
             help = "Restart tunnel when running provider/target does not match requested values"
         )]
         restart_if_mismatch: bool,
@@ -156,6 +163,13 @@ enum Command {
 
         #[arg(long, default_value_t = false, help = "Treat missing route as success")]
         ignore_missing: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Preview planned actions without applying changes"
+        )]
+        dry_run: bool,
     },
     /// Route rules controls
     Routes {
@@ -616,6 +630,7 @@ async fn main() -> anyhow::Result<()> {
             provider,
             target_url,
             auto_restart,
+            dry_run,
             restart_if_mismatch,
             wait_ready,
             wait_ready_timeout_ms,
@@ -632,41 +647,153 @@ async fn main() -> anyhow::Result<()> {
                 health_check_path,
                 enabled: Some(!disabled),
             };
+            let routes: RoutesResponse =
+                get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+            let route_exists = routes.routes.iter().any(|item| item.id == id);
             let route_endpoint = build_route_update_endpoint(&id, true);
-            let route: tunnelmux_core::RouteRule = put_json(
-                &client,
-                &base_url,
-                &route_endpoint,
-                &route_payload,
-                token.as_deref(),
-            )
-            .await?;
-
             let mut tunnel: TunnelStatusResponse =
                 get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
-            let mut tunnel_started = false;
-            let mut tunnel_restarted = false;
-            match decide_expose_tunnel_action(&tunnel, &provider, &target_url, restart_if_mismatch)?
-            {
-                ExposeTunnelAction::Noop => {}
-                ExposeTunnelAction::Start => {
-                    tunnel = post_json(
+            let tunnel_action =
+                decide_expose_tunnel_action(&tunnel, &provider, &target_url, restart_if_mismatch)?;
+            let (wait_ready_timeout_ms, wait_ready_poll_ms) = if wait_ready {
+                (
+                    normalize_wait_ready_timeout_ms(wait_ready_timeout_ms)?,
+                    normalize_wait_ready_poll_ms(wait_ready_poll_ms)?,
+                )
+            } else {
+                (wait_ready_timeout_ms, wait_ready_poll_ms)
+            };
+            if dry_run {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "dry_run": true,
+                        "route_action": infer_expose_route_upsert_action(route_exists),
+                        "tunnel_action": expose_tunnel_action_name(tunnel_action),
+                        "would_wait_ready": wait_ready,
+                        "wait_ready_timeout_ms": wait_ready_timeout_ms,
+                        "wait_ready_poll_ms": wait_ready_poll_ms,
+                        "current_tunnel": tunnel.tunnel,
+                    }))?
+                );
+            } else {
+                let route: tunnelmux_core::RouteRule = put_json(
+                    &client,
+                    &base_url,
+                    &route_endpoint,
+                    &route_payload,
+                    token.as_deref(),
+                )
+                .await?;
+
+                let mut tunnel_started = false;
+                let mut tunnel_restarted = false;
+                match tunnel_action {
+                    ExposeTunnelAction::Noop => {}
+                    ExposeTunnelAction::Start => {
+                        tunnel = post_json(
+                            &client,
+                            &base_url,
+                            "/v1/tunnel/start",
+                            &TunnelStartRequest {
+                                provider: provider.clone(),
+                                target_url: target_url.clone(),
+                                auto_restart: Some(auto_restart),
+                                metadata: None,
+                            },
+                            token.as_deref(),
+                        )
+                        .await?;
+                        tunnel_started = true;
+                    }
+                    ExposeTunnelAction::Restart => {
+                        let _stopped: TunnelStatusResponse = post_json(
+                            &client,
+                            &base_url,
+                            "/v1/tunnel/stop",
+                            &json!({}),
+                            token.as_deref(),
+                        )
+                        .await?;
+                        tunnel = post_json(
+                            &client,
+                            &base_url,
+                            "/v1/tunnel/start",
+                            &TunnelStartRequest {
+                                provider: provider.clone(),
+                                target_url: target_url.clone(),
+                                auto_restart: Some(auto_restart),
+                                metadata: None,
+                            },
+                            token.as_deref(),
+                        )
+                        .await?;
+                        tunnel_started = true;
+                        tunnel_restarted = true;
+                    }
+                };
+
+                let mut waited_ready = false;
+                if wait_ready {
+                    tunnel = wait_for_tunnel_ready(
                         &client,
                         &base_url,
-                        "/v1/tunnel/start",
-                        &TunnelStartRequest {
-                            provider: provider.clone(),
-                            target_url: target_url.clone(),
-                            auto_restart: Some(auto_restart),
-                            metadata: None,
-                        },
                         token.as_deref(),
+                        wait_ready_timeout_ms,
+                        wait_ready_poll_ms,
                     )
                     .await?;
-                    tunnel_started = true;
+                    waited_ready = true;
                 }
-                ExposeTunnelAction::Restart => {
-                    let _stopped: TunnelStatusResponse = post_json(
+
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "route": route,
+                        "tunnel": tunnel.tunnel,
+                        "tunnel_started": tunnel_started,
+                        "tunnel_restarted": tunnel_restarted,
+                        "waited_ready": waited_ready,
+                    }))?
+                );
+            }
+        }
+        Command::Unexpose {
+            id,
+            keep_tunnel,
+            ignore_missing,
+            dry_run,
+        } => {
+            let routes: RoutesResponse =
+                get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+            let route_exists = routes.routes.iter().any(|item| item.id == id);
+            if !route_exists && !ignore_missing {
+                return Err(anyhow!("route '{}' not found", id));
+            }
+            let mut tunnel: TunnelStatusResponse =
+                get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
+            let remaining_routes =
+                project_remaining_routes_after_unexpose(routes.routes.len(), route_exists);
+            let tunnel_stopped =
+                should_auto_stop_tunnel_after_unexpose(remaining_routes, keep_tunnel, &tunnel);
+            if dry_run {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "dry_run": true,
+                        "route_exists": route_exists,
+                        "route_removed": route_exists,
+                        "remaining_routes": remaining_routes,
+                        "tunnel_stopped": tunnel_stopped,
+                        "current_tunnel": tunnel.tunnel,
+                    }))?
+                );
+            } else {
+                let remove =
+                    delete_route_by_id(&client, &base_url, &id, token.as_deref(), ignore_missing)
+                        .await?;
+                if tunnel_stopped {
+                    tunnel = post_json(
                         &client,
                         &base_url,
                         "/v1/tunnel/stop",
@@ -674,84 +801,17 @@ async fn main() -> anyhow::Result<()> {
                         token.as_deref(),
                     )
                     .await?;
-                    tunnel = post_json(
-                        &client,
-                        &base_url,
-                        "/v1/tunnel/start",
-                        &TunnelStartRequest {
-                            provider: provider.clone(),
-                            target_url: target_url.clone(),
-                            auto_restart: Some(auto_restart),
-                            metadata: None,
-                        },
-                        token.as_deref(),
-                    )
-                    .await?;
-                    tunnel_started = true;
-                    tunnel_restarted = true;
                 }
-            };
-
-            let mut waited_ready = false;
-            if wait_ready {
-                let timeout_ms = normalize_wait_ready_timeout_ms(wait_ready_timeout_ms)?;
-                let poll_ms = normalize_wait_ready_poll_ms(wait_ready_poll_ms)?;
-                tunnel = wait_for_tunnel_ready(
-                    &client,
-                    &base_url,
-                    token.as_deref(),
-                    timeout_ms,
-                    poll_ms,
-                )
-                .await?;
-                waited_ready = true;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "route_removed": remove.removed,
+                        "remaining_routes": remaining_routes,
+                        "tunnel_stopped": tunnel_stopped,
+                        "tunnel": tunnel.tunnel,
+                    }))?
+                );
             }
-
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "route": route,
-                    "tunnel": tunnel.tunnel,
-                    "tunnel_started": tunnel_started,
-                    "tunnel_restarted": tunnel_restarted,
-                    "waited_ready": waited_ready,
-                }))?
-            );
-        }
-        Command::Unexpose {
-            id,
-            keep_tunnel,
-            ignore_missing,
-        } => {
-            let remove =
-                delete_route_by_id(&client, &base_url, &id, token.as_deref(), ignore_missing)
-                    .await?;
-            let routes: RoutesResponse =
-                get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
-            let mut tunnel: TunnelStatusResponse =
-                get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
-            let remaining_routes = routes.routes.len();
-            let tunnel_stopped =
-                should_auto_stop_tunnel_after_unexpose(remaining_routes, keep_tunnel, &tunnel);
-            if tunnel_stopped {
-                tunnel = post_json(
-                    &client,
-                    &base_url,
-                    "/v1/tunnel/stop",
-                    &json!({}),
-                    token.as_deref(),
-                )
-                .await?;
-            }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "route_removed": remove.removed,
-                    "remaining_routes": remaining_routes,
-                    "tunnel_stopped": tunnel_stopped,
-                    "tunnel": tunnel.tunnel,
-                }))?
-            );
         }
         Command::Routes { command } => match command {
             RoutesCommand::List {
@@ -2319,6 +2379,26 @@ fn should_auto_stop_tunnel_after_unexpose(
     )
 }
 
+fn infer_expose_route_upsert_action(route_exists: bool) -> &'static str {
+    if route_exists { "update" } else { "create" }
+}
+
+fn expose_tunnel_action_name(action: ExposeTunnelAction) -> &'static str {
+    match action {
+        ExposeTunnelAction::Noop => "noop",
+        ExposeTunnelAction::Start => "start",
+        ExposeTunnelAction::Restart => "restart",
+    }
+}
+
+fn project_remaining_routes_after_unexpose(current_count: usize, route_exists: bool) -> usize {
+    if route_exists {
+        current_count.saturating_sub(1)
+    } else {
+        current_count
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExposeTunnelAction {
     Noop,
@@ -3040,6 +3120,20 @@ mod tests {
     fn normalize_wait_ready_poll_ms_rejects_out_of_range() {
         assert!(normalize_wait_ready_poll_ms(99).is_err());
         assert!(normalize_wait_ready_poll_ms(10_001).is_err());
+    }
+
+    #[test]
+    fn infer_expose_route_upsert_action_classifies_create_or_update() {
+        assert_eq!(infer_expose_route_upsert_action(false), "create");
+        assert_eq!(infer_expose_route_upsert_action(true), "update");
+    }
+
+    #[test]
+    fn project_remaining_routes_after_unexpose_decrements_only_when_route_exists() {
+        assert_eq!(project_remaining_routes_after_unexpose(3, true), 2);
+        assert_eq!(project_remaining_routes_after_unexpose(3, false), 3);
+        assert_eq!(project_remaining_routes_after_unexpose(0, false), 0);
+        assert_eq!(project_remaining_routes_after_unexpose(0, true), 0);
     }
 
     fn sample_tunnel_status_response(
