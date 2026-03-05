@@ -2,11 +2,41 @@
 
 TunnelMux 是一个独立的“隧道 + 转发网关”服务。
 
+![CI](https://github.com/kexuejin/TunnelMux/actions/workflows/ci.yml/badge.svg)
+![Release](https://github.com/kexuejin/TunnelMux/actions/workflows/release.yml/badge.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
+
 目标：
 - 一个隧道暴露多个本机服务（不同端口）
 - CLI 作为默认操作面
 - GUI 通过 Tauri 连接同一控制 API
 - SoloMesh 作为客户端接入，而不是内置隧道逻辑
+
+## 安装方式
+
+### 方式 1：GitHub Releases（二进制，推荐）
+
+在 Releases 页面下载对应平台压缩包，解压后获得：
+
+- `tunnelmuxd`
+- `tunnelmux-cli`
+
+把二进制放到 `PATH` 即可全局使用。
+
+### 方式 2：源码安装（Cargo）
+
+```bash
+cargo install --git https://github.com/kexuejin/TunnelMux tunnelmuxd --locked
+cargo install --git https://github.com/kexuejin/TunnelMux tunnelmux-cli --locked
+```
+
+开发者本地安装（当前仓库）：
+
+```bash
+cargo install --path crates/tunnelmuxd --force
+cargo install --path crates/tunnelmux-cli --force
+```
 
 ## 项目结构
 
@@ -18,7 +48,8 @@ TunnelMux 是一个独立的“隧道 + 转发网关”服务。
 ## 快速开始
 
 ```bash
-cd /Users/kexuejin/source/TunnelMux
+git clone https://github.com/kexuejin/TunnelMux.git
+cd TunnelMux
 cargo check
 TUNNELMUX_API_TOKEN=dev-token cargo run -p tunnelmuxd -- --listen 127.0.0.1:4765 --gateway-listen 127.0.0.1:18080 --max-auto-restarts 10 --health-check-interval-ms 5000 --health-check-timeout-ms 2000 --health-check-path /healthz
 TUNNELMUX_API_TOKEN=dev-token cargo run -p tunnelmux-cli -- status
@@ -63,3 +94,28 @@ curl -H 'Host: solomesh.local' http://127.0.0.1:18080/
 - [控制 API 草案](docs/API.md)
 - [SoloMesh 接入方式](docs/SOLOMESH-INTEGRATION.md)
 - [开发路线图](docs/ROADMAP.md)
+- [发布流程](docs/RELEASING.md)
+
+## 维护者发布
+
+首次将本地仓库发布到 GitHub：
+
+```bash
+git remote add origin git@github.com:<your-org-or-user>/TunnelMux.git
+git branch -M main
+git push -u origin main
+```
+
+发布新版本（自动构建多平台 release 包）：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+## 开源协作
+
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security Policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)

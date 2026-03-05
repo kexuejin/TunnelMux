@@ -12,6 +12,12 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 authors = ["TunnelMux Contributors"]
+description = "Standalone tunnel and reverse-proxy control plane for local services."
+readme = "README.md"
+homepage = "https://github.com/kexuejin/TunnelMux"
+repository = "https://github.com/kexuejin/TunnelMux"
+keywords = ["tunnel", "ngrok", "cloudflared", "reverse-proxy", "gateway"]
+categories = ["network-programming", "command-line-utilities"]
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -31,3 +37,4 @@ tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2.5"
+tunnelmux-core = { version = "0.1.0", path = "crates/tunnelmux-core" }

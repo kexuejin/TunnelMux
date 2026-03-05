@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build binaries
+        run: cargo build --release --locked --target ${{ matrix.target }} -p tunnelmuxd -p tunnelmux-cli
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          TARGET="${{ matrix.target }}"
+          DIST_DIR="dist"
+          PKG_DIR="${DIST_DIR}/tunnelmux-${VERSION}-${TARGET}"
+          mkdir -p "${PKG_DIR}"
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "target/${TARGET}/release/tunnelmuxd.exe" "${PKG_DIR}/"
+            cp "target/${TARGET}/release/tunnelmux-cli.exe" "${PKG_DIR}/"
+          else
+            cp "target/${TARGET}/release/tunnelmuxd" "${PKG_DIR}/"
+            cp "target/${TARGET}/release/tunnelmux-cli" "${PKG_DIR}/"
+          fi
+
+          cp README.md LICENSE CHANGELOG.md "${PKG_DIR}/"
+
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            python -c "import pathlib,zipfile; d=pathlib.Path('dist'); ps=[p for p in d.iterdir() if p.is_dir() and p.name.startswith('tunnelmux-')]; assert len(ps)==1, f'expected one package dir, got {len(ps)}'; p=ps[0]; z=zipfile.ZipFile(d / f'{p.name}.zip','w',compression=zipfile.ZIP_DEFLATED); [z.write(f,f.relative_to(d)) for f in p.rglob('*') if f.is_file()]; z.close()"
+            echo "ASSET_PATH=${DIST_DIR}/tunnelmux-${VERSION}-${TARGET}.zip" >> "$GITHUB_ENV"
+          else
+            tar -C "${DIST_DIR}" -czf "${DIST_DIR}/tunnelmux-${VERSION}-${TARGET}.tar.gz" "tunnelmux-${VERSION}-${TARGET}"
+            echo "ASSET_PATH=${DIST_DIR}/tunnelmux-${VERSION}-${TARGET}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: ${{ env.ASSET_PATH }}
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum * > SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*
