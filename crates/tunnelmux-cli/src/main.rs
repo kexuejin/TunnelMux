@@ -5,7 +5,7 @@ use std::{fs, path::Path, path::PathBuf};
 
 use anyhow::{Context, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use reqwest::Client;
+use reqwest::{Client, StatusCode as ReqwestStatusCode};
 use serde_json::json;
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
@@ -118,6 +118,21 @@ enum Command {
             help = "Restart tunnel when running provider/target does not match requested values"
         )]
         restart_if_mismatch: bool,
+    },
+    /// Idempotent one-shot unexpose flow (remove route + optional tunnel auto-stop)
+    Unexpose {
+        #[arg(long)]
+        id: String,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Keep tunnel running even when no routes remain"
+        )]
+        keep_tunnel: bool,
+
+        #[arg(long, default_value_t = false, help = "Treat missing route as success")]
+        ignore_missing: bool,
     },
     /// Route rules controls
     Routes {
@@ -661,6 +676,41 @@ async fn main() -> anyhow::Result<()> {
                 }))?
             );
         }
+        Command::Unexpose {
+            id,
+            keep_tunnel,
+            ignore_missing,
+        } => {
+            let remove =
+                delete_route_by_id(&client, &base_url, &id, token.as_deref(), ignore_missing)
+                    .await?;
+            let routes: RoutesResponse =
+                get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+            let mut tunnel: TunnelStatusResponse =
+                get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
+            let remaining_routes = routes.routes.len();
+            let tunnel_stopped =
+                should_auto_stop_tunnel_after_unexpose(remaining_routes, keep_tunnel, &tunnel);
+            if tunnel_stopped {
+                tunnel = post_json(
+                    &client,
+                    &base_url,
+                    "/v1/tunnel/stop",
+                    &json!({}),
+                    token.as_deref(),
+                )
+                .await?;
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "route_removed": remove.removed,
+                    "remaining_routes": remaining_routes,
+                    "tunnel_stopped": tunnel_stopped,
+                    "tunnel": tunnel.tunnel,
+                }))?
+            );
+        }
         Command::Routes { command } => match command {
             RoutesCommand::List {
                 watch,
@@ -956,6 +1006,34 @@ async fn delete_json<T: serde::de::DeserializeOwned>(
         .await
         .with_context(|| format!("request failed: {url}"))?;
     decode_response(response).await
+}
+
+async fn delete_route_by_id(
+    client: &Client,
+    base_url: &str,
+    id: &str,
+    token: Option<&str>,
+    ignore_missing: bool,
+) -> anyhow::Result<DeleteRouteResponse> {
+    let path = format!("/v1/routes/{id}");
+    let url = format!("{}{}", base_url, path);
+    let response = request_with_token(client.delete(&url), token)
+        .send()
+        .await
+        .with_context(|| format!("request failed: {url}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read response body")?;
+    if status == ReqwestStatusCode::NOT_FOUND && ignore_missing {
+        return Ok(DeleteRouteResponse { removed: false });
+    }
+    if !status.is_success() {
+        return Err(anyhow!("HTTP {}: {}", status, extract_error_message(&body)));
+    }
+    serde_json::from_str::<DeleteRouteResponse>(&body)
+        .with_context(|| format!("failed to parse delete route response: {}", body))
 }
 
 async fn put_json<T: serde::de::DeserializeOwned>(
@@ -2145,6 +2223,20 @@ fn should_start_tunnel(status: &TunnelStatusResponse) -> bool {
     )
 }
 
+fn should_auto_stop_tunnel_after_unexpose(
+    remaining_routes: usize,
+    keep_tunnel: bool,
+    status: &TunnelStatusResponse,
+) -> bool {
+    if keep_tunnel || remaining_routes > 0 {
+        return false;
+    }
+    matches!(
+        status.tunnel.state,
+        TunnelState::Running | TunnelState::Starting
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExposeTunnelAction {
     Noop,
@@ -2194,6 +2286,12 @@ fn tunnel_matches_requested_config(
 
 fn normalize_target_url_for_compare(value: &str) -> String {
     value.trim().trim_end_matches('/').to_string()
+}
+
+fn extract_error_message(body: &str) -> String {
+    serde_json::from_str::<ErrorResponse>(body)
+        .map(|err| err.error)
+        .unwrap_or_else(|_| body.to_string())
 }
 
 fn normalize_stream_retry_policy(
@@ -2755,6 +2853,30 @@ mod tests {
         )
         .expect("decision should succeed");
         assert_eq!(action, ExposeTunnelAction::Restart);
+    }
+
+    #[test]
+    fn should_auto_stop_tunnel_after_unexpose_requires_no_routes_and_active_tunnel() {
+        let active = sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Running,
+            Some(tunnelmux_core::TunnelProvider::Cloudflared),
+            Some("http://127.0.0.1:18080"),
+        );
+        assert!(should_auto_stop_tunnel_after_unexpose(0, false, &active));
+        assert!(!should_auto_stop_tunnel_after_unexpose(1, false, &active));
+    }
+
+    #[test]
+    fn should_auto_stop_tunnel_after_unexpose_respects_keep_tunnel_and_state() {
+        let active = sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Starting,
+            Some(tunnelmux_core::TunnelProvider::Cloudflared),
+            Some("http://127.0.0.1:18080"),
+        );
+        let inactive =
+            sample_tunnel_status_response(tunnelmux_core::TunnelState::Stopped, None, None);
+        assert!(!should_auto_stop_tunnel_after_unexpose(0, true, &active));
+        assert!(!should_auto_stop_tunnel_after_unexpose(0, false, &inactive));
     }
 
     fn sample_tunnel_status_response(
