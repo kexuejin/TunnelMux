@@ -50,10 +50,10 @@ use tracing::{debug, info, warn};
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
     DEFAULT_GATEWAY_TARGET_URL, DashboardResponse, DeleteRouteResponse, ErrorResponse,
-    HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RouteRule,
-    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState,
-    TunnelStatus, TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
-    UpstreamsHealthResponse,
+    HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse, MetricsResponse,
+    RouteMatchResponse, RouteMatchTarget, RouteRule, RoutesResponse, TunnelLogsResponse,
+    TunnelProvider, TunnelStartRequest, TunnelState, TunnelStatus, TunnelStatusResponse,
+    UpdateHealthCheckSettingsRequest, UpstreamHealthEntry, UpstreamsHealthResponse,
 };
 use url::Url;
 
@@ -246,6 +246,12 @@ struct StreamIntervalQuery {
     interval_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RouteMatchQuery {
+    host: Option<String>,
+    path: String,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -341,6 +347,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/upstreams/health", get(get_upstreams_health))
         .route("/v1/upstreams/health/stream", get(stream_upstreams_health))
         .route("/v1/routes", get(list_routes).post(add_route))
+        .route("/v1/routes/match", get(match_route))
         .route("/v1/routes/stream", get(stream_routes))
         .route("/v1/routes/apply", post(apply_routes))
         .route("/v1/routes/{id}", delete(delete_route).put(update_route))
@@ -720,6 +727,72 @@ async fn stop_tunnel(
 
 async fn list_routes(State(state): State<Arc<AppState>>) -> Json<RoutesResponse> {
     Json(build_routes_snapshot(&state).await)
+}
+
+async fn match_route(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<RouteMatchQuery>,
+) -> Result<Json<RouteMatchResponse>, ApiError> {
+    let path = normalize_match_route_path(&query.path)?;
+    let host = query
+        .host
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let route = {
+        let runtime = state.runtime.lock().await;
+        select_route(&runtime.persisted.routes, host.as_deref(), &path).cloned()
+    };
+
+    let Some(route) = route else {
+        return Ok(Json(RouteMatchResponse {
+            host,
+            path,
+            matched: false,
+            route: None,
+            forwarded_path: None,
+            health_check_path: None,
+            targets: Vec::new(),
+        }));
+    };
+
+    let default_health_check_path = {
+        let settings = state.health_check_settings.read().await;
+        settings.path.clone()
+    };
+    let route_health_check_path =
+        effective_route_health_check_path(&route, &default_health_check_path);
+    let forwarded_path = rewrite_path(&path, &route);
+    let targets = {
+        let health_map = state.upstream_health.lock().await;
+        ordered_upstream_targets(&route, &route_health_check_path, &health_map)
+            .into_iter()
+            .map(|upstream_url| {
+                let health = health_map.get(&upstream_health_key(
+                    &upstream_url,
+                    &route_health_check_path,
+                ));
+                RouteMatchTarget {
+                    upstream_url,
+                    healthy: health.map(|item| item.healthy),
+                    last_checked_at: health.map(|item| item.last_checked_at.clone()),
+                    last_error: health.and_then(|item| item.last_error.clone()),
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    Ok(Json(RouteMatchResponse {
+        host,
+        path,
+        matched: true,
+        route: Some(route),
+        forwarded_path: Some(forwarded_path),
+        health_check_path: Some(route_health_check_path),
+        targets,
+    }))
 }
 
 async fn stream_routes(
@@ -2014,6 +2087,17 @@ fn normalize_stream_interval_ms(interval_ms: Option<u64>) -> Result<u64, ApiErro
     Ok(interval_ms)
 }
 
+fn normalize_match_route_path(value: &str) -> Result<String, ApiError> {
+    let path = value.trim();
+    if path.is_empty() {
+        return Err(ApiError::bad_request("path is required"));
+    }
+    if !path.starts_with('/') {
+        return Err(ApiError::bad_request("path must start with '/'"));
+    }
+    Ok(path.to_string())
+}
+
 fn tail_lines(source: &str, count: usize) -> Vec<String> {
     source
         .lines()
@@ -2913,6 +2997,7 @@ mod tests {
             .route("/v1/upstreams/health", get(get_upstreams_health))
             .route("/v1/upstreams/health/stream", get(stream_upstreams_health))
             .route("/v1/routes", get(list_routes))
+            .route("/v1/routes/match", get(match_route))
             .route("/v1/routes/stream", get(stream_routes))
             .route("/v1/routes/apply", post(apply_routes))
             .route("/v1/routes/{id}", axum::routing::put(update_route))
@@ -3298,6 +3383,100 @@ mod tests {
             .await
             .expect("mismatch request should complete");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn routes_match_endpoint_returns_selected_route_and_targets() {
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    id: "svc-root".to_string(),
+                    match_host: None,
+                    match_path_prefix: Some("/".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3009".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    id: "svc-api".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/api".to_string()),
+                    strip_path_prefix: Some("/api".to_string()),
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+                    health_check_path: None,
+                    enabled: true,
+                },
+            ],
+            None,
+        );
+        {
+            let mut map = state.upstream_health.lock().await;
+            map.insert(
+                test_health_key("http://127.0.0.1:3000", "/"),
+                test_health(false),
+            );
+            map.insert(
+                test_health_key("http://127.0.0.1:3001", "/"),
+                test_health(true),
+            );
+        }
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let payload: RouteMatchResponse = client
+            .get(format!("{base_url}/v1/routes/match"))
+            .query(&[("host", "demo.local"), ("path", "/api/v1/ping")])
+            .send()
+            .await
+            .expect("match request should complete")
+            .json()
+            .await
+            .expect("match response should decode");
+
+        assert!(payload.matched);
+        assert_eq!(payload.host.as_deref(), Some("demo.local"));
+        assert_eq!(payload.path, "/api/v1/ping");
+        assert_eq!(payload.forwarded_path.as_deref(), Some("/v1/ping"));
+        assert_eq!(payload.health_check_path.as_deref(), Some("/"));
+        let route = payload.route.expect("route should exist");
+        assert_eq!(route.id, "svc-api");
+        assert_eq!(payload.targets.len(), 2);
+        assert_eq!(payload.targets[0].upstream_url, "http://127.0.0.1:3001");
+        assert_eq!(payload.targets[0].healthy, Some(true));
+        assert_eq!(payload.targets[1].upstream_url, "http://127.0.0.1:3000");
+        assert_eq!(payload.targets[1].healthy, Some(false));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn routes_match_endpoint_reports_unmatched_route() {
+        let state = test_state_with_routes(vec![], None);
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let payload: RouteMatchResponse = client
+            .get(format!("{base_url}/v1/routes/match"))
+            .query(&[("host", "demo.local"), ("path", "/missing")])
+            .send()
+            .await
+            .expect("match request should complete")
+            .json()
+            .await
+            .expect("match response should decode");
+
+        assert!(!payload.matched);
+        assert_eq!(payload.host.as_deref(), Some("demo.local"));
+        assert_eq!(payload.path, "/missing");
+        assert!(payload.route.is_none());
+        assert!(payload.forwarded_path.is_none());
+        assert!(payload.health_check_path.is_none());
+        assert!(payload.targets.is_empty());
 
         server_task.abort();
     }
@@ -4050,6 +4229,16 @@ mod tests {
         );
         assert!(normalize_stream_interval_ms(Some(199)).is_err());
         assert!(normalize_stream_interval_ms(Some(60_001)).is_err());
+    }
+
+    #[test]
+    fn normalize_match_route_path_requires_leading_slash() {
+        assert_eq!(
+            normalize_match_route_path("/api/v1").expect("valid path"),
+            "/api/v1"
+        );
+        assert!(normalize_match_route_path("").is_err());
+        assert!(normalize_match_route_path("api/v1").is_err());
     }
 
     #[test]
