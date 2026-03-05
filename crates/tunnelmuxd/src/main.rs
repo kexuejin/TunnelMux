@@ -148,6 +148,7 @@ impl IntoResponse for ApiError {
 struct PersistedState {
     tunnel: TunnelStatus,
     routes: Vec<RouteRule>,
+    health_check: Option<HealthCheckSettings>,
 }
 
 impl Default for PersistedState {
@@ -155,6 +156,7 @@ impl Default for PersistedState {
         Self {
             tunnel: default_tunnel_status(TunnelState::Idle),
             routes: Vec::new(),
+            health_check: None,
         }
     }
 }
@@ -278,7 +280,12 @@ async fn main() -> anyhow::Result<()> {
         path: normalize_health_check_path(&args.health_check_path)
             .with_context(|| format!("invalid --health-check-path: {}", args.health_check_path))?,
     };
-    let persisted = load_persisted_state(&data_file).await?;
+    let mut persisted = load_persisted_state(&data_file).await?;
+    let health_check_settings = resolve_initial_health_check_settings(
+        health_check_settings,
+        persisted.health_check.clone(),
+    );
+    persisted.health_check = Some(health_check_settings.clone());
     let mut http_connector = HttpConnector::new();
     http_connector.enforce_http(false);
     let https_connector = HttpsConnectorBuilder::new()
@@ -372,6 +379,13 @@ fn resolve_api_token(arg_token: Option<String>) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+fn resolve_initial_health_check_settings(
+    startup_default: HealthCheckSettings,
+    persisted: Option<HealthCheckSettings>,
+) -> HealthCheckSettings {
+    persisted.unwrap_or(startup_default)
+}
+
 async fn control_auth_middleware(
     State(state): State<Arc<AppState>>,
     request: Request,
@@ -448,6 +462,11 @@ async fn update_health_check_settings(
         *current = next.clone();
         next
     };
+    {
+        let mut runtime = state.runtime.lock().await;
+        runtime.persisted.health_check = Some(updated.clone());
+    }
+    persist_from_runtime(&state).await?;
 
     Ok(Json(HealthCheckSettingsResponse {
         health_check: updated,
@@ -2330,6 +2349,7 @@ mod tests {
     use axum::http::header::UPGRADE;
     use futures_util::{SinkExt, StreamExt};
     use reqwest::Client as ReqwestClient;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::net::TcpListener;
     use tokio::process::Command as TokioCommand;
     use tokio_rustls::TlsAcceptor;
@@ -2372,8 +2392,14 @@ mod tests {
         upstream_health_key(upstream_url, health_check_path)
     }
 
+    fn next_test_id() -> u64 {
+        static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
+        NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
     fn test_state_with_routes(routes: Vec<RouteRule>, api_token: Option<&str>) -> Arc<AppState> {
         let _ = rustls::crypto::ring::default_provider().install_default();
+        let test_id = next_test_id();
 
         let mut http_connector = HttpConnector::new();
         http_connector.enforce_http(false);
@@ -2388,6 +2414,11 @@ mod tests {
                 persisted: PersistedState {
                     tunnel: default_tunnel_status(TunnelState::Idle),
                     routes,
+                    health_check: Some(HealthCheckSettings {
+                        interval_ms: 5_000,
+                        timeout_ms: 2_000,
+                        path: "/".to_string(),
+                    }),
                 },
                 running_tunnel: None,
                 pending_restart: None,
@@ -2398,8 +2429,8 @@ mod tests {
                 timeout_ms: 2_000,
                 path: "/".to_string(),
             }),
-            data_file: PathBuf::from("/tmp/tunnelmux-test-state.json"),
-            provider_log_file: PathBuf::from("/tmp/tunnelmux-test-provider.log"),
+            data_file: PathBuf::from(format!("/tmp/tunnelmux-test-state-{test_id}.json")),
+            provider_log_file: PathBuf::from(format!("/tmp/tunnelmux-test-provider-{test_id}.log")),
             api_token: api_token.map(ToString::to_string),
             cloudflared_bin: "cloudflared".to_string(),
             ngrok_bin: "ngrok".to_string(),
@@ -2507,6 +2538,7 @@ mod tests {
     #[tokio::test]
     async fn websocket_proxy_supports_wss_upstream() {
         let _ = rustls::crypto::ring::default_provider().install_default();
+        let test_id = next_test_id();
 
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("create self-signed cert");
@@ -2564,6 +2596,11 @@ mod tests {
                         health_check_path: None,
                         enabled: true,
                     }],
+                    health_check: Some(HealthCheckSettings {
+                        interval_ms: 5_000,
+                        timeout_ms: 2_000,
+                        path: "/".to_string(),
+                    }),
                 },
                 running_tunnel: None,
                 pending_restart: None,
@@ -2574,8 +2611,8 @@ mod tests {
                 timeout_ms: 2_000,
                 path: "/".to_string(),
             }),
-            data_file: PathBuf::from("/tmp/tunnelmux-test-state.json"),
-            provider_log_file: PathBuf::from("/tmp/tunnelmux-test-provider.log"),
+            data_file: PathBuf::from(format!("/tmp/tunnelmux-test-state-{test_id}.json")),
+            provider_log_file: PathBuf::from(format!("/tmp/tunnelmux-test-provider-{test_id}.log")),
             api_token: None,
             cloudflared_bin: "cloudflared".to_string(),
             ngrok_bin: "ngrok".to_string(),
@@ -2645,7 +2682,7 @@ mod tests {
     #[tokio::test]
     async fn health_check_settings_endpoint_updates_runtime_config() {
         let state = test_state_with_routes(vec![], None);
-        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
         let client = ReqwestClient::new();
 
         let initial: HealthCheckSettingsResponse = client
@@ -2696,6 +2733,12 @@ mod tests {
             .await
             .expect("readback payload should decode");
         assert_eq!(current.health_check, updated.health_check);
+        let runtime = state.runtime.lock().await;
+        assert_eq!(
+            runtime.persisted.health_check,
+            Some(updated.health_check.clone())
+        );
+        drop(runtime);
 
         server_task.abort();
     }
@@ -3505,6 +3548,34 @@ mod tests {
         );
         assert!(normalize_health_check_timeout_ms(99).is_err());
         assert!(normalize_health_check_timeout_ms(30_001).is_err());
+    }
+
+    #[test]
+    fn resolve_initial_health_check_settings_prefers_persisted_value() {
+        let startup = HealthCheckSettings {
+            interval_ms: 5_000,
+            timeout_ms: 2_000,
+            path: "/".to_string(),
+        };
+        let persisted = HealthCheckSettings {
+            interval_ms: 1_000,
+            timeout_ms: 1_500,
+            path: "/ready".to_string(),
+        };
+
+        let resolved = resolve_initial_health_check_settings(startup, Some(persisted.clone()));
+        assert_eq!(resolved, persisted);
+    }
+
+    #[test]
+    fn resolve_initial_health_check_settings_falls_back_to_startup_default() {
+        let startup = HealthCheckSettings {
+            interval_ms: 5_000,
+            timeout_ms: 2_000,
+            path: "/".to_string(),
+        };
+        let resolved = resolve_initial_health_check_settings(startup.clone(), None);
+        assert_eq!(resolved, startup);
     }
 
     #[test]
