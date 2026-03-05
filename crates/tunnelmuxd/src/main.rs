@@ -252,6 +252,11 @@ struct RouteMatchQuery {
     path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateRouteQuery {
+    upsert: Option<bool>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -1118,21 +1123,32 @@ async fn add_route(
 async fn update_route(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
+    Query(query): Query<UpdateRouteQuery>,
     Json(request): Json<CreateRouteRequest>,
-) -> Result<Json<RouteRule>, ApiError> {
+) -> Result<(StatusCode, Json<RouteRule>), ApiError> {
     let route = normalize_route_request(request)?;
     ensure_route_id_matches(&id, &route.id)?;
 
+    let upsert = query.upsert.unwrap_or(false);
     let updated = {
         let mut runtime = state.runtime.lock().await;
-        replace_route(&mut runtime.persisted.routes, route.clone())
+        if replace_route(&mut runtime.persisted.routes, route.clone()) {
+            true
+        } else if upsert {
+            runtime.persisted.routes.push(route.clone());
+            false
+        } else {
+            return Err(ApiError::not_found(format!("route '{}' not found", id)));
+        }
     };
-    if !updated {
-        return Err(ApiError::not_found(format!("route '{}' not found", id)));
-    }
 
     persist_from_runtime(&state).await?;
-    Ok(Json(route))
+    let status = if updated {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(route)))
 }
 
 async fn delete_route(
@@ -3383,6 +3399,72 @@ mod tests {
             .await
             .expect("mismatch request should complete");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn update_route_endpoint_returns_not_found_when_missing_without_upsert() {
+        let state = test_state_with_routes(vec![], None);
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .put(format!("{base_url}/v1/routes/svc-a"))
+            .json(&CreateRouteRequest {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: Some(true),
+            })
+            .send()
+            .await
+            .expect("update route request should complete");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn update_route_endpoint_upsert_creates_missing_route() {
+        let state = test_state_with_routes(vec![], None);
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .put(format!("{base_url}/v1/routes/svc-a?upsert=true"))
+            .json(&CreateRouteRequest {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+                health_check_path: Some("/healthz".to_string()),
+                enabled: Some(true),
+            })
+            .send()
+            .await
+            .expect("upsert route request should complete");
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let payload: RouteRule = response.json().await.expect("route response should decode");
+        assert_eq!(payload.id, "svc-a");
+        assert_eq!(payload.match_host.as_deref(), Some("demo.local"));
+        assert_eq!(payload.upstream_url, "http://127.0.0.1:3000");
+        assert_eq!(
+            payload.fallback_upstream_url.as_deref(),
+            Some("http://127.0.0.1:3001")
+        );
+
+        let runtime = state.runtime.lock().await;
+        assert_eq!(runtime.persisted.routes.len(), 1);
+        assert_eq!(runtime.persisted.routes[0], payload);
+        drop(runtime);
 
         server_task.abort();
     }

@@ -233,6 +233,13 @@ enum RoutesCommand {
 
         #[arg(
             long,
+            default_value_t = false,
+            help = "Create route when id does not exist"
+        )]
+        upsert: bool,
+
+        #[arg(
+            long,
             help = "Load route payload from JSON file (use '-' for stdin)",
             conflicts_with_all = [
                 "upstream_url",
@@ -664,6 +671,7 @@ async fn main() -> anyhow::Result<()> {
                 path_prefix,
                 strip_path_prefix,
                 disabled,
+                upsert,
                 from_json,
             } => {
                 let payload = if let Some(path) = from_json {
@@ -682,7 +690,11 @@ async fn main() -> anyhow::Result<()> {
                         enabled: Some(!disabled),
                     }
                 };
-                let endpoint = format!("/v1/routes/{id}");
+                let endpoint = if upsert {
+                    format!("/v1/routes/{id}?upsert=true")
+                } else {
+                    format!("/v1/routes/{id}")
+                };
                 let route: tunnelmux_core::RouteRule =
                     put_json(&client, &base_url, &endpoint, &payload, token.as_deref()).await?;
                 println!("{}", serde_json::to_string_pretty(&route)?);
