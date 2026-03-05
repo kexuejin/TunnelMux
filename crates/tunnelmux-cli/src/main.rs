@@ -118,6 +118,29 @@ enum Command {
             help = "Restart tunnel when running provider/target does not match requested values"
         )]
         restart_if_mismatch: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Wait until tunnel is ready (running with public_base_url)"
+        )]
+        wait_ready: bool,
+
+        #[arg(
+            long,
+            default_value_t = 60_000,
+            requires = "wait_ready",
+            help = "Max wait time for --wait-ready"
+        )]
+        wait_ready_timeout_ms: u64,
+
+        #[arg(
+            long,
+            default_value_t = 500,
+            requires = "wait_ready",
+            help = "Polling interval for --wait-ready"
+        )]
+        wait_ready_poll_ms: u64,
     },
     /// Idempotent one-shot unexpose flow (remove route + optional tunnel auto-stop)
     Unexpose {
@@ -594,6 +617,9 @@ async fn main() -> anyhow::Result<()> {
             target_url,
             auto_restart,
             restart_if_mismatch,
+            wait_ready,
+            wait_ready_timeout_ms,
+            wait_ready_poll_ms,
         } => {
             let provider: TunnelProvider = provider.into();
             let route_payload = CreateRouteRequest {
@@ -666,6 +692,21 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
+            let mut waited_ready = false;
+            if wait_ready {
+                let timeout_ms = normalize_wait_ready_timeout_ms(wait_ready_timeout_ms)?;
+                let poll_ms = normalize_wait_ready_poll_ms(wait_ready_poll_ms)?;
+                tunnel = wait_for_tunnel_ready(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    timeout_ms,
+                    poll_ms,
+                )
+                .await?;
+                waited_ready = true;
+            }
+
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -673,6 +714,7 @@ async fn main() -> anyhow::Result<()> {
                     "tunnel": tunnel.tunnel,
                     "tunnel_started": tunnel_started,
                     "tunnel_restarted": tunnel_restarted,
+                    "waited_ready": waited_ready,
                 }))?
             );
         }
@@ -1034,6 +1076,33 @@ async fn delete_route_by_id(
     }
     serde_json::from_str::<DeleteRouteResponse>(&body)
         .with_context(|| format!("failed to parse delete route response: {}", body))
+}
+
+async fn wait_for_tunnel_ready(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    timeout_ms: u64,
+    poll_ms: u64,
+) -> anyhow::Result<TunnelStatusResponse> {
+    let start = tokio::time::Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
+    loop {
+        let status: TunnelStatusResponse =
+            get_json(client, base_url, "/v1/tunnel/status", token).await?;
+        if is_tunnel_ready(&status) {
+            return Ok(status);
+        }
+        if start.elapsed() >= timeout {
+            return Err(anyhow!(
+                "timed out waiting for tunnel ready after {}ms (state={:?}, public_base_url={:?})",
+                timeout_ms,
+                status.tunnel.state,
+                status.tunnel.public_base_url
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(poll_ms)).await;
+    }
 }
 
 async fn put_json<T: serde::de::DeserializeOwned>(
@@ -2223,6 +2292,19 @@ fn should_start_tunnel(status: &TunnelStatusResponse) -> bool {
     )
 }
 
+fn is_tunnel_ready(status: &TunnelStatusResponse) -> bool {
+    if !matches!(status.tunnel.state, TunnelState::Running) {
+        return false;
+    }
+    status
+        .tunnel
+        .public_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+}
+
 fn should_auto_stop_tunnel_after_unexpose(
     remaining_routes: usize,
     keep_tunnel: bool,
@@ -2292,6 +2374,20 @@ fn extract_error_message(body: &str) -> String {
     serde_json::from_str::<ErrorResponse>(body)
         .map(|err| err.error)
         .unwrap_or_else(|_| body.to_string())
+}
+
+fn normalize_wait_ready_timeout_ms(value: u64) -> anyhow::Result<u64> {
+    if !(500..=300_000).contains(&value) {
+        return Err(anyhow!(
+            "wait_ready_timeout_ms out of range: expected 500..=300000, got {}",
+            value
+        ));
+    }
+    Ok(value)
+}
+
+fn normalize_wait_ready_poll_ms(value: u64) -> anyhow::Result<u64> {
+    normalize_log_stream_poll_ms(value)
 }
 
 fn normalize_stream_retry_policy(
@@ -2877,6 +2973,73 @@ mod tests {
             sample_tunnel_status_response(tunnelmux_core::TunnelState::Stopped, None, None);
         assert!(!should_auto_stop_tunnel_after_unexpose(0, true, &active));
         assert!(!should_auto_stop_tunnel_after_unexpose(0, false, &inactive));
+    }
+
+    #[test]
+    fn is_tunnel_ready_requires_running_state_and_public_url() {
+        let running_ready = TunnelStatusResponse {
+            tunnel: tunnelmux_core::TunnelStatus {
+                state: tunnelmux_core::TunnelState::Running,
+                provider: Some(tunnelmux_core::TunnelProvider::Cloudflared),
+                target_url: Some("http://127.0.0.1:18080".to_string()),
+                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+                started_at: Some("2026-03-05T00:00:00Z".to_string()),
+                updated_at: "2026-03-05T00:00:01Z".to_string(),
+                process_id: Some(42),
+                auto_restart: true,
+                restart_count: 0,
+                last_error: None,
+            },
+        };
+        assert!(is_tunnel_ready(&running_ready));
+
+        let running_without_public = TunnelStatusResponse {
+            tunnel: tunnelmux_core::TunnelStatus {
+                public_base_url: None,
+                ..running_ready.tunnel.clone()
+            },
+        };
+        assert!(!is_tunnel_ready(&running_without_public));
+
+        let starting_with_public = TunnelStatusResponse {
+            tunnel: tunnelmux_core::TunnelStatus {
+                state: tunnelmux_core::TunnelState::Starting,
+                ..running_ready.tunnel
+            },
+        };
+        assert!(!is_tunnel_ready(&starting_with_public));
+    }
+
+    #[test]
+    fn normalize_wait_ready_timeout_ms_applies_bounds() {
+        assert_eq!(normalize_wait_ready_timeout_ms(500).expect("min"), 500);
+        assert_eq!(
+            normalize_wait_ready_timeout_ms(30_000).expect("normal"),
+            30_000
+        );
+        assert_eq!(
+            normalize_wait_ready_timeout_ms(300_000).expect("max"),
+            300_000
+        );
+    }
+
+    #[test]
+    fn normalize_wait_ready_timeout_ms_rejects_out_of_range() {
+        assert!(normalize_wait_ready_timeout_ms(499).is_err());
+        assert!(normalize_wait_ready_timeout_ms(300_001).is_err());
+    }
+
+    #[test]
+    fn normalize_wait_ready_poll_ms_applies_bounds() {
+        assert_eq!(normalize_wait_ready_poll_ms(100).expect("min"), 100);
+        assert_eq!(normalize_wait_ready_poll_ms(1_000).expect("normal"), 1_000);
+        assert_eq!(normalize_wait_ready_poll_ms(10_000).expect("max"), 10_000);
+    }
+
+    #[test]
+    fn normalize_wait_ready_poll_ms_rejects_out_of_range() {
+        assert!(normalize_wait_ready_poll_ms(99).is_err());
+        assert!(normalize_wait_ready_poll_ms(10_001).is_err());
     }
 
     fn sample_tunnel_status_response(
