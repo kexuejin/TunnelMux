@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::{fs, path::Path, path::PathBuf};
 
 use anyhow::{Context, anyhow};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use reqwest::Client;
 use serde_json::json;
 use tunnelmux_core::{
@@ -40,6 +40,9 @@ enum Command {
 
         #[arg(long, default_value_t = 2_000)]
         interval_ms: u64,
+
+        #[command(flatten)]
+        retry: StreamRetryArgs,
     },
     /// Read composite dashboard snapshot (tunnel, metrics, routes, upstreams)
     Dashboard {
@@ -51,6 +54,9 @@ enum Command {
 
         #[arg(long, default_value_t = 2_000)]
         interval_ms: u64,
+
+        #[command(flatten)]
+        retry: StreamRetryArgs,
     },
     /// Read runtime metrics snapshot
     Metrics {
@@ -62,6 +68,9 @@ enum Command {
 
         #[arg(long, default_value_t = 2_000)]
         interval_ms: u64,
+
+        #[command(flatten)]
+        retry: StreamRetryArgs,
     },
     /// Tunnel lifecycle controls
     Tunnel {
@@ -112,6 +121,9 @@ enum TunnelCommand {
             help = "poll interval for --follow mode"
         )]
         poll_ms: u64,
+
+        #[command(flatten)]
+        retry: StreamRetryArgs,
     },
     /// Stop tunnel process
     Stop,
@@ -144,6 +156,9 @@ enum RoutesCommand {
 
         #[arg(long, default_value_t = 2_000)]
         interval_ms: u64,
+
+        #[command(flatten)]
+        retry: StreamRetryArgs,
     },
     /// Add a new route
     Add {
@@ -275,6 +290,9 @@ enum UpstreamsCommand {
 
         #[arg(long, default_value_t = false)]
         table: bool,
+
+        #[command(flatten)]
+        retry: StreamRetryArgs,
     },
 }
 
@@ -293,6 +311,23 @@ enum SettingsCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, Args)]
+struct StreamRetryArgs {
+    #[arg(
+        long,
+        default_value_t = STREAM_RETRY_INITIAL_MS,
+        help = "initial reconnect delay for stream mode"
+    )]
+    stream_retry_initial_ms: u64,
+
+    #[arg(
+        long,
+        default_value_t = STREAM_RETRY_MAX_MS,
+        help = "maximum reconnect delay for stream mode"
+    )]
+    stream_retry_max_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpstreamsOutputFormat {
     Table,
@@ -301,6 +336,18 @@ enum UpstreamsOutputFormat {
 
 const STREAM_RETRY_INITIAL_MS: u64 = 500;
 const STREAM_RETRY_MAX_MS: u64 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StreamRetryPolicy {
+    initial_ms: u64,
+    max_ms: u64,
+}
+
+impl StreamRetryArgs {
+    fn normalize(self) -> anyhow::Result<StreamRetryPolicy> {
+        normalize_stream_retry_policy(self.stream_retry_initial_ms, self.stream_retry_max_ms)
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -314,10 +361,19 @@ async fn main() -> anyhow::Result<()> {
             watch,
             stream,
             interval_ms,
+            retry,
         } => {
             let interval_ms = normalize_watch_interval_ms(interval_ms)?;
             if stream {
-                stream_status(&client, &base_url, token.as_deref(), interval_ms).await?;
+                let retry_policy = retry.normalize()?;
+                stream_status(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    interval_ms,
+                    retry_policy,
+                )
+                .await?;
             } else if watch {
                 watch_status(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
@@ -332,10 +388,19 @@ async fn main() -> anyhow::Result<()> {
             watch,
             stream,
             interval_ms,
+            retry,
         } => {
             let interval_ms = normalize_watch_interval_ms(interval_ms)?;
             if stream {
-                stream_dashboard(&client, &base_url, token.as_deref(), interval_ms).await?;
+                let retry_policy = retry.normalize()?;
+                stream_dashboard(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    interval_ms,
+                    retry_policy,
+                )
+                .await?;
             } else if watch {
                 watch_dashboard(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
@@ -348,10 +413,19 @@ async fn main() -> anyhow::Result<()> {
             watch,
             stream,
             interval_ms,
+            retry,
         } => {
             let interval_ms = normalize_watch_interval_ms(interval_ms)?;
             if stream {
-                stream_metrics(&client, &base_url, token.as_deref(), interval_ms).await?;
+                let retry_policy = retry.normalize()?;
+                stream_metrics(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    interval_ms,
+                    retry_policy,
+                )
+                .await?;
             } else if watch {
                 watch_metrics(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
@@ -386,10 +460,20 @@ async fn main() -> anyhow::Result<()> {
                 lines,
                 follow,
                 poll_ms,
+                retry,
             } => {
                 if follow {
                     let poll_ms = normalize_log_stream_poll_ms(poll_ms)?;
-                    stream_logs(&client, &base_url, token.as_deref(), lines, poll_ms).await?;
+                    let retry_policy = retry.normalize()?;
+                    stream_logs(
+                        &client,
+                        &base_url,
+                        token.as_deref(),
+                        lines,
+                        poll_ms,
+                        retry_policy,
+                    )
+                    .await?;
                 } else {
                     let url = format!("{}/v1/tunnel/logs", base_url);
                     let response = request_with_token(client.get(&url), token.as_deref())
@@ -418,10 +502,19 @@ async fn main() -> anyhow::Result<()> {
                 watch,
                 stream,
                 interval_ms,
+                retry,
             } => {
                 let interval_ms = normalize_watch_interval_ms(interval_ms)?;
                 if stream {
-                    stream_routes(&client, &base_url, token.as_deref(), interval_ms).await?;
+                    let retry_policy = retry.normalize()?;
+                    stream_routes(
+                        &client,
+                        &base_url,
+                        token.as_deref(),
+                        interval_ms,
+                        retry_policy,
+                    )
+                    .await?;
                 } else if watch {
                     watch_routes(&client, &base_url, token.as_deref(), interval_ms).await?;
                 } else {
@@ -552,6 +645,7 @@ async fn main() -> anyhow::Result<()> {
                 interval_ms,
                 json,
                 table: _,
+                retry,
             } => {
                 let format = if json {
                     UpstreamsOutputFormat::Json
@@ -560,12 +654,14 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let interval_ms = normalize_watch_interval_ms(interval_ms)?;
                 if stream {
+                    let retry_policy = retry.normalize()?;
                     stream_upstreams_health(
                         &client,
                         &base_url,
                         token.as_deref(),
                         interval_ms,
                         format,
+                        retry_policy,
                     )
                     .await?;
                 } else if watch {
@@ -711,6 +807,7 @@ async fn stream_sse_with_reconnect<F>(
     token: Option<&str>,
     path: &str,
     interval_ms: u64,
+    retry_policy: StreamRetryPolicy,
     stream_name: &str,
     mut render_frame: F,
 ) -> anyhow::Result<()>
@@ -718,7 +815,7 @@ where
     F: FnMut(&SseFrame) -> anyhow::Result<()>,
 {
     let url = format!("{}{}", base_url, path);
-    let mut retry_delay_ms = STREAM_RETRY_INITIAL_MS;
+    let mut retry_delay_ms = retry_policy.initial_ms;
 
     loop {
         let backoff_after_wait = match stream_sse_once(
@@ -733,7 +830,7 @@ where
         {
             Ok(StreamAttemptOutcome::Stopped) => return Ok(()),
             Ok(StreamAttemptOutcome::Disconnected) => {
-                retry_delay_ms = STREAM_RETRY_INITIAL_MS;
+                retry_delay_ms = retry_policy.initial_ms;
                 eprintln!(
                     "{} stream disconnected; reconnecting in {}ms",
                     stream_name, retry_delay_ms
@@ -754,7 +851,7 @@ where
             return Ok(());
         }
         if backoff_after_wait {
-            retry_delay_ms = next_stream_retry_delay_ms(retry_delay_ms);
+            retry_delay_ms = next_stream_retry_delay_ms(retry_delay_ms, retry_policy);
         }
     }
 }
@@ -832,10 +929,10 @@ async fn wait_before_stream_retry(delay_ms: u64) -> anyhow::Result<bool> {
     }
 }
 
-fn next_stream_retry_delay_ms(current_delay_ms: u64) -> u64 {
+fn next_stream_retry_delay_ms(current_delay_ms: u64, retry_policy: StreamRetryPolicy) -> u64 {
     current_delay_ms
         .saturating_mul(2)
-        .clamp(STREAM_RETRY_INITIAL_MS, STREAM_RETRY_MAX_MS)
+        .clamp(retry_policy.initial_ms, retry_policy.max_ms)
 }
 
 async fn stream_logs(
@@ -844,15 +941,16 @@ async fn stream_logs(
     token: Option<&str>,
     lines: usize,
     poll_ms: u64,
+    retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
     let url = format!("{}/v1/tunnel/logs/stream", base_url);
-    let mut retry_delay_ms = STREAM_RETRY_INITIAL_MS;
+    let mut retry_delay_ms = retry_policy.initial_ms;
 
     loop {
         let backoff_after_wait = match stream_logs_once(client, &url, token, lines, poll_ms).await {
             Ok(StreamAttemptOutcome::Stopped) => return Ok(()),
             Ok(StreamAttemptOutcome::Disconnected) => {
-                retry_delay_ms = STREAM_RETRY_INITIAL_MS;
+                retry_delay_ms = retry_policy.initial_ms;
                 eprintln!(
                     "logs stream disconnected; reconnecting in {}ms",
                     retry_delay_ms
@@ -873,7 +971,7 @@ async fn stream_logs(
             return Ok(());
         }
         if backoff_after_wait {
-            retry_delay_ms = next_stream_retry_delay_ms(retry_delay_ms);
+            retry_delay_ms = next_stream_retry_delay_ms(retry_delay_ms, retry_policy);
         }
     }
 }
@@ -972,6 +1070,7 @@ async fn stream_status(
     base_url: &str,
     token: Option<&str>,
     interval_ms: u64,
+    retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
     let health: HealthResponse = get_json(client, base_url, "/v1/health", None).await?;
     stream_sse_with_reconnect(
@@ -980,6 +1079,7 @@ async fn stream_status(
         token,
         "/v1/tunnel/status/stream",
         interval_ms,
+        retry_policy,
         "status",
         |frame| render_status_stream_frame(frame, &health, interval_ms),
     )
@@ -1017,6 +1117,7 @@ async fn stream_routes(
     base_url: &str,
     token: Option<&str>,
     interval_ms: u64,
+    retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
     stream_sse_with_reconnect(
         client,
@@ -1024,6 +1125,7 @@ async fn stream_routes(
         token,
         "/v1/routes/stream",
         interval_ms,
+        retry_policy,
         "routes",
         |frame| render_routes_stream_frame(frame, interval_ms),
     )
@@ -1085,6 +1187,7 @@ async fn stream_metrics(
     base_url: &str,
     token: Option<&str>,
     interval_ms: u64,
+    retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
     stream_sse_with_reconnect(
         client,
@@ -1092,6 +1195,7 @@ async fn stream_metrics(
         token,
         "/v1/metrics/stream",
         interval_ms,
+        retry_policy,
         "metrics",
         |frame| render_metrics_stream_frame(frame, interval_ms),
     )
@@ -1128,6 +1232,7 @@ async fn stream_dashboard(
     base_url: &str,
     token: Option<&str>,
     interval_ms: u64,
+    retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
     stream_sse_with_reconnect(
         client,
@@ -1135,6 +1240,7 @@ async fn stream_dashboard(
         token,
         "/v1/dashboard/stream",
         interval_ms,
+        retry_policy,
         "dashboard",
         |frame| render_dashboard_stream_frame(frame, interval_ms),
     )
@@ -1147,6 +1253,7 @@ async fn stream_upstreams_health(
     token: Option<&str>,
     interval_ms: u64,
     format: UpstreamsOutputFormat,
+    retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
     stream_sse_with_reconnect(
         client,
@@ -1154,6 +1261,7 @@ async fn stream_upstreams_health(
         token,
         "/v1/upstreams/health/stream",
         interval_ms,
+        retry_policy,
         "upstreams",
         |frame| render_upstreams_stream_frame(frame, interval_ms, format),
     )
@@ -1593,6 +1701,33 @@ fn normalize_log_stream_poll_ms(value: u64) -> anyhow::Result<u64> {
     Ok(value)
 }
 
+fn normalize_stream_retry_policy(
+    initial_ms: u64,
+    max_ms: u64,
+) -> anyhow::Result<StreamRetryPolicy> {
+    let initial_ms = normalize_stream_retry_delay_ms("stream_retry_initial_ms", initial_ms)?;
+    let max_ms = normalize_stream_retry_delay_ms("stream_retry_max_ms", max_ms)?;
+    if initial_ms > max_ms {
+        return Err(anyhow!(
+            "stream retry range invalid: stream_retry_initial_ms ({}) must be <= stream_retry_max_ms ({})",
+            initial_ms,
+            max_ms
+        ));
+    }
+    Ok(StreamRetryPolicy { initial_ms, max_ms })
+}
+
+fn normalize_stream_retry_delay_ms(name: &str, value: u64) -> anyhow::Result<u64> {
+    if !(100..=60_000).contains(&value) {
+        return Err(anyhow!(
+            "{} out of range: expected 100..=60000, got {}",
+            name,
+            value
+        ));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1627,17 +1762,54 @@ mod tests {
     }
 
     #[test]
+    fn normalize_stream_retry_policy_applies_bounds() {
+        let policy = normalize_stream_retry_policy(100, 60_000).expect("valid policy");
+        assert_eq!(
+            policy,
+            StreamRetryPolicy {
+                initial_ms: 100,
+                max_ms: 60_000,
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_stream_retry_policy_rejects_invalid_values() {
+        assert!(normalize_stream_retry_policy(99, 10_000).is_err());
+        assert!(normalize_stream_retry_policy(500, 60_001).is_err());
+        assert!(normalize_stream_retry_policy(2_000, 1_000).is_err());
+    }
+
+    #[test]
     fn next_stream_retry_delay_ms_doubles_and_caps() {
         assert_eq!(
-            next_stream_retry_delay_ms(STREAM_RETRY_INITIAL_MS),
+            next_stream_retry_delay_ms(
+                STREAM_RETRY_INITIAL_MS,
+                StreamRetryPolicy {
+                    initial_ms: STREAM_RETRY_INITIAL_MS,
+                    max_ms: STREAM_RETRY_MAX_MS
+                }
+            ),
             STREAM_RETRY_INITIAL_MS * 2
         );
         assert_eq!(
-            next_stream_retry_delay_ms(STREAM_RETRY_MAX_MS),
+            next_stream_retry_delay_ms(
+                STREAM_RETRY_MAX_MS,
+                StreamRetryPolicy {
+                    initial_ms: STREAM_RETRY_INITIAL_MS,
+                    max_ms: STREAM_RETRY_MAX_MS
+                }
+            ),
             STREAM_RETRY_MAX_MS
         );
         assert_eq!(
-            next_stream_retry_delay_ms(STREAM_RETRY_MAX_MS * 10),
+            next_stream_retry_delay_ms(
+                STREAM_RETRY_MAX_MS * 10,
+                StreamRetryPolicy {
+                    initial_ms: STREAM_RETRY_INITIAL_MS,
+                    max_ms: STREAM_RETRY_MAX_MS
+                }
+            ),
             STREAM_RETRY_MAX_MS
         );
     }
