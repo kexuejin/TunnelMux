@@ -1,5 +1,5 @@
 use std::time::Duration;
-use std::{fs, path::Path};
+use std::{fs, path::Path, path::PathBuf};
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -188,6 +188,9 @@ enum RoutesCommand {
     Export {
         #[arg(long)]
         id: Option<String>,
+
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Remove route by id
     Remove {
@@ -361,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
                     delete_json(&client, &base_url, &endpoint, token.as_deref()).await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
-            RoutesCommand::Export { id } => {
+            RoutesCommand::Export { id, out } => {
                 let routes: RoutesResponse =
                     get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
                 if let Some(id) = id {
@@ -371,14 +374,16 @@ async fn main() -> anyhow::Result<()> {
                         .find(|item| item.id == id)
                         .ok_or_else(|| anyhow!("route '{}' not found", id))?;
                     let payload = route_rule_to_create_request(route);
-                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                    let rendered = serde_json::to_string_pretty(&payload)?;
+                    write_output_or_stdout(&rendered, out.as_deref())?;
                 } else {
                     let payloads = routes
                         .routes
                         .iter()
                         .map(route_rule_to_create_request)
                         .collect::<Vec<_>>();
-                    println!("{}", serde_json::to_string_pretty(&payloads)?);
+                    let rendered = serde_json::to_string_pretty(&payloads)?;
+                    write_output_or_stdout(&rendered, out.as_deref())?;
                 }
             }
             RoutesCommand::Update {
@@ -761,6 +766,17 @@ fn route_rule_to_create_request(route: &tunnelmux_core::RouteRule) -> CreateRout
     }
 }
 
+fn write_output_or_stdout(output: &str, out: Option<&Path>) -> anyhow::Result<()> {
+    if let Some(path) = out {
+        fs::write(path, output)
+            .with_context(|| format!("failed to write export output: {}", path.display()))?;
+        return Ok(());
+    }
+
+    println!("{output}");
+    Ok(())
+}
+
 async fn decode_response<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> anyhow::Result<T> {
@@ -938,5 +954,20 @@ mod tests {
         assert_eq!(payload.fallback_upstream_url, route.fallback_upstream_url);
         assert_eq!(payload.health_check_path, route.health_check_path);
         assert_eq!(payload.enabled, Some(false));
+    }
+
+    #[test]
+    fn write_output_or_stdout_writes_file_when_path_is_set() {
+        let path = std::env::temp_dir().join(format!(
+            "tunnelmux-export-output-{}.json",
+            std::process::id()
+        ));
+        let output = r#"{"id":"svc-a"}"#;
+
+        write_output_or_stdout(output, Some(&path)).expect("write output file");
+        let written = fs::read_to_string(&path).expect("read output file");
+        assert_eq!(written, output);
+
+        let _ = fs::remove_file(path);
     }
 }
