@@ -111,6 +111,13 @@ enum Command {
 
         #[arg(long, default_value_t = true)]
         auto_restart: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Restart tunnel when running provider/target does not match requested values"
+        )]
+        restart_if_mismatch: bool,
     },
     /// Route rules controls
     Routes {
@@ -571,7 +578,9 @@ async fn main() -> anyhow::Result<()> {
             provider,
             target_url,
             auto_restart,
+            restart_if_mismatch,
         } => {
+            let provider: TunnelProvider = provider.into();
             let route_payload = CreateRouteRequest {
                 id: id.clone(),
                 match_host: host,
@@ -595,22 +604,52 @@ async fn main() -> anyhow::Result<()> {
             let mut tunnel: TunnelStatusResponse =
                 get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
             let mut tunnel_started = false;
-            if should_start_tunnel(&tunnel) {
-                tunnel = post_json(
-                    &client,
-                    &base_url,
-                    "/v1/tunnel/start",
-                    &TunnelStartRequest {
-                        provider: provider.into(),
-                        target_url,
-                        auto_restart: Some(auto_restart),
-                        metadata: None,
-                    },
-                    token.as_deref(),
-                )
-                .await?;
-                tunnel_started = true;
-            }
+            let mut tunnel_restarted = false;
+            match decide_expose_tunnel_action(&tunnel, &provider, &target_url, restart_if_mismatch)?
+            {
+                ExposeTunnelAction::Noop => {}
+                ExposeTunnelAction::Start => {
+                    tunnel = post_json(
+                        &client,
+                        &base_url,
+                        "/v1/tunnel/start",
+                        &TunnelStartRequest {
+                            provider: provider.clone(),
+                            target_url: target_url.clone(),
+                            auto_restart: Some(auto_restart),
+                            metadata: None,
+                        },
+                        token.as_deref(),
+                    )
+                    .await?;
+                    tunnel_started = true;
+                }
+                ExposeTunnelAction::Restart => {
+                    let _stopped: TunnelStatusResponse = post_json(
+                        &client,
+                        &base_url,
+                        "/v1/tunnel/stop",
+                        &json!({}),
+                        token.as_deref(),
+                    )
+                    .await?;
+                    tunnel = post_json(
+                        &client,
+                        &base_url,
+                        "/v1/tunnel/start",
+                        &TunnelStartRequest {
+                            provider: provider.clone(),
+                            target_url: target_url.clone(),
+                            auto_restart: Some(auto_restart),
+                            metadata: None,
+                        },
+                        token.as_deref(),
+                    )
+                    .await?;
+                    tunnel_started = true;
+                    tunnel_restarted = true;
+                }
+            };
 
             println!(
                 "{}",
@@ -618,6 +657,7 @@ async fn main() -> anyhow::Result<()> {
                     "route": route,
                     "tunnel": tunnel.tunnel,
                     "tunnel_started": tunnel_started,
+                    "tunnel_restarted": tunnel_restarted,
                 }))?
             );
         }
@@ -2105,6 +2145,57 @@ fn should_start_tunnel(status: &TunnelStatusResponse) -> bool {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExposeTunnelAction {
+    Noop,
+    Start,
+    Restart,
+}
+
+fn decide_expose_tunnel_action(
+    status: &TunnelStatusResponse,
+    desired_provider: &TunnelProvider,
+    desired_target_url: &str,
+    restart_if_mismatch: bool,
+) -> anyhow::Result<ExposeTunnelAction> {
+    if should_start_tunnel(status) {
+        return Ok(ExposeTunnelAction::Start);
+    }
+
+    if tunnel_matches_requested_config(status, desired_provider, desired_target_url) {
+        return Ok(ExposeTunnelAction::Noop);
+    }
+
+    if restart_if_mismatch {
+        return Ok(ExposeTunnelAction::Restart);
+    }
+
+    Err(anyhow!(
+        "tunnel is running with different config (current provider={:?}, target_url={:?}); rerun with --restart-if-mismatch or align --provider/--target-url",
+        status.tunnel.provider,
+        status.tunnel.target_url
+    ))
+}
+
+fn tunnel_matches_requested_config(
+    status: &TunnelStatusResponse,
+    desired_provider: &TunnelProvider,
+    desired_target_url: &str,
+) -> bool {
+    if status.tunnel.provider.as_ref() != Some(desired_provider) {
+        return false;
+    }
+    let Some(current_target_url) = status.tunnel.target_url.as_deref() else {
+        return false;
+    };
+    normalize_target_url_for_compare(current_target_url)
+        == normalize_target_url_for_compare(desired_target_url)
+}
+
+fn normalize_target_url_for_compare(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
 fn normalize_stream_retry_policy(
     initial_ms: u64,
     max_ms: u64,
@@ -2574,9 +2665,13 @@ mod tests {
     fn should_start_tunnel_returns_false_for_running_or_starting_states() {
         assert!(!should_start_tunnel(&sample_tunnel_status_response(
             tunnelmux_core::TunnelState::Running,
+            Some(tunnelmux_core::TunnelProvider::Cloudflared),
+            Some("http://127.0.0.1:18080"),
         )));
         assert!(!should_start_tunnel(&sample_tunnel_status_response(
             tunnelmux_core::TunnelState::Starting,
+            Some(tunnelmux_core::TunnelProvider::Cloudflared),
+            Some("http://127.0.0.1:18080"),
         )));
     }
 
@@ -2584,21 +2679,94 @@ mod tests {
     fn should_start_tunnel_returns_true_for_idle_stopped_or_error_states() {
         assert!(should_start_tunnel(&sample_tunnel_status_response(
             tunnelmux_core::TunnelState::Idle,
+            None,
+            None,
         )));
         assert!(should_start_tunnel(&sample_tunnel_status_response(
             tunnelmux_core::TunnelState::Stopped,
+            None,
+            None,
         )));
         assert!(should_start_tunnel(&sample_tunnel_status_response(
             tunnelmux_core::TunnelState::Error,
+            None,
+            None,
         )));
     }
 
-    fn sample_tunnel_status_response(state: tunnelmux_core::TunnelState) -> TunnelStatusResponse {
+    #[test]
+    fn decide_expose_tunnel_action_starts_when_tunnel_not_running() {
+        let status = sample_tunnel_status_response(tunnelmux_core::TunnelState::Idle, None, None);
+        let action = decide_expose_tunnel_action(
+            &status,
+            &tunnelmux_core::TunnelProvider::Cloudflared,
+            "http://127.0.0.1:18080",
+            false,
+        )
+        .expect("decision should succeed");
+        assert_eq!(action, ExposeTunnelAction::Start);
+    }
+
+    #[test]
+    fn decide_expose_tunnel_action_noop_when_running_and_matching() {
+        let status = sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Running,
+            Some(tunnelmux_core::TunnelProvider::Ngrok),
+            Some("http://127.0.0.1:18080/"),
+        );
+        let action = decide_expose_tunnel_action(
+            &status,
+            &tunnelmux_core::TunnelProvider::Ngrok,
+            "http://127.0.0.1:18080",
+            false,
+        )
+        .expect("decision should succeed");
+        assert_eq!(action, ExposeTunnelAction::Noop);
+    }
+
+    #[test]
+    fn decide_expose_tunnel_action_errors_when_running_but_mismatch_without_restart_flag() {
+        let status = sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Running,
+            Some(tunnelmux_core::TunnelProvider::Cloudflared),
+            Some("http://127.0.0.1:18080"),
+        );
+        let result = decide_expose_tunnel_action(
+            &status,
+            &tunnelmux_core::TunnelProvider::Ngrok,
+            "http://127.0.0.1:18080",
+            false,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decide_expose_tunnel_action_restarts_when_running_mismatch_and_restart_enabled() {
+        let status = sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Running,
+            Some(tunnelmux_core::TunnelProvider::Cloudflared),
+            Some("http://127.0.0.1:18080"),
+        );
+        let action = decide_expose_tunnel_action(
+            &status,
+            &tunnelmux_core::TunnelProvider::Ngrok,
+            "http://127.0.0.1:18080",
+            true,
+        )
+        .expect("decision should succeed");
+        assert_eq!(action, ExposeTunnelAction::Restart);
+    }
+
+    fn sample_tunnel_status_response(
+        state: tunnelmux_core::TunnelState,
+        provider: Option<tunnelmux_core::TunnelProvider>,
+        target_url: Option<&str>,
+    ) -> TunnelStatusResponse {
         TunnelStatusResponse {
             tunnel: tunnelmux_core::TunnelStatus {
                 state,
-                provider: None,
-                target_url: None,
+                provider,
+                target_url: target_url.map(str::to_string),
                 public_base_url: None,
                 started_at: None,
                 updated_at: "2026-03-05T00:00:00Z".to_string(),
