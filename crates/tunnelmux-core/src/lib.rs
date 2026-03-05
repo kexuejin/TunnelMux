@@ -98,6 +98,25 @@ pub struct UpstreamsHealthResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HealthCheckSettings {
+    pub interval_ms: u64,
+    pub timeout_ms: u64,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HealthCheckSettingsResponse {
+    pub health_check: HealthCheckSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateHealthCheckSettingsRequest {
+    pub interval_ms: Option<u64>,
+    pub timeout_ms: Option<u64>,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteRouteResponse {
     pub removed: bool,
 }

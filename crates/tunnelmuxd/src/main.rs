@@ -42,15 +42,16 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     net::TcpListener,
     process::{Child, Command},
-    sync::{Mutex, mpsc},
+    sync::{Mutex, RwLock, mpsc},
     time::{Instant, sleep, timeout},
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
     CreateRouteRequest, DEFAULT_CONTROL_ADDR, DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse,
-    ErrorResponse, HealthResponse, RouteRule, RoutesResponse, TunnelLogsResponse, TunnelProvider,
-    TunnelStartRequest, TunnelState, TunnelStatus, TunnelStatusResponse, UpstreamHealthEntry,
+    ErrorResponse, HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse, RouteRule,
+    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState,
+    TunnelStatus, TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
     UpstreamsHealthResponse,
 };
 use url::Url;
@@ -194,6 +195,7 @@ struct RuntimeState {
 struct AppState {
     runtime: Mutex<RuntimeState>,
     upstream_health: Mutex<HashMap<UpstreamHealthKey, UpstreamHealth>>,
+    health_check_settings: RwLock<HealthCheckSettings>,
     data_file: PathBuf,
     provider_log_file: PathBuf,
     api_token: Option<String>,
@@ -201,9 +203,6 @@ struct AppState {
     ngrok_bin: String,
     ready_timeout_ms: u64,
     max_auto_restarts: u32,
-    health_check_interval_ms: u64,
-    health_check_timeout_ms: u64,
-    health_check_path: String,
     proxy_client: reqwest::Client,
     ws_proxy_client: HyperClient<HttpsConnector<HttpConnector>, Body>,
 }
@@ -260,8 +259,25 @@ async fn main() -> anyhow::Result<()> {
         .provider_log_file
         .unwrap_or_else(default_provider_log_file);
     let api_token = resolve_api_token(args.api_token);
-    let health_check_path = normalize_health_check_path(&args.health_check_path)
-        .with_context(|| format!("invalid --health-check-path: {}", args.health_check_path))?;
+    let health_check_settings = HealthCheckSettings {
+        interval_ms: normalize_health_check_interval_ms(args.health_check_interval_ms)
+            .with_context(|| {
+                format!(
+                    "invalid --health-check-interval-ms: {}",
+                    args.health_check_interval_ms
+                )
+            })?,
+        timeout_ms: normalize_health_check_timeout_ms(args.health_check_timeout_ms).with_context(
+            || {
+                format!(
+                    "invalid --health-check-timeout-ms: {}",
+                    args.health_check_timeout_ms
+                )
+            },
+        )?,
+        path: normalize_health_check_path(&args.health_check_path)
+            .with_context(|| format!("invalid --health-check-path: {}", args.health_check_path))?,
+    };
     let persisted = load_persisted_state(&data_file).await?;
     let mut http_connector = HttpConnector::new();
     http_connector.enforce_http(false);
@@ -279,6 +295,7 @@ async fn main() -> anyhow::Result<()> {
             pending_restart: None,
         }),
         upstream_health: Mutex::new(HashMap::new()),
+        health_check_settings: RwLock::new(health_check_settings),
         data_file,
         provider_log_file,
         api_token,
@@ -286,9 +303,6 @@ async fn main() -> anyhow::Result<()> {
         ngrok_bin: args.ngrok_bin,
         ready_timeout_ms: args.ready_timeout_ms,
         max_auto_restarts: args.max_auto_restarts,
-        health_check_interval_ms: args.health_check_interval_ms,
-        health_check_timeout_ms: args.health_check_timeout_ms,
-        health_check_path,
         proxy_client: reqwest::Client::new(),
         ws_proxy_client,
     });
@@ -302,6 +316,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/tunnel/logs/stream", get(stream_tunnel_logs))
         .route("/v1/tunnel/start", post(start_tunnel))
         .route("/v1/tunnel/stop", post(stop_tunnel))
+        .route(
+            "/v1/settings/health-check",
+            get(get_health_check_settings).put(update_health_check_settings),
+        )
         .route("/v1/upstreams/health", get(get_upstreams_health))
         .route("/v1/routes", get(list_routes).post(add_route))
         .route("/v1/routes/{id}", delete(delete_route))
@@ -404,6 +422,34 @@ async fn get_tunnel_status(
     };
     Ok(Json(TunnelStatusResponse {
         tunnel: maybe_snapshot.tunnel,
+    }))
+}
+
+async fn get_health_check_settings(
+    State(state): State<Arc<AppState>>,
+) -> Json<HealthCheckSettingsResponse> {
+    let settings = {
+        let current = state.health_check_settings.read().await;
+        current.clone()
+    };
+    Json(HealthCheckSettingsResponse {
+        health_check: settings,
+    })
+}
+
+async fn update_health_check_settings(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<UpdateHealthCheckSettingsRequest>,
+) -> Result<Json<HealthCheckSettingsResponse>, ApiError> {
+    let updated = {
+        let mut current = state.health_check_settings.write().await;
+        let next = apply_health_check_settings_update(&current, request)?;
+        *current = next.clone();
+        next
+    };
+
+    Ok(Json(HealthCheckSettingsResponse {
+        health_check: updated,
     }))
 }
 
@@ -609,8 +655,16 @@ async fn get_upstreams_health(State(state): State<Arc<AppState>>) -> Json<Upstre
         let upstream_health = state.upstream_health.lock().await;
         upstream_health.clone()
     };
+    let default_health_check_path = {
+        let settings = state.health_check_settings.read().await;
+        settings.path.clone()
+    };
     Json(UpstreamsHealthResponse {
-        upstreams: collect_upstream_health_entries(&routes, &state.health_check_path, &health_map),
+        upstreams: collect_upstream_health_entries(
+            &routes,
+            &default_health_check_path,
+            &health_map,
+        ),
     })
 }
 
@@ -692,8 +746,12 @@ async fn proxy_request(
     let body = to_bytes(request.into_body(), 16 * 1024 * 1024)
         .await
         .map_err(|err| ApiError::internal(format!("failed to read request body: {err}")))?;
+    let default_health_check_path = {
+        let settings = state.health_check_settings.read().await;
+        settings.path.clone()
+    };
     let route_health_check_path =
-        effective_route_health_check_path(&route, &state.health_check_path);
+        effective_route_health_check_path(&route, &default_health_check_path);
     let targets = {
         let health_map = state.upstream_health.lock().await;
         ordered_upstream_targets(&route, &route_health_check_path, &health_map)
@@ -812,8 +870,12 @@ async fn proxy_websocket_request(
     let headers = request.headers().clone();
 
     let on_client_upgrade = hyper::upgrade::on(&mut request);
+    let default_health_check_path = {
+        let settings = state.health_check_settings.read().await;
+        settings.path.clone()
+    };
     let route_health_check_path =
-        effective_route_health_check_path(&route, &state.health_check_path);
+        effective_route_health_check_path(&route, &default_health_check_path);
     let targets = {
         let health_map = state.upstream_health.lock().await;
         ordered_upstream_targets(&route, &route_health_check_path, &health_map)
@@ -1299,6 +1361,26 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
         .filter(|item| !item.is_empty())
 }
 
+fn normalize_health_check_interval_ms(value: u64) -> anyhow::Result<u64> {
+    if !(200..=60_000).contains(&value) {
+        return Err(anyhow!(
+            "health check interval_ms out of range: expected 200..=60000, got {}",
+            value
+        ));
+    }
+    Ok(value)
+}
+
+fn normalize_health_check_timeout_ms(value: u64) -> anyhow::Result<u64> {
+    if !(100..=30_000).contains(&value) {
+        return Err(anyhow!(
+            "health check timeout_ms out of range: expected 100..=30000, got {}",
+            value
+        ));
+    }
+    Ok(value)
+}
+
 fn normalize_health_check_path(value: &str) -> anyhow::Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1318,6 +1400,33 @@ fn normalize_health_check_path(value: &str) -> anyhow::Result<String> {
     }
 
     Ok(normalized)
+}
+
+fn apply_health_check_settings_update(
+    current: &HealthCheckSettings,
+    request: UpdateHealthCheckSettingsRequest,
+) -> Result<HealthCheckSettings, ApiError> {
+    let interval_ms = match request.interval_ms {
+        Some(value) => normalize_health_check_interval_ms(value)
+            .map_err(|err| ApiError::bad_request(format!("invalid interval_ms: {err}")))?,
+        None => current.interval_ms,
+    };
+    let timeout_ms = match request.timeout_ms {
+        Some(value) => normalize_health_check_timeout_ms(value)
+            .map_err(|err| ApiError::bad_request(format!("invalid timeout_ms: {err}")))?,
+        None => current.timeout_ms,
+    };
+    let path = match request.path {
+        Some(value) => normalize_health_check_path(&value)
+            .map_err(|err| ApiError::bad_request(format!("invalid path: {err}")))?,
+        None => current.path.clone(),
+    };
+
+    Ok(HealthCheckSettings {
+        interval_ms,
+        timeout_ms,
+        path,
+    })
 }
 
 fn build_health_check_url(upstream_base_url: &str, health_check_path: &str) -> anyhow::Result<Url> {
@@ -1448,14 +1557,22 @@ async fn monitor_runtime_state(state: Arc<AppState>) {
 
 async fn monitor_upstream_health(state: Arc<AppState>) {
     loop {
-        if let Err(err) = refresh_upstream_health(&state).await {
+        let settings = {
+            let current = state.health_check_settings.read().await;
+            current.clone()
+        };
+
+        if let Err(err) = refresh_upstream_health(&state, &settings).await {
             warn!("upstream health check failed: {err}");
         }
-        sleep(Duration::from_millis(state.health_check_interval_ms)).await;
+        sleep(Duration::from_millis(settings.interval_ms)).await;
     }
 }
 
-async fn refresh_upstream_health(state: &Arc<AppState>) -> anyhow::Result<()> {
+async fn refresh_upstream_health(
+    state: &Arc<AppState>,
+    settings: &HealthCheckSettings,
+) -> anyhow::Result<()> {
     let routes = {
         let runtime = state.runtime.lock().await;
         runtime.persisted.routes.clone()
@@ -1463,8 +1580,7 @@ async fn refresh_upstream_health(state: &Arc<AppState>) -> anyhow::Result<()> {
 
     let mut upstreams = HashSet::new();
     for route in &routes {
-        let route_health_check_path =
-            effective_route_health_check_path(route, &state.health_check_path);
+        let route_health_check_path = effective_route_health_check_path(route, &settings.path);
         upstreams.insert(upstream_health_key(
             &route.upstream_url,
             &route_health_check_path,
@@ -1497,7 +1613,7 @@ async fn refresh_upstream_health(state: &Arc<AppState>) -> anyhow::Result<()> {
         let check_result = state
             .proxy_client
             .get(check_url)
-            .timeout(Duration::from_millis(state.health_check_timeout_ms))
+            .timeout(Duration::from_millis(settings.timeout_ms))
             .send()
             .await;
 
@@ -2317,6 +2433,11 @@ mod tests {
                 pending_restart: None,
             }),
             upstream_health: Mutex::new(HashMap::new()),
+            health_check_settings: RwLock::new(HealthCheckSettings {
+                interval_ms: 5_000,
+                timeout_ms: 2_000,
+                path: "/".to_string(),
+            }),
             data_file: PathBuf::from("/tmp/tunnelmux-test-state.json"),
             provider_log_file: PathBuf::from("/tmp/tunnelmux-test-provider.log"),
             api_token: None,
@@ -2324,9 +2445,6 @@ mod tests {
             ngrok_bin: "ngrok".to_string(),
             ready_timeout_ms: 15_000,
             max_auto_restarts: 10,
-            health_check_interval_ms: 5_000,
-            health_check_timeout_ms: 2_000,
-            health_check_path: "/".to_string(),
             proxy_client: reqwest::Client::new(),
             ws_proxy_client: HyperClient::builder(TokioExecutor::new()).build(https_connector),
         });
@@ -2897,6 +3015,102 @@ mod tests {
     #[test]
     fn normalize_health_check_path_rejects_empty() {
         assert!(normalize_health_check_path("   ").is_err());
+    }
+
+    #[test]
+    fn normalize_health_check_interval_ms_applies_bounds() {
+        assert_eq!(
+            normalize_health_check_interval_ms(200).expect("min interval"),
+            200
+        );
+        assert_eq!(
+            normalize_health_check_interval_ms(60_000).expect("max interval"),
+            60_000
+        );
+        assert!(normalize_health_check_interval_ms(199).is_err());
+        assert!(normalize_health_check_interval_ms(60_001).is_err());
+    }
+
+    #[test]
+    fn normalize_health_check_timeout_ms_applies_bounds() {
+        assert_eq!(
+            normalize_health_check_timeout_ms(100).expect("min timeout"),
+            100
+        );
+        assert_eq!(
+            normalize_health_check_timeout_ms(30_000).expect("max timeout"),
+            30_000
+        );
+        assert!(normalize_health_check_timeout_ms(99).is_err());
+        assert!(normalize_health_check_timeout_ms(30_001).is_err());
+    }
+
+    #[test]
+    fn apply_health_check_settings_update_applies_partial_overrides() {
+        let current = HealthCheckSettings {
+            interval_ms: 5_000,
+            timeout_ms: 2_000,
+            path: "/".to_string(),
+        };
+        let updated = apply_health_check_settings_update(
+            &current,
+            UpdateHealthCheckSettingsRequest {
+                interval_ms: Some(1_000),
+                timeout_ms: None,
+                path: Some("ready".to_string()),
+            },
+        )
+        .expect("update should succeed");
+
+        assert_eq!(
+            updated,
+            HealthCheckSettings {
+                interval_ms: 1_000,
+                timeout_ms: 2_000,
+                path: "/ready".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn apply_health_check_settings_update_rejects_invalid_values() {
+        let current = HealthCheckSettings {
+            interval_ms: 5_000,
+            timeout_ms: 2_000,
+            path: "/".to_string(),
+        };
+        let err = apply_health_check_settings_update(
+            &current,
+            UpdateHealthCheckSettingsRequest {
+                interval_ms: Some(100),
+                timeout_ms: None,
+                path: None,
+            },
+        )
+        .expect_err("interval should be rejected");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+
+        let err = apply_health_check_settings_update(
+            &current,
+            UpdateHealthCheckSettingsRequest {
+                interval_ms: None,
+                timeout_ms: Some(50),
+                path: None,
+            },
+        )
+        .expect_err("timeout should be rejected");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+
+        let err = apply_health_check_settings_update(
+            &current,
+            UpdateHealthCheckSettingsRequest {
+                interval_ms: None,
+                timeout_ms: None,
+                path: Some("/ok?bad=1".to_string()),
+            },
+        )
+        .expect_err("path should be rejected");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
     }
 
     #[test]
