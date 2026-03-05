@@ -26,5 +26,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets
 
+      - name: Shell script syntax check
+        run: bash -n scripts/install.sh
+
       - name: Test
         run: cargo test --workspace --locked

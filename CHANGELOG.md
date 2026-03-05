@@ -4,6 +4,10 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+- Add `scripts/install.sh` for one-command install from GitHub Releases (macOS/Linux).
+- Add CI shell syntax check for install script.
+- Update README with quick install examples.
+
 ## [0.1.2] - 2026-03-05
 
 - Sync `Cargo.lock` with workspace version bump so `--locked` release builds pass.
