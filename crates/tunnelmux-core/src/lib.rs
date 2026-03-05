@@ -146,6 +146,14 @@ pub struct MetricsResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DashboardResponse {
+    pub tunnel: TunnelStatus,
+    pub metrics: MetricsResponse,
+    pub routes: Vec<RouteRule>,
+    pub upstreams: Vec<UpstreamHealthEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteRouteResponse {
     pub removed: bool,
 }

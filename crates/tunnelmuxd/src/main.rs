@@ -49,10 +49,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
-    DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse, ErrorResponse, HealthCheckSettings,
-    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RouteRule, RoutesResponse,
-    TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState, TunnelStatus,
-    TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
+    DEFAULT_GATEWAY_TARGET_URL, DashboardResponse, DeleteRouteResponse, ErrorResponse,
+    HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RouteRule,
+    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState,
+    TunnelStatus, TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
     UpstreamsHealthResponse,
 };
 use url::Url;
@@ -328,6 +328,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/settings/health-check",
             get(get_health_check_settings).put(update_health_check_settings),
         )
+        .route("/v1/dashboard", get(get_dashboard))
         .route("/v1/metrics", get(get_metrics))
         .route("/v1/upstreams/health", get(get_upstreams_health))
         .route("/v1/routes", get(list_routes).post(add_route))
@@ -718,6 +719,48 @@ async fn get_metrics(State(state): State<Arc<AppState>>) -> Json<MetricsResponse
         upstream_health_entries,
         health_check,
     })
+}
+
+async fn get_dashboard(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<DashboardResponse>, ApiError> {
+    reconcile_runtime_and_maybe_restart(&state).await?;
+
+    let (tunnel, running_tunnel, pending_restart, routes) = {
+        let runtime = state.runtime.lock().await;
+        (
+            runtime.persisted.tunnel.clone(),
+            runtime.running_tunnel.is_some(),
+            runtime.pending_restart.is_some(),
+            runtime.persisted.routes.clone(),
+        )
+    };
+    let health_check = {
+        let settings = state.health_check_settings.read().await;
+        settings.clone()
+    };
+    let health_map = {
+        let map = state.upstream_health.lock().await;
+        map.clone()
+    };
+
+    let upstreams = collect_upstream_health_entries(&routes, &health_check.path, &health_map);
+    let metrics = MetricsResponse {
+        tunnel_state: tunnel.state.clone(),
+        running_tunnel,
+        pending_restart,
+        route_count: routes.len(),
+        enabled_route_count: routes.iter().filter(|item| item.enabled).count(),
+        upstream_health_entries: health_map.len(),
+        health_check,
+    };
+
+    Ok(Json(DashboardResponse {
+        tunnel,
+        metrics,
+        routes,
+        upstreams,
+    }))
 }
 
 async fn add_route(
@@ -2583,6 +2626,7 @@ mod tests {
                 "/v1/settings/health-check",
                 get(get_health_check_settings).put(update_health_check_settings),
             )
+            .route("/v1/dashboard", get(get_dashboard))
             .route("/v1/metrics", get(get_metrics))
             .route("/v1/routes", get(list_routes))
             .route("/v1/routes/apply", post(apply_routes))
@@ -3151,6 +3195,54 @@ mod tests {
             .await
             .expect("apply request should complete");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn dashboard_endpoint_returns_composite_snapshot() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+                health_check_path: Some("/ready".to_string()),
+                enabled: true,
+            }],
+            None,
+        );
+        {
+            let mut health_map = state.upstream_health.lock().await;
+            health_map.insert(
+                test_health_key("http://127.0.0.1:3000", "/ready"),
+                test_health(true),
+            );
+            health_map.insert(
+                test_health_key("http://127.0.0.1:3001", "/ready"),
+                test_health(false),
+            );
+        }
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let dashboard: DashboardResponse = client
+            .get(format!("{base_url}/v1/dashboard"))
+            .send()
+            .await
+            .expect("dashboard request should complete")
+            .json()
+            .await
+            .expect("dashboard payload should decode");
+
+        assert_eq!(dashboard.metrics.route_count, 1);
+        assert_eq!(dashboard.metrics.enabled_route_count, 1);
+        assert_eq!(dashboard.metrics.upstream_health_entries, 2);
+        assert_eq!(dashboard.routes.len(), 1);
+        assert_eq!(dashboard.routes[0].id, "svc-a");
+        assert_eq!(dashboard.upstreams.len(), 2);
 
         server_task.abort();
     }

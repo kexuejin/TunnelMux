@@ -9,10 +9,10 @@ use reqwest::Client;
 use serde_json::json;
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
-    DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse, ErrorResponse, HealthCheckSettingsResponse,
-    HealthResponse, MetricsResponse, RoutesResponse, TunnelLogsResponse, TunnelProvider,
-    TunnelStartRequest, TunnelStatusResponse, UpdateHealthCheckSettingsRequest,
-    UpstreamsHealthResponse,
+    DEFAULT_GATEWAY_TARGET_URL, DashboardResponse, DeleteRouteResponse, ErrorResponse,
+    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RoutesResponse,
+    TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelStatusResponse,
+    UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -32,6 +32,8 @@ struct Cli {
 enum Command {
     /// Read daemon health and tunnel status
     Status,
+    /// Read composite dashboard snapshot (tunnel, metrics, routes, upstreams)
+    Dashboard,
     /// Read runtime metrics snapshot
     Metrics {
         #[arg(long, default_value_t = false)]
@@ -277,6 +279,11 @@ async fn main() -> anyhow::Result<()> {
                     "tunnel": tunnel.tunnel,
                 }))?
             );
+        }
+        Command::Dashboard => {
+            let dashboard: DashboardResponse =
+                get_json(&client, &base_url, "/v1/dashboard", token.as_deref()).await?;
+            println!("{}", serde_json::to_string_pretty(&dashboard)?);
         }
         Command::Metrics { watch, interval_ms } => {
             if watch {
