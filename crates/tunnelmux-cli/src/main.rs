@@ -11,8 +11,8 @@ use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
     DEFAULT_GATEWAY_TARGET_URL, DashboardResponse, DeleteRouteResponse, ErrorResponse,
     HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RouteMatchResponse,
-    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelStatusResponse,
-    UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
+    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState,
+    TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -76,6 +76,41 @@ enum Command {
     Tunnel {
         #[command(subcommand)]
         command: TunnelCommand,
+    },
+    /// Idempotent one-shot expose flow (upsert route + ensure tunnel running)
+    Expose {
+        #[arg(long)]
+        id: String,
+
+        #[arg(long)]
+        upstream_url: String,
+
+        #[arg(long)]
+        fallback_upstream_url: Option<String>,
+
+        #[arg(long)]
+        health_check_path: Option<String>,
+
+        #[arg(long)]
+        host: Option<String>,
+
+        #[arg(long)]
+        path_prefix: Option<String>,
+
+        #[arg(long)]
+        strip_path_prefix: Option<String>,
+
+        #[arg(long, default_value_t = false)]
+        disabled: bool,
+
+        #[arg(long, value_enum, default_value_t = CliTunnelProvider::Cloudflared)]
+        provider: CliTunnelProvider,
+
+        #[arg(long, default_value = DEFAULT_GATEWAY_TARGET_URL)]
+        target_url: String,
+
+        #[arg(long, default_value_t = true)]
+        auto_restart: bool,
     },
     /// Route rules controls
     Routes {
@@ -524,6 +559,68 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             }
         },
+        Command::Expose {
+            id,
+            upstream_url,
+            fallback_upstream_url,
+            health_check_path,
+            host,
+            path_prefix,
+            strip_path_prefix,
+            disabled,
+            provider,
+            target_url,
+            auto_restart,
+        } => {
+            let route_payload = CreateRouteRequest {
+                id: id.clone(),
+                match_host: host,
+                match_path_prefix: path_prefix,
+                strip_path_prefix,
+                upstream_url,
+                fallback_upstream_url,
+                health_check_path,
+                enabled: Some(!disabled),
+            };
+            let route_endpoint = build_route_update_endpoint(&id, true);
+            let route: tunnelmux_core::RouteRule = put_json(
+                &client,
+                &base_url,
+                &route_endpoint,
+                &route_payload,
+                token.as_deref(),
+            )
+            .await?;
+
+            let mut tunnel: TunnelStatusResponse =
+                get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
+            let mut tunnel_started = false;
+            if should_start_tunnel(&tunnel) {
+                tunnel = post_json(
+                    &client,
+                    &base_url,
+                    "/v1/tunnel/start",
+                    &TunnelStartRequest {
+                        provider: provider.into(),
+                        target_url,
+                        auto_restart: Some(auto_restart),
+                        metadata: None,
+                    },
+                    token.as_deref(),
+                )
+                .await?;
+                tunnel_started = true;
+            }
+
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "route": route,
+                    "tunnel": tunnel.tunnel,
+                    "tunnel_started": tunnel_started,
+                }))?
+            );
+        }
         Command::Routes { command } => match command {
             RoutesCommand::List {
                 watch,
@@ -690,11 +787,7 @@ async fn main() -> anyhow::Result<()> {
                         enabled: Some(!disabled),
                     }
                 };
-                let endpoint = if upsert {
-                    format!("/v1/routes/{id}?upsert=true")
-                } else {
-                    format!("/v1/routes/{id}")
-                };
+                let endpoint = build_route_update_endpoint(&id, upsert);
                 let route: tunnelmux_core::RouteRule =
                     put_json(&client, &base_url, &endpoint, &payload, token.as_deref()).await?;
                 println!("{}", serde_json::to_string_pretty(&route)?);
@@ -1997,6 +2090,21 @@ fn normalize_match_route_path(value: String) -> anyhow::Result<String> {
     Ok(path.to_string())
 }
 
+fn build_route_update_endpoint(id: &str, upsert: bool) -> String {
+    if upsert {
+        format!("/v1/routes/{id}?upsert=true")
+    } else {
+        format!("/v1/routes/{id}")
+    }
+}
+
+fn should_start_tunnel(status: &TunnelStatusResponse) -> bool {
+    !matches!(
+        status.tunnel.state,
+        TunnelState::Running | TunnelState::Starting
+    )
+}
+
 fn normalize_stream_retry_policy(
     initial_ms: u64,
     max_ms: u64,
@@ -2460,5 +2568,45 @@ mod tests {
         };
         let result = render_routes_stream_frame(&frame, 2000, RoutesOutputFormat::Json);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn should_start_tunnel_returns_false_for_running_or_starting_states() {
+        assert!(!should_start_tunnel(&sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Running,
+        )));
+        assert!(!should_start_tunnel(&sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Starting,
+        )));
+    }
+
+    #[test]
+    fn should_start_tunnel_returns_true_for_idle_stopped_or_error_states() {
+        assert!(should_start_tunnel(&sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Idle,
+        )));
+        assert!(should_start_tunnel(&sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Stopped,
+        )));
+        assert!(should_start_tunnel(&sample_tunnel_status_response(
+            tunnelmux_core::TunnelState::Error,
+        )));
+    }
+
+    fn sample_tunnel_status_response(state: tunnelmux_core::TunnelState) -> TunnelStatusResponse {
+        TunnelStatusResponse {
+            tunnel: tunnelmux_core::TunnelStatus {
+                state,
+                provider: None,
+                target_url: None,
+                public_base_url: None,
+                started_at: None,
+                updated_at: "2026-03-05T00:00:00Z".to_string(),
+                process_id: None,
+                auto_restart: true,
+                restart_count: 0,
+                last_error: None,
+            },
+        }
     }
 }
