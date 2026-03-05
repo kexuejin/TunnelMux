@@ -128,7 +128,16 @@ impl From<CliTunnelProvider> for TunnelProvider {
 #[derive(Debug, Subcommand)]
 enum RoutesCommand {
     /// List all routes
-    List,
+    List {
+        #[arg(long, default_value_t = false)]
+        watch: bool,
+
+        #[arg(long, default_value_t = false, conflicts_with = "watch")]
+        stream: bool,
+
+        #[arg(long, default_value_t = 2_000)]
+        interval_ms: u64,
+    },
     /// Add a new route
     Add {
         #[arg(long, required_unless_present = "from_json")]
@@ -390,10 +399,21 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Command::Routes { command } => match command {
-            RoutesCommand::List => {
-                let routes: RoutesResponse =
-                    get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
-                println!("{}", serde_json::to_string_pretty(&routes)?);
+            RoutesCommand::List {
+                watch,
+                stream,
+                interval_ms,
+            } => {
+                let interval_ms = normalize_watch_interval_ms(interval_ms)?;
+                if stream {
+                    stream_routes(&client, &base_url, token.as_deref(), interval_ms).await?;
+                } else if watch {
+                    watch_routes(&client, &base_url, token.as_deref(), interval_ms).await?;
+                } else {
+                    let routes: RoutesResponse =
+                        get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+                    println!("{}", serde_json::to_string_pretty(&routes)?);
+                }
             }
             RoutesCommand::Add {
                 id,
@@ -774,6 +794,82 @@ async fn stream_status(
                 while let Some(line) = take_next_sse_line(&mut pending) {
                     if let Some(frame) = builder.push_line(&line) {
                         render_status_stream_frame(&frame, &health, interval_ms)?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn watch_routes(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    loop {
+        let routes: RoutesResponse = get_json(client, base_url, "/v1/routes", token).await?;
+        print!("\x1B[2J\x1B[H");
+        println!("{}", serde_json::to_string_pretty(&routes)?);
+        println!();
+        println!(
+            "routes refresh every {}ms, press Ctrl+C to stop",
+            interval_ms
+        );
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(interval_ms)) => {}
+        }
+    }
+    Ok(())
+}
+
+async fn stream_routes(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    let url = format!("{}/v1/routes/stream", base_url);
+    let mut response = request_with_token(client.get(&url), token)
+        .query(&[("interval_ms", interval_ms)])
+        .send()
+        .await
+        .with_context(|| format!("request failed: {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .context("failed to read stream error response body")?;
+        let message = serde_json::from_str::<ErrorResponse>(&body)
+            .map(|err| err.error)
+            .unwrap_or(body);
+        return Err(anyhow!("HTTP {}: {}", status, message));
+    }
+
+    let mut pending = String::new();
+    let mut builder = SseFrameBuilder::default();
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            chunk = response.chunk() => {
+                let chunk = chunk.context("failed to read routes stream chunk")?;
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                pending.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line) = take_next_sse_line(&mut pending) {
+                    if let Some(frame) = builder.push_line(&line) {
+                        render_routes_stream_frame(&frame, interval_ms)?;
                     }
                 }
             }
@@ -1175,6 +1271,29 @@ fn render_upstreams_stream_frame(
         }
         "error" => {
             eprintln!("upstreams stream error: {}", frame.data);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn render_routes_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Result<()> {
+    match frame.event.as_str() {
+        "snapshot" => {
+            let snapshot: RoutesResponse =
+                serde_json::from_str(&frame.data).with_context(|| {
+                    format!("failed to parse routes snapshot event: {}", frame.data)
+                })?;
+            print!("\x1B[2J\x1B[H");
+            println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            println!();
+            println!(
+                "routes stream interval {}ms, press Ctrl+C to stop",
+                interval_ms
+            );
+        }
+        "error" => {
+            eprintln!("routes stream error: {}", frame.data);
         }
         _ => {}
     }
@@ -1667,5 +1786,15 @@ mod tests {
         assert!(rendered.contains("\"health\""));
         assert!(rendered.contains("\"tunnel\""));
         assert!(rendered.contains("\"state\": \"running\""));
+    }
+
+    #[test]
+    fn render_routes_stream_frame_accepts_snapshot_event() {
+        let frame = SseFrame {
+            event: "snapshot".to_string(),
+            data: r#"{"routes":[{"id":"svc-a","match_host":"demo.local","match_path_prefix":"/","strip_path_prefix":null,"upstream_url":"http://127.0.0.1:3000","fallback_upstream_url":null,"health_check_path":null,"enabled":true}]}"#.to_string(),
+        };
+        let result = render_routes_stream_frame(&frame, 2000);
+        assert!(result.is_ok());
     }
 }
