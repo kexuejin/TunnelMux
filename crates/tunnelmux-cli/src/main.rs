@@ -159,6 +159,9 @@ enum RoutesCommand {
 
         #[command(flatten)]
         retry: StreamRetryArgs,
+
+        #[arg(long, default_value_t = false)]
+        table: bool,
     },
     /// Add a new route
     Add {
@@ -334,6 +337,12 @@ enum UpstreamsOutputFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoutesOutputFormat {
+    Json,
+    Table,
+}
+
 const STREAM_RETRY_INITIAL_MS: u64 = 500;
 const STREAM_RETRY_MAX_MS: u64 = 5_000;
 
@@ -503,7 +512,13 @@ async fn main() -> anyhow::Result<()> {
                 stream,
                 interval_ms,
                 retry,
+                table,
             } => {
+                let format = if table {
+                    RoutesOutputFormat::Table
+                } else {
+                    RoutesOutputFormat::Json
+                };
                 let interval_ms = normalize_watch_interval_ms(interval_ms)?;
                 if stream {
                     let retry_policy = retry.normalize()?;
@@ -512,15 +527,16 @@ async fn main() -> anyhow::Result<()> {
                         &base_url,
                         token.as_deref(),
                         interval_ms,
+                        format,
                         retry_policy,
                     )
                     .await?;
                 } else if watch {
-                    watch_routes(&client, &base_url, token.as_deref(), interval_ms).await?;
+                    watch_routes(&client, &base_url, token.as_deref(), interval_ms, format).await?;
                 } else {
                     let routes: RoutesResponse =
                         get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
-                    println!("{}", serde_json::to_string_pretty(&routes)?);
+                    println!("{}", format_routes(&routes, format)?);
                 }
             }
             RoutesCommand::Add {
@@ -1091,11 +1107,12 @@ async fn watch_routes(
     base_url: &str,
     token: Option<&str>,
     interval_ms: u64,
+    format: RoutesOutputFormat,
 ) -> anyhow::Result<()> {
     loop {
         let routes: RoutesResponse = get_json(client, base_url, "/v1/routes", token).await?;
         print!("\x1B[2J\x1B[H");
-        println!("{}", serde_json::to_string_pretty(&routes)?);
+        println!("{}", format_routes(&routes, format)?);
         println!();
         println!(
             "routes refresh every {}ms, press Ctrl+C to stop",
@@ -1117,6 +1134,7 @@ async fn stream_routes(
     base_url: &str,
     token: Option<&str>,
     interval_ms: u64,
+    format: RoutesOutputFormat,
     retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
     stream_sse_with_reconnect(
@@ -1127,7 +1145,7 @@ async fn stream_routes(
         interval_ms,
         retry_policy,
         "routes",
-        |frame| render_routes_stream_frame(frame, interval_ms),
+        |frame| render_routes_stream_frame(frame, interval_ms, format),
     )
     .await
 }
@@ -1451,7 +1469,11 @@ fn render_upstreams_stream_frame(
     Ok(())
 }
 
-fn render_routes_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Result<()> {
+fn render_routes_stream_frame(
+    frame: &SseFrame,
+    interval_ms: u64,
+    format: RoutesOutputFormat,
+) -> anyhow::Result<()> {
     match frame.event.as_str() {
         "snapshot" => {
             let snapshot: RoutesResponse =
@@ -1459,7 +1481,7 @@ fn render_routes_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Res
                     format!("failed to parse routes snapshot event: {}", frame.data)
                 })?;
             print!("\x1B[2J\x1B[H");
-            println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            println!("{}", format_routes(&snapshot, format)?);
             println!();
             println!(
                 "routes stream interval {}ms, press Ctrl+C to stop",
@@ -1472,6 +1494,85 @@ fn render_routes_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Res
         _ => {}
     }
     Ok(())
+}
+
+fn format_routes(response: &RoutesResponse, format: RoutesOutputFormat) -> anyhow::Result<String> {
+    match format {
+        RoutesOutputFormat::Json => Ok(serde_json::to_string_pretty(response)?),
+        RoutesOutputFormat::Table => Ok(render_routes_table(response)),
+    }
+}
+
+fn render_routes_table(response: &RoutesResponse) -> String {
+    let headers = [
+        "ID",
+        "HOST",
+        "PATH_PREFIX",
+        "STRIP_PREFIX",
+        "UPSTREAM_URL",
+        "FALLBACK_UPSTREAM_URL",
+        "ENABLED",
+    ];
+    let mut rows = Vec::with_capacity(response.routes.len());
+    for route in &response.routes {
+        rows.push(vec![
+            truncate_cell(&route.id, 24),
+            truncate_cell(route.match_host.as_deref().unwrap_or("*"), 24),
+            truncate_cell(route.match_path_prefix.as_deref().unwrap_or("/"), 18),
+            truncate_cell(route.strip_path_prefix.as_deref().unwrap_or("-"), 18),
+            truncate_cell(&route.upstream_url, 48),
+            truncate_cell(route.fallback_upstream_url.as_deref().unwrap_or("-"), 48),
+            if route.enabled { "true" } else { "false" }.to_string(),
+        ]);
+    }
+
+    let mut widths = headers.map(str::len);
+    for row in &rows {
+        for (index, cell) in row.iter().enumerate() {
+            if cell.len() > widths[index] {
+                widths[index] = cell.len();
+            }
+        }
+    }
+
+    let mut output = String::new();
+    output.push_str(&format_routes_table_separator(&widths));
+    output.push('\n');
+    output.push_str(&format_routes_table_row(&headers, &widths));
+    output.push('\n');
+    output.push_str(&format_routes_table_separator(&widths));
+    for row in &rows {
+        output.push('\n');
+        output.push_str(&format_routes_table_row(
+            &[
+                &row[0], &row[1], &row[2], &row[3], &row[4], &row[5], &row[6],
+            ],
+            &widths,
+        ));
+    }
+    output.push('\n');
+    output.push_str(&format_routes_table_separator(&widths));
+    output
+}
+
+fn format_routes_table_separator(widths: &[usize; 7]) -> String {
+    let mut line = String::from("+");
+    for width in widths {
+        line.push_str(&"-".repeat(width + 2));
+        line.push('+');
+    }
+    line
+}
+
+fn format_routes_table_row(values: &[&str; 7], widths: &[usize; 7]) -> String {
+    let mut line = String::from("|");
+    for (index, value) in values.iter().enumerate() {
+        line.push(' ');
+        line.push_str(value);
+        line.push_str(&" ".repeat(widths[index].saturating_sub(value.len()) + 1));
+        line.push('|');
+    }
+    line
 }
 
 fn format_upstreams_health(
@@ -1860,6 +1961,43 @@ mod tests {
         assert!(json.contains("\"health_check_path\": \"/healthz\""));
     }
 
+    #[test]
+    fn format_routes_outputs_table() {
+        let response = RoutesResponse {
+            routes: vec![
+                tunnelmux_core::RouteRule {
+                    id: "svc-a".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/api".to_string()),
+                    strip_path_prefix: Some("/api".to_string()),
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+                    health_check_path: Some("/healthz".to_string()),
+                    enabled: true,
+                },
+                tunnelmux_core::RouteRule {
+                    id: "svc-b".to_string(),
+                    match_host: None,
+                    match_path_prefix: None,
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: false,
+                },
+            ],
+        };
+
+        let rendered =
+            format_routes(&response, RoutesOutputFormat::Table).expect("table format should work");
+        assert!(rendered.contains("ID"));
+        assert!(rendered.contains("FALLBACK_UPSTREAM_URL"));
+        assert!(rendered.contains("svc-a"));
+        assert!(rendered.contains("svc-b"));
+        assert!(rendered.contains("true"));
+        assert!(rendered.contains("false"));
+    }
+
     fn next_test_id() -> u64 {
         static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
         NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed)
@@ -2071,7 +2209,7 @@ mod tests {
             event: "snapshot".to_string(),
             data: r#"{"routes":[{"id":"svc-a","match_host":"demo.local","match_path_prefix":"/","strip_path_prefix":null,"upstream_url":"http://127.0.0.1:3000","fallback_upstream_url":null,"health_check_path":null,"enabled":true}]}"#.to_string(),
         };
-        let result = render_routes_stream_frame(&frame, 2000);
+        let result = render_routes_stream_frame(&frame, 2000, RoutesOutputFormat::Json);
         assert!(result.is_ok());
     }
 }
