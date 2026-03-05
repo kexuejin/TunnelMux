@@ -280,6 +280,9 @@ enum RoutesCommand {
 
         #[arg(long)]
         host: Option<String>,
+
+        #[arg(long, default_value_t = false)]
+        table: bool,
     },
 }
 
@@ -583,7 +586,7 @@ async fn main() -> anyhow::Result<()> {
                     delete_json(&client, &base_url, &endpoint, token.as_deref()).await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
-            RoutesCommand::Match { path, host } => {
+            RoutesCommand::Match { path, host, table } => {
                 let path = normalize_match_route_path(path)?;
                 let url = format!("{}/v1/routes/match", base_url);
                 let mut request = request_with_token(client.get(&url), token.as_deref());
@@ -600,7 +603,11 @@ async fn main() -> anyhow::Result<()> {
                     .await
                     .with_context(|| format!("request failed: {url}"))?;
                 let payload: RouteMatchResponse = decode_response(response).await?;
-                println!("{}", serde_json::to_string_pretty(&payload)?);
+                if table {
+                    println!("{}", format_route_match_table(&payload));
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                }
             }
             RoutesCommand::Export { id, out } => {
                 let routes: RoutesResponse =
@@ -1602,6 +1609,144 @@ fn format_routes_table_row(values: &[&str; 7], widths: &[usize; 7]) -> String {
     line
 }
 
+fn format_route_match_table(response: &RouteMatchResponse) -> String {
+    let headers = ["FIELD", "VALUE"];
+    let route_id = response
+        .route
+        .as_ref()
+        .map(|item| item.id.as_str())
+        .unwrap_or("-");
+    let summary_rows = vec![
+        vec!["MATCHED".to_string(), response.matched.to_string()],
+        vec![
+            "HOST".to_string(),
+            response
+                .host
+                .as_deref()
+                .filter(|item| !item.is_empty())
+                .unwrap_or("-")
+                .to_string(),
+        ],
+        vec!["PATH".to_string(), truncate_cell(&response.path, 72)],
+        vec!["ROUTE_ID".to_string(), truncate_cell(route_id, 40)],
+        vec![
+            "FORWARDED_PATH".to_string(),
+            truncate_cell(response.forwarded_path.as_deref().unwrap_or("-"), 72),
+        ],
+        vec![
+            "HEALTH_CHECK_PATH".to_string(),
+            truncate_cell(response.health_check_path.as_deref().unwrap_or("-"), 48),
+        ],
+    ];
+
+    let mut widths = headers.map(str::len);
+    for row in &summary_rows {
+        for (index, cell) in row.iter().enumerate() {
+            if cell.len() > widths[index] {
+                widths[index] = cell.len();
+            }
+        }
+    }
+
+    let mut output = String::new();
+    output.push_str(&format_kv_table_separator(&widths));
+    output.push('\n');
+    output.push_str(&format_kv_table_row(&headers, &widths));
+    output.push('\n');
+    output.push_str(&format_kv_table_separator(&widths));
+    for row in &summary_rows {
+        output.push('\n');
+        output.push_str(&format_kv_table_row(&[&row[0], &row[1]], &widths));
+    }
+    output.push('\n');
+    output.push_str(&format_kv_table_separator(&widths));
+
+    output.push_str("\n\nTARGETS\n");
+    let target_headers = ["UPSTREAM_URL", "HEALTH", "LAST_CHECKED_AT", "LAST_ERROR"];
+    if response.targets.is_empty() {
+        output.push_str("(none)");
+        return output;
+    }
+
+    let mut target_rows = Vec::with_capacity(response.targets.len());
+    for target in &response.targets {
+        target_rows.push(vec![
+            truncate_cell(&target.upstream_url, 56),
+            upstream_health_label(target.healthy).to_string(),
+            target
+                .last_checked_at
+                .clone()
+                .unwrap_or_else(|| "-".to_string()),
+            truncate_cell(target.last_error.as_deref().unwrap_or("-"), 72),
+        ]);
+    }
+
+    let mut target_widths = target_headers.map(str::len);
+    for row in &target_rows {
+        for (index, cell) in row.iter().enumerate() {
+            if cell.len() > target_widths[index] {
+                target_widths[index] = cell.len();
+            }
+        }
+    }
+
+    output.push_str(&format_targets_table_separator(&target_widths));
+    output.push('\n');
+    output.push_str(&format_targets_table_row(&target_headers, &target_widths));
+    output.push('\n');
+    output.push_str(&format_targets_table_separator(&target_widths));
+    for row in &target_rows {
+        output.push('\n');
+        output.push_str(&format_targets_table_row(
+            &[&row[0], &row[1], &row[2], &row[3]],
+            &target_widths,
+        ));
+    }
+    output.push('\n');
+    output.push_str(&format_targets_table_separator(&target_widths));
+    output
+}
+
+fn format_kv_table_separator(widths: &[usize; 2]) -> String {
+    let mut line = String::from("+");
+    for width in widths {
+        line.push_str(&"-".repeat(width + 2));
+        line.push('+');
+    }
+    line
+}
+
+fn format_kv_table_row(values: &[&str; 2], widths: &[usize; 2]) -> String {
+    let mut line = String::from("|");
+    for (index, value) in values.iter().enumerate() {
+        line.push(' ');
+        line.push_str(value);
+        line.push_str(&" ".repeat(widths[index].saturating_sub(value.len()) + 1));
+        line.push('|');
+    }
+    line
+}
+
+fn format_targets_table_separator(widths: &[usize; 4]) -> String {
+    let mut line = String::from("+");
+    for width in widths {
+        line.push_str(&"-".repeat(width + 2));
+        line.push('+');
+    }
+    line
+}
+
+fn format_targets_table_row(values: &[&str; 4], widths: &[usize; 4]) -> String {
+    let mut line = String::from("|");
+    for (index, value) in values.iter().enumerate() {
+        line.push(' ');
+        line.push_str(value);
+        line.push_str(&" ".repeat(widths[index].saturating_sub(value.len()) + 1));
+        line.push('|');
+    }
+    line
+}
+
 fn format_upstreams_health(
     response: &UpstreamsHealthResponse,
     format: UpstreamsOutputFormat,
@@ -2044,6 +2189,50 @@ mod tests {
         assert!(rendered.contains("svc-b"));
         assert!(rendered.contains("true"));
         assert!(rendered.contains("false"));
+    }
+
+    #[test]
+    fn format_route_match_table_contains_summary_and_targets() {
+        let response = RouteMatchResponse {
+            host: Some("demo.local".to_string()),
+            path: "/api/v1/ping".to_string(),
+            matched: true,
+            route: Some(tunnelmux_core::RouteRule {
+                id: "svc-api".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/api".to_string()),
+                strip_path_prefix: Some("/api".to_string()),
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+                health_check_path: Some("/ready".to_string()),
+                enabled: true,
+            }),
+            forwarded_path: Some("/v1/ping".to_string()),
+            health_check_path: Some("/ready".to_string()),
+            targets: vec![
+                tunnelmux_core::RouteMatchTarget {
+                    upstream_url: "http://127.0.0.1:3001".to_string(),
+                    healthy: Some(true),
+                    last_checked_at: Some("2026-03-05T12:00:00Z".to_string()),
+                    last_error: None,
+                },
+                tunnelmux_core::RouteMatchTarget {
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    healthy: Some(false),
+                    last_checked_at: Some("2026-03-05T12:00:01Z".to_string()),
+                    last_error: Some("status 503".to_string()),
+                },
+            ],
+        };
+
+        let rendered = format_route_match_table(&response);
+        assert!(rendered.contains("MATCHED"));
+        assert!(rendered.contains("ROUTE_ID"));
+        assert!(rendered.contains("svc-api"));
+        assert!(rendered.contains("TARGETS"));
+        assert!(rendered.contains("http://127.0.0.1:3001"));
+        assert!(rendered.contains("healthy"));
+        assert!(rendered.contains("unhealthy"));
     }
 
     fn next_test_id() -> u64 {
