@@ -33,7 +33,13 @@ enum Command {
     /// Read daemon health and tunnel status
     Status,
     /// Read composite dashboard snapshot (tunnel, metrics, routes, upstreams)
-    Dashboard,
+    Dashboard {
+        #[arg(long, default_value_t = false)]
+        watch: bool,
+
+        #[arg(long, default_value_t = 2_000)]
+        interval_ms: u64,
+    },
     /// Read runtime metrics snapshot
     Metrics {
         #[arg(long, default_value_t = false)]
@@ -280,10 +286,20 @@ async fn main() -> anyhow::Result<()> {
                 }))?
             );
         }
-        Command::Dashboard => {
-            let dashboard: DashboardResponse =
-                get_json(&client, &base_url, "/v1/dashboard", token.as_deref()).await?;
-            println!("{}", serde_json::to_string_pretty(&dashboard)?);
+        Command::Dashboard { watch, interval_ms } => {
+            if watch {
+                watch_dashboard(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    normalize_watch_interval_ms(interval_ms)?,
+                )
+                .await?;
+            } else {
+                let dashboard: DashboardResponse =
+                    get_json(&client, &base_url, "/v1/dashboard", token.as_deref()).await?;
+                println!("{}", serde_json::to_string_pretty(&dashboard)?);
+            }
         }
         Command::Metrics { watch, interval_ms } => {
             if watch {
@@ -688,6 +704,31 @@ async fn watch_metrics(
         let metrics: MetricsResponse = get_json(client, base_url, "/v1/metrics", token).await?;
         print!("\x1B[2J\x1B[H");
         println!("{}", serde_json::to_string_pretty(&metrics)?);
+        println!();
+        println!("refresh every {}ms, press Ctrl+C to stop", interval_ms);
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(interval_ms)) => {}
+        }
+    }
+
+    Ok(())
+}
+
+async fn watch_dashboard(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    loop {
+        let dashboard: DashboardResponse =
+            get_json(client, base_url, "/v1/dashboard", token).await?;
+        print!("\x1B[2J\x1B[H");
+        println!("{}", serde_json::to_string_pretty(&dashboard)?);
         println!();
         println!("refresh every {}ms, press Ctrl+C to stop", interval_ms);
 
