@@ -27,4 +27,4 @@ All notable changes to this project should be documented in this file.
 - Tunnel lifecycle API (`start`, `stop`, `status`).
 - Route management and gateway forwarding.
 - Provider supervision and restart strategy.
-- Client Application integration documentation.
+- Third-party integration documentation.

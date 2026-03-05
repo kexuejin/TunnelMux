@@ -3039,13 +3039,7 @@ mod tests {
     fn select_route_prefers_host_specific() {
         let routes = vec![
             route("fallback", None, Some("/"), None, true),
-            route(
-                "host-specific",
-                Some("app.local"),
-                Some("/"),
-                None,
-                true,
-            ),
+            route("host-specific", Some("app.local"), Some("/"), None, true),
         ];
         let selected =
             select_route(&routes, Some("app.local"), "/chat").expect("route should exist");
