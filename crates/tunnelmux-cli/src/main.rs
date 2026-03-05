@@ -10,8 +10,8 @@ use serde_json::json;
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
     DEFAULT_GATEWAY_TARGET_URL, DashboardResponse, DeleteRouteResponse, ErrorResponse,
-    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RoutesResponse,
-    TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelStatusResponse,
+    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RouteMatchResponse,
+    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelStatusResponse,
     UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
 };
 
@@ -272,6 +272,14 @@ enum RoutesCommand {
     Remove {
         #[arg(long)]
         id: String,
+    },
+    /// Debug route selection by host/path
+    Match {
+        #[arg(long)]
+        path: String,
+
+        #[arg(long)]
+        host: Option<String>,
     },
 }
 
@@ -574,6 +582,25 @@ async fn main() -> anyhow::Result<()> {
                 let response: DeleteRouteResponse =
                     delete_json(&client, &base_url, &endpoint, token.as_deref()).await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
+            }
+            RoutesCommand::Match { path, host } => {
+                let path = normalize_match_route_path(path)?;
+                let url = format!("{}/v1/routes/match", base_url);
+                let mut request = request_with_token(client.get(&url), token.as_deref());
+                request = request.query(&[("path", path.as_str())]);
+                if let Some(host) = host
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                {
+                    request = request.query(&[("host", host)]);
+                }
+                let response = request
+                    .send()
+                    .await
+                    .with_context(|| format!("request failed: {url}"))?;
+                let payload: RouteMatchResponse = decode_response(response).await?;
+                println!("{}", serde_json::to_string_pretty(&payload)?);
             }
             RoutesCommand::Export { id, out } => {
                 let routes: RoutesResponse =
@@ -1802,6 +1829,17 @@ fn normalize_log_stream_poll_ms(value: u64) -> anyhow::Result<u64> {
     Ok(value)
 }
 
+fn normalize_match_route_path(value: String) -> anyhow::Result<String> {
+    let path = value.trim();
+    if path.is_empty() {
+        return Err(anyhow!("path is required"));
+    }
+    if !path.starts_with('/') {
+        return Err(anyhow!("path must start with '/'"));
+    }
+    Ok(path.to_string())
+}
+
 fn normalize_stream_retry_policy(
     initial_ms: u64,
     max_ms: u64,
@@ -1860,6 +1898,16 @@ mod tests {
     fn normalize_log_stream_poll_ms_rejects_out_of_range() {
         assert!(normalize_log_stream_poll_ms(99).is_err());
         assert!(normalize_log_stream_poll_ms(10_001).is_err());
+    }
+
+    #[test]
+    fn normalize_match_route_path_requires_leading_slash() {
+        assert_eq!(
+            normalize_match_route_path("/api/v1".to_string()).expect("valid path"),
+            "/api/v1"
+        );
+        assert!(normalize_match_route_path("".to_string()).is_err());
+        assert!(normalize_match_route_path("api/v1".to_string()).is_err());
     }
 
     #[test]

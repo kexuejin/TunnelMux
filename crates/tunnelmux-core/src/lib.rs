@@ -84,6 +84,25 @@ pub struct RoutesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteMatchTarget {
+    pub upstream_url: String,
+    pub healthy: Option<bool>,
+    pub last_checked_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteMatchResponse {
+    pub host: Option<String>,
+    pub path: String,
+    pub matched: bool,
+    pub route: Option<RouteRule>,
+    pub forwarded_path: Option<String>,
+    pub health_check_path: Option<String>,
+    pub targets: Vec<RouteMatchTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApplyRoutesRequest {
     pub routes: Vec<CreateRouteRequest>,
     pub replace: Option<bool>,
