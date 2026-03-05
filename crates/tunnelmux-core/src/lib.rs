@@ -117,6 +117,17 @@ pub struct UpdateHealthCheckSettingsRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetricsResponse {
+    pub tunnel_state: TunnelState,
+    pub running_tunnel: bool,
+    pub pending_restart: bool,
+    pub route_count: usize,
+    pub enabled_route_count: usize,
+    pub upstream_health_entries: usize,
+    pub health_check: HealthCheckSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteRouteResponse {
     pub removed: bool,
 }

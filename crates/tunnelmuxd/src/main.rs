@@ -49,10 +49,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
     CreateRouteRequest, DEFAULT_CONTROL_ADDR, DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse,
-    ErrorResponse, HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse, RouteRule,
-    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState,
-    TunnelStatus, TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
-    UpstreamsHealthResponse,
+    ErrorResponse, HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse,
+    MetricsResponse, RouteRule, RoutesResponse, TunnelLogsResponse, TunnelProvider,
+    TunnelStartRequest, TunnelState, TunnelStatus, TunnelStatusResponse,
+    UpdateHealthCheckSettingsRequest, UpstreamHealthEntry, UpstreamsHealthResponse,
 };
 use url::Url;
 
@@ -320,6 +320,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/settings/health-check",
             get(get_health_check_settings).put(update_health_check_settings),
         )
+        .route("/v1/metrics", get(get_metrics))
         .route("/v1/upstreams/health", get(get_upstreams_health))
         .route("/v1/routes", get(list_routes).post(add_route))
         .route("/v1/routes/{id}", delete(delete_route).put(update_route))
@@ -665,6 +666,36 @@ async fn get_upstreams_health(State(state): State<Arc<AppState>>) -> Json<Upstre
             &default_health_check_path,
             &health_map,
         ),
+    })
+}
+
+async fn get_metrics(State(state): State<Arc<AppState>>) -> Json<MetricsResponse> {
+    let (tunnel_state, running_tunnel, pending_restart, routes) = {
+        let runtime = state.runtime.lock().await;
+        (
+            runtime.persisted.tunnel.state.clone(),
+            runtime.running_tunnel.is_some(),
+            runtime.pending_restart.is_some(),
+            runtime.persisted.routes.clone(),
+        )
+    };
+    let upstream_health_entries = {
+        let health_map = state.upstream_health.lock().await;
+        health_map.len()
+    };
+    let health_check = {
+        let settings = state.health_check_settings.read().await;
+        settings.clone()
+    };
+
+    Json(MetricsResponse {
+        tunnel_state,
+        running_tunnel,
+        pending_restart,
+        route_count: routes.len(),
+        enabled_route_count: routes.iter().filter(|item| item.enabled).count(),
+        upstream_health_entries,
+        health_check,
     })
 }
 
