@@ -322,7 +322,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v1/upstreams/health", get(get_upstreams_health))
         .route("/v1/routes", get(list_routes).post(add_route))
-        .route("/v1/routes/{id}", delete(delete_route))
+        .route("/v1/routes/{id}", delete(delete_route).put(update_route))
         .layer(middleware::from_fn_with_state(
             shared.clone(),
             control_auth_middleware,
@@ -692,6 +692,26 @@ async fn add_route(
 
     persist_from_runtime(&state).await?;
     Ok((StatusCode::CREATED, Json(route)))
+}
+
+async fn update_route(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<CreateRouteRequest>,
+) -> Result<Json<RouteRule>, ApiError> {
+    let route = normalize_route_request(request)?;
+    ensure_route_id_matches(&id, &route.id)?;
+
+    let updated = {
+        let mut runtime = state.runtime.lock().await;
+        replace_route(&mut runtime.persisted.routes, route.clone())
+    };
+    if !updated {
+        return Err(ApiError::not_found(format!("route '{}' not found", id)));
+    }
+
+    persist_from_runtime(&state).await?;
+    Ok(Json(route))
 }
 
 async fn delete_route(
@@ -1359,6 +1379,24 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
     value
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
+}
+
+fn ensure_route_id_matches(path_id: &str, body_id: &str) -> Result<(), ApiError> {
+    if path_id == body_id {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(format!(
+        "route id mismatch: path '{}' != body '{}'",
+        path_id, body_id
+    )))
+}
+
+fn replace_route(routes: &mut [RouteRule], route: RouteRule) -> bool {
+    if let Some(index) = routes.iter().position(|item| item.id == route.id) {
+        routes[index] = route;
+        return true;
+    }
+    false
 }
 
 fn normalize_health_check_interval_ms(value: u64) -> anyhow::Result<u64> {
@@ -2997,6 +3035,86 @@ mod tests {
         })
         .expect_err("route should be rejected");
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn ensure_route_id_matches_rejects_mismatch() {
+        let err = ensure_route_id_matches("svc-a", "svc-b").expect_err("should reject mismatch");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn replace_route_updates_existing_item() {
+        let mut routes = vec![
+            RouteRule {
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+            RouteRule {
+                id: "svc-b".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/b".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3001".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+        ];
+
+        let updated = replace_route(
+            &mut routes,
+            RouteRule {
+                id: "svc-b".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/b".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3010".to_string(),
+                fallback_upstream_url: Some("http://127.0.0.1:3011".to_string()),
+                health_check_path: Some("/healthz".to_string()),
+                enabled: false,
+            },
+        );
+
+        assert!(updated);
+        assert_eq!(routes[1].upstream_url, "http://127.0.0.1:3010");
+        assert_eq!(routes[1].match_host.as_deref(), Some("demo.local"));
+        assert_eq!(routes[1].enabled, false);
+    }
+
+    #[test]
+    fn replace_route_returns_false_when_missing() {
+        let mut routes = vec![RouteRule {
+            id: "svc-a".to_string(),
+            match_host: None,
+            match_path_prefix: Some("/a".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: None,
+            health_check_path: None,
+            enabled: true,
+        }];
+
+        let updated = replace_route(
+            &mut routes,
+            RouteRule {
+                id: "svc-b".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/b".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3001".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+        );
+        assert!(!updated);
     }
 
     #[test]

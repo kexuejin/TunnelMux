@@ -120,6 +120,32 @@ enum RoutesCommand {
         #[arg(long, default_value_t = false)]
         disabled: bool,
     },
+    /// Update an existing route by id
+    Update {
+        #[arg(long)]
+        id: String,
+
+        #[arg(long)]
+        upstream_url: String,
+
+        #[arg(long)]
+        fallback_upstream_url: Option<String>,
+
+        #[arg(long)]
+        health_check_path: Option<String>,
+
+        #[arg(long)]
+        host: Option<String>,
+
+        #[arg(long)]
+        path_prefix: Option<String>,
+
+        #[arg(long)]
+        strip_path_prefix: Option<String>,
+
+        #[arg(long, default_value_t = false)]
+        disabled: bool,
+    },
     /// Remove route by id
     Remove {
         #[arg(long)]
@@ -270,6 +296,31 @@ async fn main() -> anyhow::Result<()> {
                 let response: DeleteRouteResponse =
                     delete_json(&client, &base_url, &endpoint, token.as_deref()).await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
+            }
+            RoutesCommand::Update {
+                id,
+                upstream_url,
+                fallback_upstream_url,
+                health_check_path,
+                host,
+                path_prefix,
+                strip_path_prefix,
+                disabled,
+            } => {
+                let payload = CreateRouteRequest {
+                    id: id.clone(),
+                    match_host: host,
+                    match_path_prefix: path_prefix,
+                    strip_path_prefix,
+                    upstream_url,
+                    fallback_upstream_url,
+                    health_check_path,
+                    enabled: Some(!disabled),
+                };
+                let endpoint = format!("/v1/routes/{id}");
+                let route: tunnelmux_core::RouteRule =
+                    put_json(&client, &base_url, &endpoint, &payload, token.as_deref()).await?;
+                println!("{}", serde_json::to_string_pretty(&route)?);
             }
         },
         Command::Upstreams { command } => match command {
