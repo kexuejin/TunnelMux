@@ -325,6 +325,7 @@ async fn main() -> anyhow::Result<()> {
 
     let protected_control_app = Router::new()
         .route("/v1/tunnel/status", get(get_tunnel_status))
+        .route("/v1/tunnel/status/stream", get(stream_tunnel_status))
         .route("/v1/tunnel/logs", get(get_tunnel_logs))
         .route("/v1/tunnel/logs/stream", get(stream_tunnel_logs))
         .route("/v1/tunnel/start", post(start_tunnel))
@@ -441,14 +442,61 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
 async fn get_tunnel_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<TunnelStatusResponse>, ApiError> {
-    reconcile_runtime_and_maybe_restart(&state).await?;
-    let maybe_snapshot = {
-        let runtime = state.runtime.lock().await;
-        runtime.persisted.clone()
-    };
-    Ok(Json(TunnelStatusResponse {
-        tunnel: maybe_snapshot.tunnel,
-    }))
+    Ok(Json(build_tunnel_status_snapshot(&state).await?))
+}
+
+async fn stream_tunnel_status(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<StreamIntervalQuery>,
+) -> Result<Response, ApiError> {
+    let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
+    let state_for_task = state.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match build_tunnel_status_snapshot(&state_for_task).await {
+                Ok(snapshot) => {
+                    let payload = match serde_json::to_string(&snapshot) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            let _ = tx
+                                .send(Ok(Event::default().event("error").data(format!(
+                                    "failed to serialize tunnel status snapshot: {err}"
+                                ))))
+                                .await;
+                            return;
+                        }
+                    };
+                    if tx
+                        .send(Ok(Event::default().event("snapshot").data(payload)))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(err) => {
+                    if tx
+                        .send(Ok(Event::default().event("error").data(err.message)))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            sleep(Duration::from_millis(interval_ms)).await;
+        }
+    });
+
+    Ok(Sse::new(ReceiverStream::new(rx))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response())
 }
 
 async fn get_health_check_settings(
@@ -878,6 +926,17 @@ async fn build_upstreams_health_snapshot(state: &Arc<AppState>) -> UpstreamsHeal
             &health_map,
         ),
     }
+}
+
+async fn build_tunnel_status_snapshot(
+    state: &Arc<AppState>,
+) -> Result<TunnelStatusResponse, ApiError> {
+    reconcile_runtime_and_maybe_restart(state).await?;
+    let snapshot = {
+        let runtime = state.runtime.lock().await;
+        runtime.persisted.tunnel.clone()
+    };
+    Ok(TunnelStatusResponse { tunnel: snapshot })
 }
 
 async fn build_metrics_snapshot(state: &Arc<AppState>) -> MetricsResponse {
@@ -2794,6 +2853,8 @@ mod tests {
         state: Arc<AppState>,
     ) -> (String, tokio::task::JoinHandle<()>) {
         let protected_control_app = Router::new()
+            .route("/v1/tunnel/status", get(get_tunnel_status))
+            .route("/v1/tunnel/status/stream", get(stream_tunnel_status))
             .route(
                 "/v1/settings/health-check",
                 get(get_health_check_settings).put(update_health_check_settings),
@@ -3499,6 +3560,41 @@ mod tests {
             .send()
             .await
             .expect("dashboard stream request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(content_type.starts_with("text/event-stream"));
+
+        let mut stream = response.bytes_stream();
+        let first_chunk = timeout(Duration::from_secs(3), stream.next())
+            .await
+            .expect("stream should emit within timeout")
+            .expect("stream should produce chunk")
+            .expect("chunk should decode");
+        let body = String::from_utf8_lossy(&first_chunk);
+        assert!(body.contains("event: snapshot"));
+        assert!(body.contains("data: "));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn tunnel_status_stream_endpoint_emits_snapshot_event() {
+        let state = test_state_with_routes(vec![], None);
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .get(format!(
+                "{base_url}/v1/tunnel/status/stream?interval_ms=200"
+            ))
+            .send()
+            .await
+            .expect("tunnel status stream request should complete");
         assert_eq!(response.status(), StatusCode::OK);
         let content_type = response
             .headers()

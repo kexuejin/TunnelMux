@@ -31,7 +31,16 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Read daemon health and tunnel status
-    Status,
+    Status {
+        #[arg(long, default_value_t = false)]
+        watch: bool,
+
+        #[arg(long, default_value_t = false, conflicts_with = "watch")]
+        stream: bool,
+
+        #[arg(long, default_value_t = 2_000)]
+        interval_ms: u64,
+    },
     /// Read composite dashboard snapshot (tunnel, metrics, routes, upstreams)
     Dashboard {
         #[arg(long, default_value_t = false)]
@@ -282,18 +291,23 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new();
 
     match cli.command {
-        Command::Status => {
-            let health: HealthResponse = get_json(&client, &base_url, "/v1/health", None).await?;
-            let tunnel: TunnelStatusResponse =
-                get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
-
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "health": health,
-                    "tunnel": tunnel.tunnel,
-                }))?
-            );
+        Command::Status {
+            watch,
+            stream,
+            interval_ms,
+        } => {
+            let interval_ms = normalize_watch_interval_ms(interval_ms)?;
+            if stream {
+                stream_status(&client, &base_url, token.as_deref(), interval_ms).await?;
+            } else if watch {
+                watch_status(&client, &base_url, token.as_deref(), interval_ms).await?;
+            } else {
+                let health: HealthResponse =
+                    get_json(&client, &base_url, "/v1/health", None).await?;
+                let tunnel: TunnelStatusResponse =
+                    get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
+                println!("{}", format_status_output(&health, &tunnel)?);
+            }
         }
         Command::Dashboard {
             watch,
@@ -690,6 +704,85 @@ async fn stream_logs(
     Ok(())
 }
 
+async fn watch_status(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    loop {
+        let health: HealthResponse = get_json(client, base_url, "/v1/health", None).await?;
+        let tunnel: TunnelStatusResponse =
+            get_json(client, base_url, "/v1/tunnel/status", token).await?;
+        print!("\x1B[2J\x1B[H");
+        println!("{}", format_status_output(&health, &tunnel)?);
+        println!();
+        println!(
+            "status refresh every {}ms, press Ctrl+C to stop",
+            interval_ms
+        );
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(interval_ms)) => {}
+        }
+    }
+    Ok(())
+}
+
+async fn stream_status(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    let health: HealthResponse = get_json(client, base_url, "/v1/health", None).await?;
+    let url = format!("{}/v1/tunnel/status/stream", base_url);
+    let mut response = request_with_token(client.get(&url), token)
+        .query(&[("interval_ms", interval_ms)])
+        .send()
+        .await
+        .with_context(|| format!("request failed: {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .context("failed to read stream error response body")?;
+        let message = serde_json::from_str::<ErrorResponse>(&body)
+            .map(|err| err.error)
+            .unwrap_or(body);
+        return Err(anyhow!("HTTP {}: {}", status, message));
+    }
+
+    let mut pending = String::new();
+    let mut builder = SseFrameBuilder::default();
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            chunk = response.chunk() => {
+                let chunk = chunk.context("failed to read status stream chunk")?;
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                pending.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line) = take_next_sse_line(&mut pending) {
+                    if let Some(frame) = builder.push_line(&line) {
+                        render_status_stream_frame(&frame, &health, interval_ms)?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn watch_upstreams_health(
     client: &Client,
     base_url: &str,
@@ -973,6 +1066,46 @@ fn take_next_sse_line(buffer: &mut String) -> Option<String> {
         line.pop();
     }
     Some(line)
+}
+
+fn format_status_output(
+    health: &HealthResponse,
+    tunnel: &TunnelStatusResponse,
+) -> anyhow::Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "health": health,
+        "tunnel": tunnel.tunnel,
+    }))?)
+}
+
+fn render_status_stream_frame(
+    frame: &SseFrame,
+    health: &HealthResponse,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    match frame.event.as_str() {
+        "snapshot" => {
+            let snapshot: TunnelStatusResponse =
+                serde_json::from_str(&frame.data).with_context(|| {
+                    format!(
+                        "failed to parse tunnel status snapshot event: {}",
+                        frame.data
+                    )
+                })?;
+            print!("\x1B[2J\x1B[H");
+            println!("{}", format_status_output(health, &snapshot)?);
+            println!();
+            println!(
+                "status stream interval {}ms, press Ctrl+C to stop",
+                interval_ms
+            );
+        }
+        "error" => {
+            eprintln!("status stream error: {}", frame.data);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn render_metrics_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Result<()> {
@@ -1506,5 +1639,33 @@ mod tests {
         let frame = builder.push_line("").expect("frame should flush");
         assert_eq!(frame.event, "message");
         assert_eq!(frame.data, "one\ntwo");
+    }
+
+    #[test]
+    fn format_status_output_contains_health_and_tunnel_fields() {
+        let health = HealthResponse {
+            ok: true,
+            service: "tunnelmuxd".to_string(),
+            version: "0.1.0".to_string(),
+        };
+        let tunnel = TunnelStatusResponse {
+            tunnel: tunnelmux_core::TunnelStatus {
+                state: tunnelmux_core::TunnelState::Running,
+                provider: Some(tunnelmux_core::TunnelProvider::Cloudflared),
+                target_url: Some("http://127.0.0.1:18080".to_string()),
+                public_base_url: Some("https://example.com".to_string()),
+                started_at: Some("2026-03-05T00:00:00Z".to_string()),
+                updated_at: "2026-03-05T00:00:01Z".to_string(),
+                process_id: Some(1234),
+                auto_restart: true,
+                restart_count: 0,
+                last_error: None,
+            },
+        };
+
+        let rendered = format_status_output(&health, &tunnel).expect("render status output");
+        assert!(rendered.contains("\"health\""));
+        assert!(rendered.contains("\"tunnel\""));
+        assert!(rendered.contains("\"state\": \"running\""));
     }
 }
