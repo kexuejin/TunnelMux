@@ -96,6 +96,7 @@ pub struct ApplyRoutesResponse {
     pub applied: usize,
     pub created: Vec<String>,
     pub updated: Vec<String>,
+    pub unchanged: Vec<String>,
     pub removed: Vec<String>,
     pub replace: bool,
     pub dry_run: bool,
