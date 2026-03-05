@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 use std::{fs, path::Path, path::PathBuf};
 
@@ -192,6 +193,14 @@ enum RoutesCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Apply route payload(s) from JSON file (upsert by id)
+    Apply {
+        #[arg(long)]
+        from_json: String,
+
+        #[arg(long, default_value_t = false)]
+        replace: bool,
+    },
     /// Remove route by id
     Remove {
         #[arg(long)]
@@ -385,6 +394,64 @@ async fn main() -> anyhow::Result<()> {
                     let rendered = serde_json::to_string_pretty(&payloads)?;
                     write_output_or_stdout(&rendered, out.as_deref())?;
                 }
+            }
+            RoutesCommand::Apply { from_json, replace } => {
+                let requests = load_route_requests_from_file(Path::new(&from_json))?;
+                ensure_unique_route_ids(&requests)?;
+
+                let existing: RoutesResponse =
+                    get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+                let existing_ids = existing
+                    .routes
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<HashSet<_>>();
+
+                let mut created = Vec::new();
+                let mut updated = Vec::new();
+                let mut applied_ids = HashSet::new();
+
+                for request in requests {
+                    applied_ids.insert(request.id.clone());
+                    if existing_ids.contains(request.id.as_str()) {
+                        let endpoint = format!("/v1/routes/{}", request.id);
+                        let _: tunnelmux_core::RouteRule =
+                            put_json(&client, &base_url, &endpoint, &request, token.as_deref())
+                                .await?;
+                        updated.push(request.id);
+                    } else {
+                        let created_route: tunnelmux_core::RouteRule =
+                            post_json(&client, &base_url, "/v1/routes", &request, token.as_deref())
+                                .await?;
+                        created.push(created_route.id);
+                    }
+                }
+
+                let mut removed = Vec::new();
+                if replace {
+                    for route in existing.routes {
+                        if applied_ids.contains(route.id.as_str()) {
+                            continue;
+                        }
+                        let endpoint = format!("/v1/routes/{}", route.id);
+                        let response: DeleteRouteResponse =
+                            delete_json(&client, &base_url, &endpoint, token.as_deref()).await?;
+                        if response.removed {
+                            removed.push(route.id);
+                        }
+                    }
+                }
+
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "applied": applied_ids.len(),
+                        "created": created,
+                        "updated": updated,
+                        "removed": removed,
+                        "replace": replace,
+                    }))?
+                );
             }
             RoutesCommand::Update {
                 id,
@@ -747,10 +814,42 @@ fn truncate_cell(value: &str, max_len: usize) -> String {
 }
 
 fn load_route_request_from_file(path: &Path) -> anyhow::Result<CreateRouteRequest> {
+    let mut requests = load_route_requests_from_file(path)?;
+    if requests.len() != 1 {
+        return Err(anyhow!(
+            "expected exactly one route payload in {}",
+            path.display()
+        ));
+    }
+    Ok(requests.remove(0))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum RoutePayloadFile {
+    Single(CreateRouteRequest),
+    Many(Vec<CreateRouteRequest>),
+}
+
+fn load_route_requests_from_file(path: &Path) -> anyhow::Result<Vec<CreateRouteRequest>> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read route json file: {}", path.display()))?;
-    serde_json::from_str::<CreateRouteRequest>(&raw)
-        .with_context(|| format!("failed to parse route json file: {}", path.display()))
+    let parsed: RoutePayloadFile = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse route json file: {}", path.display()))?;
+    match parsed {
+        RoutePayloadFile::Single(route) => Ok(vec![route]),
+        RoutePayloadFile::Many(routes) => Ok(routes),
+    }
+}
+
+fn ensure_unique_route_ids(routes: &[CreateRouteRequest]) -> anyhow::Result<()> {
+    let mut ids = HashSet::new();
+    for route in routes {
+        if !ids.insert(route.id.clone()) {
+            return Err(anyhow!("duplicate route id in payload: {}", route.id));
+        }
+    }
+    Ok(())
 }
 
 fn route_rule_to_create_request(route: &tunnelmux_core::RouteRule) -> CreateRouteRequest {
@@ -933,6 +1032,41 @@ mod tests {
     }
 
     #[test]
+    fn load_route_requests_from_file_reads_array_json() {
+        let path = temp_route_json_path();
+        fs::write(
+            &path,
+            r#"[
+  {"id":"svc-a","upstream_url":"http://127.0.0.1:3000"},
+  {"id":"svc-b","upstream_url":"http://127.0.0.1:3001","enabled":false}
+]"#,
+        )
+        .expect("write route file");
+        let routes = load_route_requests_from_file(&path).expect("load route file");
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].id, "svc-a");
+        assert_eq!(routes[1].id, "svc-b");
+        assert_eq!(routes[1].enabled, Some(false));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_route_request_from_file_rejects_array_payload() {
+        let path = temp_route_json_path();
+        fs::write(
+            &path,
+            r#"[
+  {"id":"svc-a","upstream_url":"http://127.0.0.1:3000"},
+  {"id":"svc-b","upstream_url":"http://127.0.0.1:3001"}
+]"#,
+        )
+        .expect("write route file");
+        let result = load_route_request_from_file(&path);
+        assert!(result.is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn route_rule_to_create_request_preserves_fields() {
         let route = tunnelmux_core::RouteRule {
             id: "svc-a".to_string(),
@@ -969,5 +1103,32 @@ mod tests {
         assert_eq!(written, output);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ensure_unique_route_ids_rejects_duplicates() {
+        let routes = vec![
+            CreateRouteRequest {
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: None,
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: Some(true),
+            },
+            CreateRouteRequest {
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: None,
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3001".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: Some(true),
+            },
+        ];
+        assert!(ensure_unique_route_ids(&routes).is_err());
     }
 }
