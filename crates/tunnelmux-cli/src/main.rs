@@ -105,6 +105,13 @@ enum TunnelCommand {
 
         #[arg(long, default_value_t = false)]
         follow: bool,
+
+        #[arg(
+            long,
+            default_value_t = 1_000,
+            help = "poll interval for --follow mode"
+        )]
+        poll_ms: u64,
     },
     /// Stop tunnel process
     Stop,
@@ -375,9 +382,14 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
                 println!("{}", serde_json::to_string_pretty(&status)?);
             }
-            TunnelCommand::Logs { lines, follow } => {
+            TunnelCommand::Logs {
+                lines,
+                follow,
+                poll_ms,
+            } => {
                 if follow {
-                    stream_logs(&client, &base_url, token.as_deref(), lines).await?;
+                    let poll_ms = normalize_log_stream_poll_ms(poll_ms)?;
+                    stream_logs(&client, &base_url, token.as_deref(), lines, poll_ms).await?;
                 } else {
                     let url = format!("{}/v1/tunnel/logs", base_url);
                     let response = request_with_token(client.get(&url), token.as_deref())
@@ -831,45 +843,100 @@ async fn stream_logs(
     base_url: &str,
     token: Option<&str>,
     lines: usize,
+    poll_ms: u64,
 ) -> anyhow::Result<()> {
     let url = format!("{}/v1/tunnel/logs/stream", base_url);
-    let mut response = request_with_token(client.get(&url), token)
-        .query(&[("lines", lines)])
+    let mut retry_delay_ms = STREAM_RETRY_INITIAL_MS;
+
+    loop {
+        let backoff_after_wait = match stream_logs_once(client, &url, token, lines, poll_ms).await {
+            Ok(StreamAttemptOutcome::Stopped) => return Ok(()),
+            Ok(StreamAttemptOutcome::Disconnected) => {
+                retry_delay_ms = STREAM_RETRY_INITIAL_MS;
+                eprintln!(
+                    "logs stream disconnected; reconnecting in {}ms",
+                    retry_delay_ms
+                );
+                false
+            }
+            Err(StreamAttemptError::Retryable(error)) => {
+                eprintln!(
+                    "logs stream interrupted; reconnecting in {}ms: {:#}",
+                    retry_delay_ms, error
+                );
+                true
+            }
+            Err(StreamAttemptError::Fatal(error)) => return Err(error),
+        };
+
+        if wait_before_stream_retry(retry_delay_ms).await? {
+            return Ok(());
+        }
+        if backoff_after_wait {
+            retry_delay_ms = next_stream_retry_delay_ms(retry_delay_ms);
+        }
+    }
+}
+
+async fn stream_logs_once(
+    client: &Client,
+    url: &str,
+    token: Option<&str>,
+    lines: usize,
+    poll_ms: u64,
+) -> Result<StreamAttemptOutcome, StreamAttemptError> {
+    let mut response = request_with_token(client.get(url), token)
+        .query(&[
+            ("lines", lines.to_string()),
+            ("poll_ms", poll_ms.to_string()),
+        ])
         .send()
         .await
-        .with_context(|| format!("request failed: {url}"))?;
+        .map_err(|error| {
+            StreamAttemptError::Retryable(
+                anyhow!(error).context(format!("request failed for stream endpoint: {url}")),
+            )
+        })?;
 
     let status = response.status();
     if !status.is_success() {
-        let body = response
-            .text()
-            .await
-            .context("failed to read error response body")?;
+        let body = response.text().await.map_err(|error| {
+            StreamAttemptError::Fatal(anyhow!(error).context("failed to read stream error body"))
+        })?;
         let message = serde_json::from_str::<ErrorResponse>(&body)
             .map(|err| err.error)
             .unwrap_or(body);
-        return Err(anyhow!("HTTP {}: {}", status, message));
+        return Err(StreamAttemptError::Fatal(anyhow!(
+            "HTTP {} while opening logs stream: {}",
+            status,
+            message
+        )));
     }
 
-    let mut buffer = String::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .context("failed to read stream chunk")?
-    {
-        let text = String::from_utf8_lossy(&chunk);
-        buffer.push_str(&text);
+    let mut pending = String::new();
+    let mut builder = SseFrameBuilder::default();
 
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim_end().to_string();
-            buffer.drain(..=pos);
-            if let Some(payload) = line.strip_prefix("data:") {
-                println!("{}", payload.trim_start());
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                return Ok(StreamAttemptOutcome::Stopped);
+            }
+            chunk = response.chunk() => {
+                let chunk = chunk.map_err(|error| {
+                    StreamAttemptError::Retryable(anyhow!(error).context("failed to read logs stream chunk"))
+                })?;
+                let Some(chunk) = chunk else {
+                    return Ok(StreamAttemptOutcome::Disconnected);
+                };
+                pending.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line) = take_next_sse_line(&mut pending) {
+                    if let Some(frame) = builder.push_line(&line) {
+                        render_logs_stream_frame(&frame).map_err(StreamAttemptError::Fatal)?;
+                    }
+                }
             }
         }
     }
-
-    Ok(())
 }
 
 async fn watch_status(
@@ -1192,6 +1259,17 @@ fn render_status_stream_frame(
     Ok(())
 }
 
+fn render_logs_stream_frame(frame: &SseFrame) -> anyhow::Result<()> {
+    match frame.event.as_str() {
+        "line" | "message" => println!("{}", frame.data),
+        "error" => {
+            eprintln!("logs stream error: {}", frame.data);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn render_metrics_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Result<()> {
     match frame.event.as_str() {
         "snapshot" => {
@@ -1505,6 +1583,16 @@ fn normalize_watch_interval_ms(value: u64) -> anyhow::Result<u64> {
     Ok(value)
 }
 
+fn normalize_log_stream_poll_ms(value: u64) -> anyhow::Result<u64> {
+    if !(100..=10_000).contains(&value) {
+        return Err(anyhow!(
+            "poll_ms out of range: expected 100..=10000, got {}",
+            value
+        ));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1523,6 +1611,19 @@ mod tests {
     fn normalize_watch_interval_ms_rejects_out_of_range() {
         assert!(normalize_watch_interval_ms(199).is_err());
         assert!(normalize_watch_interval_ms(60_001).is_err());
+    }
+
+    #[test]
+    fn normalize_log_stream_poll_ms_applies_bounds() {
+        assert_eq!(normalize_log_stream_poll_ms(100).expect("min"), 100);
+        assert_eq!(normalize_log_stream_poll_ms(1_000).expect("default"), 1_000);
+        assert_eq!(normalize_log_stream_poll_ms(10_000).expect("max"), 10_000);
+    }
+
+    #[test]
+    fn normalize_log_stream_poll_ms_rejects_out_of_range() {
+        assert!(normalize_log_stream_poll_ms(99).is_err());
+        assert!(normalize_log_stream_poll_ms(10_001).is_err());
     }
 
     #[test]
