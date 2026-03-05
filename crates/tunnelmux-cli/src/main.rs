@@ -37,6 +37,9 @@ enum Command {
         #[arg(long, default_value_t = false)]
         watch: bool,
 
+        #[arg(long, default_value_t = false, conflicts_with = "watch")]
+        stream: bool,
+
         #[arg(long, default_value_t = 2_000)]
         interval_ms: u64,
     },
@@ -286,15 +289,16 @@ async fn main() -> anyhow::Result<()> {
                 }))?
             );
         }
-        Command::Dashboard { watch, interval_ms } => {
-            if watch {
-                watch_dashboard(
-                    &client,
-                    &base_url,
-                    token.as_deref(),
-                    normalize_watch_interval_ms(interval_ms)?,
-                )
-                .await?;
+        Command::Dashboard {
+            watch,
+            stream,
+            interval_ms,
+        } => {
+            let interval_ms = normalize_watch_interval_ms(interval_ms)?;
+            if stream {
+                stream_dashboard(&client, &base_url, token.as_deref(), interval_ms).await?;
+            } else if watch {
+                watch_dashboard(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
                 let dashboard: DashboardResponse =
                     get_json(&client, &base_url, "/v1/dashboard", token.as_deref()).await?;
@@ -743,6 +747,138 @@ async fn watch_dashboard(
     Ok(())
 }
 
+async fn stream_dashboard(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    let url = format!("{}/v1/dashboard/stream", base_url);
+    let mut response = request_with_token(client.get(&url), token)
+        .query(&[("interval_ms", interval_ms)])
+        .send()
+        .await
+        .with_context(|| format!("request failed: {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .context("failed to read stream error response body")?;
+        let message = serde_json::from_str::<ErrorResponse>(&body)
+            .map(|err| err.error)
+            .unwrap_or(body);
+        return Err(anyhow!("HTTP {}: {}", status, message));
+    }
+
+    let mut pending = String::new();
+    let mut builder = SseFrameBuilder::default();
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            chunk = response.chunk() => {
+                let chunk = chunk.context("failed to read dashboard stream chunk")?;
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                pending.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line) = take_next_sse_line(&mut pending) {
+                    if let Some(frame) = builder.push_line(&line) {
+                        render_dashboard_stream_frame(&frame, interval_ms)?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SseFrame {
+    event: String,
+    data: String,
+}
+
+#[derive(Debug, Default)]
+struct SseFrameBuilder {
+    event: Option<String>,
+    data_lines: Vec<String>,
+}
+
+impl SseFrameBuilder {
+    fn push_line(&mut self, line: &str) -> Option<SseFrame> {
+        if line.is_empty() {
+            return self.flush();
+        }
+        if line.starts_with(':') {
+            return None;
+        }
+        if let Some(value) = line.strip_prefix("event:") {
+            self.event = Some(trim_sse_field_value(value).to_string());
+            return None;
+        }
+        if let Some(value) = line.strip_prefix("data:") {
+            self.data_lines
+                .push(trim_sse_field_value(value).to_string());
+            return None;
+        }
+        None
+    }
+
+    fn flush(&mut self) -> Option<SseFrame> {
+        if self.event.is_none() && self.data_lines.is_empty() {
+            return None;
+        }
+        let frame = SseFrame {
+            event: self.event.take().unwrap_or_else(|| "message".to_string()),
+            data: self.data_lines.join("\n"),
+        };
+        self.data_lines.clear();
+        Some(frame)
+    }
+}
+
+fn trim_sse_field_value(value: &str) -> &str {
+    value.strip_prefix(' ').unwrap_or(value)
+}
+
+fn take_next_sse_line(buffer: &mut String) -> Option<String> {
+    let index = buffer.find('\n')?;
+    let mut line = buffer[..index].to_string();
+    buffer.drain(..=index);
+    if line.ends_with('\r') {
+        line.pop();
+    }
+    Some(line)
+}
+
+fn render_dashboard_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Result<()> {
+    match frame.event.as_str() {
+        "snapshot" => {
+            let snapshot: DashboardResponse =
+                serde_json::from_str(&frame.data).with_context(|| {
+                    format!("failed to parse dashboard snapshot event: {}", frame.data)
+                })?;
+            print!("\x1B[2J\x1B[H");
+            println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            println!();
+            println!(
+                "dashboard stream interval {}ms, press Ctrl+C to stop",
+                interval_ms
+            );
+        }
+        "error" => {
+            eprintln!("dashboard stream error: {}", frame.data);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn format_upstreams_health(
     response: &UpstreamsHealthResponse,
     format: UpstreamsOutputFormat,
@@ -1166,5 +1302,40 @@ mod tests {
             },
         ];
         assert!(ensure_unique_route_ids(&routes).is_err());
+    }
+
+    #[test]
+    fn take_next_sse_line_handles_lf_and_crlf() {
+        let mut buffer = "event: snapshot\r\ndata: {\"ok\":true}\n\n".to_string();
+        assert_eq!(
+            take_next_sse_line(&mut buffer).expect("first line"),
+            "event: snapshot"
+        );
+        assert_eq!(
+            take_next_sse_line(&mut buffer).expect("second line"),
+            "data: {\"ok\":true}"
+        );
+        assert_eq!(take_next_sse_line(&mut buffer).expect("blank line"), "");
+        assert!(take_next_sse_line(&mut buffer).is_none());
+    }
+
+    #[test]
+    fn sse_frame_builder_builds_snapshot_frame() {
+        let mut builder = SseFrameBuilder::default();
+        assert!(builder.push_line("event: snapshot").is_none());
+        assert!(builder.push_line("data: {\"a\":1}").is_none());
+        let frame = builder.push_line("").expect("frame should flush");
+        assert_eq!(frame.event, "snapshot");
+        assert_eq!(frame.data, "{\"a\":1}");
+    }
+
+    #[test]
+    fn sse_frame_builder_combines_multiline_data() {
+        let mut builder = SseFrameBuilder::default();
+        assert!(builder.push_line("data: one").is_none());
+        assert!(builder.push_line("data: two").is_none());
+        let frame = builder.push_line("").expect("frame should flush");
+        assert_eq!(frame.event, "message");
+        assert_eq!(frame.data, "one\ntwo");
     }
 }
