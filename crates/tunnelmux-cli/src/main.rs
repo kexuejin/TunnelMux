@@ -29,7 +29,13 @@ enum Command {
     /// Read daemon health and tunnel status
     Status,
     /// Read runtime metrics snapshot
-    Metrics,
+    Metrics {
+        #[arg(long, default_value_t = false)]
+        watch: bool,
+
+        #[arg(long, default_value_t = 2_000)]
+        interval_ms: u64,
+    },
     /// Tunnel lifecycle controls
     Tunnel {
         #[command(subcommand)]
@@ -215,10 +221,20 @@ async fn main() -> anyhow::Result<()> {
                 }))?
             );
         }
-        Command::Metrics => {
-            let metrics: MetricsResponse =
-                get_json(&client, &base_url, "/v1/metrics", token.as_deref()).await?;
-            println!("{}", serde_json::to_string_pretty(&metrics)?);
+        Command::Metrics { watch, interval_ms } => {
+            if watch {
+                watch_metrics(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    normalize_watch_interval_ms(interval_ms)?,
+                )
+                .await?;
+            } else {
+                let metrics: MetricsResponse =
+                    get_json(&client, &base_url, "/v1/metrics", token.as_deref()).await?;
+                println!("{}", serde_json::to_string_pretty(&metrics)?);
+            }
         }
         Command::Tunnel { command } => match command {
             TunnelCommand::Start {
@@ -525,6 +541,30 @@ async fn watch_upstreams_health(
             get_json(client, base_url, "/v1/upstreams/health", token).await?;
         print!("\x1B[2J\x1B[H");
         println!("{}", format_upstreams_health(&response, format)?);
+        println!();
+        println!("refresh every {}ms, press Ctrl+C to stop", interval_ms);
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(interval_ms)) => {}
+        }
+    }
+
+    Ok(())
+}
+
+async fn watch_metrics(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    loop {
+        let metrics: MetricsResponse = get_json(client, base_url, "/v1/metrics", token).await?;
+        print!("\x1B[2J\x1B[H");
+        println!("{}", serde_json::to_string_pretty(&metrics)?);
         println!();
         println!("refresh every {}ms, press Ctrl+C to stop", interval_ms);
 
