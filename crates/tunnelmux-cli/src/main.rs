@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::{self, Read};
 use std::time::Duration;
 use std::{fs, path::Path, path::PathBuf};
 
@@ -133,6 +134,7 @@ enum RoutesCommand {
 
         #[arg(
             long,
+            help = "Load route payload from JSON file (use '-' for stdin)",
             conflicts_with_all = [
                 "id",
                 "upstream_url",
@@ -174,6 +176,7 @@ enum RoutesCommand {
 
         #[arg(
             long,
+            help = "Load route payload from JSON file (use '-' for stdin)",
             conflicts_with_all = [
                 "upstream_url",
                 "fallback_upstream_url",
@@ -196,7 +199,7 @@ enum RoutesCommand {
     },
     /// Apply route payload(s) from JSON file (upsert by id)
     Apply {
-        #[arg(long)]
+        #[arg(long, help = "Load route payloads from JSON file (use '-' for stdin)")]
         from_json: String,
 
         #[arg(long, default_value_t = false)]
@@ -805,14 +808,26 @@ enum RoutePayloadFile {
 }
 
 fn load_route_requests_from_file(path: &Path) -> anyhow::Result<Vec<CreateRouteRequest>> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read route json file: {}", path.display()))?;
+    let raw = read_route_payload_source(path)?;
     let parsed: RoutePayloadFile = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse route json file: {}", path.display()))?;
     match parsed {
         RoutePayloadFile::Single(route) => Ok(vec![route]),
         RoutePayloadFile::Many(routes) => Ok(routes),
     }
+}
+
+fn read_route_payload_source(path: &Path) -> anyhow::Result<String> {
+    if path == Path::new("-") {
+        let mut raw = String::new();
+        io::stdin()
+            .read_to_string(&mut raw)
+            .context("failed to read route json from stdin")?;
+        return Ok(raw);
+    }
+
+    fs::read_to_string(path)
+        .with_context(|| format!("failed to read route json file: {}", path.display()))
 }
 
 fn ensure_unique_route_ids(routes: &[CreateRouteRequest]) -> anyhow::Result<()> {
