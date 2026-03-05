@@ -48,6 +48,9 @@ enum Command {
         #[arg(long, default_value_t = false)]
         watch: bool,
 
+        #[arg(long, default_value_t = false, conflicts_with = "watch")]
+        stream: bool,
+
         #[arg(long, default_value_t = 2_000)]
         interval_ms: u64,
     },
@@ -308,15 +311,16 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&dashboard)?);
             }
         }
-        Command::Metrics { watch, interval_ms } => {
-            if watch {
-                watch_metrics(
-                    &client,
-                    &base_url,
-                    token.as_deref(),
-                    normalize_watch_interval_ms(interval_ms)?,
-                )
-                .await?;
+        Command::Metrics {
+            watch,
+            stream,
+            interval_ms,
+        } => {
+            let interval_ms = normalize_watch_interval_ms(interval_ms)?;
+            if stream {
+                stream_metrics(&client, &base_url, token.as_deref(), interval_ms).await?;
+            } else if watch {
+                watch_metrics(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
                 let metrics: MetricsResponse =
                     get_json(&client, &base_url, "/v1/metrics", token.as_deref()).await?;
@@ -736,6 +740,56 @@ async fn watch_metrics(
     Ok(())
 }
 
+async fn stream_metrics(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    let url = format!("{}/v1/metrics/stream", base_url);
+    let mut response = request_with_token(client.get(&url), token)
+        .query(&[("interval_ms", interval_ms)])
+        .send()
+        .await
+        .with_context(|| format!("request failed: {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .context("failed to read stream error response body")?;
+        let message = serde_json::from_str::<ErrorResponse>(&body)
+            .map(|err| err.error)
+            .unwrap_or(body);
+        return Err(anyhow!("HTTP {}: {}", status, message));
+    }
+
+    let mut pending = String::new();
+    let mut builder = SseFrameBuilder::default();
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            chunk = response.chunk() => {
+                let chunk = chunk.context("failed to read metrics stream chunk")?;
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                pending.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line) = take_next_sse_line(&mut pending) {
+                    if let Some(frame) = builder.push_line(&line) {
+                        render_metrics_stream_frame(&frame, interval_ms)?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn watch_dashboard(
     client: &Client,
     base_url: &str,
@@ -919,6 +973,29 @@ fn take_next_sse_line(buffer: &mut String) -> Option<String> {
         line.pop();
     }
     Some(line)
+}
+
+fn render_metrics_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Result<()> {
+    match frame.event.as_str() {
+        "snapshot" => {
+            let snapshot: MetricsResponse =
+                serde_json::from_str(&frame.data).with_context(|| {
+                    format!("failed to parse metrics snapshot event: {}", frame.data)
+                })?;
+            print!("\x1B[2J\x1B[H");
+            println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            println!();
+            println!(
+                "metrics stream interval {}ms, press Ctrl+C to stop",
+                interval_ms
+            );
+        }
+        "error" => {
+            eprintln!("metrics stream error: {}", frame.data);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn render_dashboard_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::Result<()> {
