@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::{fs, path::Path};
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -104,11 +105,11 @@ enum RoutesCommand {
     List,
     /// Add a new route
     Add {
-        #[arg(long)]
-        id: String,
+        #[arg(long, required_unless_present = "from_json")]
+        id: Option<String>,
 
-        #[arg(long)]
-        upstream_url: String,
+        #[arg(long, required_unless_present = "from_json")]
+        upstream_url: Option<String>,
 
         #[arg(long)]
         fallback_upstream_url: Option<String>,
@@ -127,6 +128,21 @@ enum RoutesCommand {
 
         #[arg(long, default_value_t = false)]
         disabled: bool,
+
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "id",
+                "upstream_url",
+                "fallback_upstream_url",
+                "health_check_path",
+                "host",
+                "path_prefix",
+                "strip_path_prefix",
+                "disabled"
+            ]
+        )]
+        from_json: Option<String>,
     },
     /// Update an existing route by id
     Update {
@@ -153,6 +169,20 @@ enum RoutesCommand {
 
         #[arg(long, default_value_t = false)]
         disabled: bool,
+
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "upstream_url",
+                "fallback_upstream_url",
+                "health_check_path",
+                "host",
+                "path_prefix",
+                "strip_path_prefix",
+                "disabled"
+            ]
+        )]
+        from_json: Option<String>,
     },
     /// Remove route by id
     Remove {
@@ -299,16 +329,22 @@ async fn main() -> anyhow::Result<()> {
                 path_prefix,
                 strip_path_prefix,
                 disabled,
+                from_json,
             } => {
-                let payload = CreateRouteRequest {
-                    id,
-                    match_host: host,
-                    match_path_prefix: path_prefix,
-                    strip_path_prefix,
-                    upstream_url,
-                    fallback_upstream_url,
-                    health_check_path,
-                    enabled: Some(!disabled),
+                let payload = if let Some(path) = from_json {
+                    load_route_request_from_file(Path::new(&path))?
+                } else {
+                    CreateRouteRequest {
+                        id: id.ok_or_else(|| anyhow!("missing --id"))?,
+                        match_host: host,
+                        match_path_prefix: path_prefix,
+                        strip_path_prefix,
+                        upstream_url: upstream_url
+                            .ok_or_else(|| anyhow!("missing --upstream-url"))?,
+                        fallback_upstream_url,
+                        health_check_path,
+                        enabled: Some(!disabled),
+                    }
                 };
                 let route: tunnelmux_core::RouteRule =
                     post_json(&client, &base_url, "/v1/routes", &payload, token.as_deref()).await?;
@@ -329,16 +365,23 @@ async fn main() -> anyhow::Result<()> {
                 path_prefix,
                 strip_path_prefix,
                 disabled,
+                from_json,
             } => {
-                let payload = CreateRouteRequest {
-                    id: id.clone(),
-                    match_host: host,
-                    match_path_prefix: path_prefix,
-                    strip_path_prefix,
-                    upstream_url,
-                    fallback_upstream_url,
-                    health_check_path,
-                    enabled: Some(!disabled),
+                let payload = if let Some(path) = from_json {
+                    let mut loaded = load_route_request_from_file(Path::new(&path))?;
+                    loaded.id = id.clone();
+                    loaded
+                } else {
+                    CreateRouteRequest {
+                        id: id.clone(),
+                        match_host: host,
+                        match_path_prefix: path_prefix,
+                        strip_path_prefix,
+                        upstream_url,
+                        fallback_upstream_url,
+                        health_check_path,
+                        enabled: Some(!disabled),
+                    }
                 };
                 let endpoint = format!("/v1/routes/{id}");
                 let route: tunnelmux_core::RouteRule =
@@ -673,6 +716,13 @@ fn truncate_cell(value: &str, max_len: usize) -> String {
     format!("{}...", &value[..keep])
 }
 
+fn load_route_request_from_file(path: &Path) -> anyhow::Result<CreateRouteRequest> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read route json file: {}", path.display()))?;
+    serde_json::from_str::<CreateRouteRequest>(&raw)
+        .with_context(|| format!("failed to parse route json file: {}", path.display()))
+}
+
 async fn decode_response<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> anyhow::Result<T> {
@@ -724,6 +774,8 @@ fn normalize_watch_interval_ms(value: u64) -> anyhow::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tunnelmux_core::UpstreamHealthEntry;
 
     #[test]
@@ -783,5 +835,46 @@ mod tests {
         let json = format_upstreams_health(&response, UpstreamsOutputFormat::Json)
             .expect("json format should succeed");
         assert!(json.contains("\"health_check_path\": \"/healthz\""));
+    }
+
+    fn next_test_id() -> u64 {
+        static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
+        NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn temp_route_json_path() -> PathBuf {
+        std::env::temp_dir().join(format!("tunnelmux-cli-route-{}.json", next_test_id()))
+    }
+
+    #[test]
+    fn load_route_request_from_file_reads_valid_json() {
+        let path = temp_route_json_path();
+        fs::write(
+            &path,
+            r#"{
+  "id":"svc-a",
+  "match_host":"demo.local",
+  "match_path_prefix":"/",
+  "strip_path_prefix":null,
+  "upstream_url":"http://127.0.0.1:3000",
+  "fallback_upstream_url":"http://127.0.0.1:3001",
+  "health_check_path":"/healthz",
+  "enabled":true
+}"#,
+        )
+        .expect("write route file");
+        let route = load_route_request_from_file(&path).expect("load route file");
+        assert_eq!(route.id, "svc-a");
+        assert_eq!(route.health_check_path.as_deref(), Some("/healthz"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_route_request_from_file_rejects_invalid_json() {
+        let path = temp_route_json_path();
+        fs::write(&path, r#"{"id":"svc-a","upstream_url":123}"#).expect("write route file");
+        let result = load_route_request_from_file(&path);
+        assert!(result.is_err());
+        let _ = fs::remove_file(path);
     }
 }
