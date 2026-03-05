@@ -6,8 +6,9 @@ use reqwest::Client;
 use serde_json::json;
 use tunnelmux_core::{
     CreateRouteRequest, DEFAULT_CONTROL_ADDR, DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse,
-    ErrorResponse, HealthResponse, RoutesResponse, TunnelLogsResponse, TunnelProvider,
-    TunnelStartRequest, TunnelStatusResponse, UpstreamsHealthResponse,
+    ErrorResponse, HealthCheckSettingsResponse, HealthResponse, RoutesResponse, TunnelLogsResponse,
+    TunnelProvider, TunnelStartRequest, TunnelStatusResponse, UpdateHealthCheckSettingsRequest,
+    UpstreamsHealthResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -41,6 +42,11 @@ enum Command {
     Upstreams {
         #[command(subcommand)]
         command: UpstreamsCommand,
+    },
+    /// Runtime settings controls
+    Settings {
+        #[command(subcommand)]
+        command: SettingsCommand,
     },
 }
 
@@ -136,6 +142,21 @@ enum UpstreamsCommand {
 
         #[arg(long, default_value_t = false)]
         table: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SettingsCommand {
+    /// Read or update health-check settings
+    HealthCheck {
+        #[arg(long)]
+        interval_ms: Option<u64>,
+
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+
+        #[arg(long)]
+        path: Option<String>,
     },
 }
 
@@ -280,6 +301,39 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         },
+        Command::Settings { command } => match command {
+            SettingsCommand::HealthCheck {
+                interval_ms,
+                timeout_ms,
+                path,
+            } => {
+                if interval_ms.is_none() && timeout_ms.is_none() && path.is_none() {
+                    let response: HealthCheckSettingsResponse = get_json(
+                        &client,
+                        &base_url,
+                        "/v1/settings/health-check",
+                        token.as_deref(),
+                    )
+                    .await?;
+                    println!("{}", serde_json::to_string_pretty(&response)?);
+                } else {
+                    let payload = UpdateHealthCheckSettingsRequest {
+                        interval_ms,
+                        timeout_ms,
+                        path,
+                    };
+                    let response: HealthCheckSettingsResponse = put_json(
+                        &client,
+                        &base_url,
+                        "/v1/settings/health-check",
+                        &payload,
+                        token.as_deref(),
+                    )
+                    .await?;
+                    println!("{}", serde_json::to_string_pretty(&response)?);
+                }
+            }
+        },
     }
 
     Ok(())
@@ -323,6 +377,22 @@ async fn delete_json<T: serde::de::DeserializeOwned>(
 ) -> anyhow::Result<T> {
     let url = format!("{}{}", base_url, path);
     let response = request_with_token(client.delete(&url), token)
+        .send()
+        .await
+        .with_context(|| format!("request failed: {url}"))?;
+    decode_response(response).await
+}
+
+async fn put_json<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    base_url: &str,
+    path: &str,
+    payload: &impl serde::Serialize,
+    token: Option<&str>,
+) -> anyhow::Result<T> {
+    let url = format!("{}{}", base_url, path);
+    let response = request_with_token(client.put(&url), token)
+        .json(payload)
         .send()
         .await
         .with_context(|| format!("request failed: {url}"))?;
