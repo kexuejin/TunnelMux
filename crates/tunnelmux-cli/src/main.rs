@@ -7,10 +7,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::Client;
 use serde_json::json;
 use tunnelmux_core::{
-    CreateRouteRequest, DEFAULT_CONTROL_ADDR, DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse,
-    ErrorResponse, HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RoutesResponse,
-    TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelStatusResponse,
-    UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
+    ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
+    DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse, ErrorResponse, HealthCheckSettingsResponse,
+    HealthResponse, MetricsResponse, RoutesResponse, TunnelLogsResponse, TunnelProvider,
+    TunnelStartRequest, TunnelStatusResponse, UpdateHealthCheckSettingsRequest,
+    UpstreamsHealthResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -409,55 +410,21 @@ async fn main() -> anyhow::Result<()> {
             } => {
                 let requests = load_route_requests_from_file(Path::new(&from_json))?;
                 ensure_unique_route_ids(&requests)?;
-                ensure_apply_payload_safe(&requests, replace, allow_empty)?;
-
-                let existing: RoutesResponse =
-                    get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
-                let plan = build_route_apply_plan(&existing.routes, &requests, replace);
-
-                if !dry_run {
-                    let existing_ids = existing
-                        .routes
-                        .iter()
-                        .map(|item| item.id.as_str())
-                        .collect::<HashSet<_>>();
-
-                    for request in &requests {
-                        if existing_ids.contains(request.id.as_str()) {
-                            let endpoint = format!("/v1/routes/{}", request.id);
-                            let _: tunnelmux_core::RouteRule =
-                                put_json(&client, &base_url, &endpoint, request, token.as_deref())
-                                    .await?;
-                        } else {
-                            let _: tunnelmux_core::RouteRule = post_json(
-                                &client,
-                                &base_url,
-                                "/v1/routes",
-                                request,
-                                token.as_deref(),
-                            )
-                            .await?;
-                        }
-                    }
-
-                    for route_id in &plan.removed {
-                        let endpoint = format!("/v1/routes/{route_id}");
-                        let _: DeleteRouteResponse =
-                            delete_json(&client, &base_url, &endpoint, token.as_deref()).await?;
-                    }
-                }
-
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "applied": requests.len(),
-                        "created": plan.created,
-                        "updated": plan.updated,
-                        "removed": plan.removed,
-                        "replace": replace,
-                        "dry_run": dry_run,
-                    }))?
-                );
+                let payload = ApplyRoutesRequest {
+                    routes: requests,
+                    replace: Some(replace),
+                    dry_run: Some(dry_run),
+                    allow_empty: Some(allow_empty),
+                };
+                let response: ApplyRoutesResponse = post_json(
+                    &client,
+                    &base_url,
+                    "/v1/routes/apply",
+                    &payload,
+                    token.as_deref(),
+                )
+                .await?;
+                println!("{}", serde_json::to_string_pretty(&response)?);
             }
             RoutesCommand::Update {
                 id,
@@ -858,66 +825,6 @@ fn ensure_unique_route_ids(routes: &[CreateRouteRequest]) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn ensure_apply_payload_safe(
-    routes: &[CreateRouteRequest],
-    replace: bool,
-    allow_empty: bool,
-) -> anyhow::Result<()> {
-    if replace && routes.is_empty() && !allow_empty {
-        return Err(anyhow!(
-            "refusing to apply empty payload with --replace; pass --allow-empty to confirm full cleanup"
-        ));
-    }
-    Ok(())
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct RouteApplyPlan {
-    created: Vec<String>,
-    updated: Vec<String>,
-    removed: Vec<String>,
-}
-
-fn build_route_apply_plan(
-    existing: &[tunnelmux_core::RouteRule],
-    requests: &[CreateRouteRequest],
-    replace: bool,
-) -> RouteApplyPlan {
-    let existing_ids = existing
-        .iter()
-        .map(|item| item.id.as_str())
-        .collect::<HashSet<_>>();
-
-    let mut created = Vec::new();
-    let mut updated = Vec::new();
-    let mut applied_ids = HashSet::new();
-
-    for request in requests {
-        applied_ids.insert(request.id.as_str());
-        if existing_ids.contains(request.id.as_str()) {
-            updated.push(request.id.clone());
-        } else {
-            created.push(request.id.clone());
-        }
-    }
-
-    let removed = if replace {
-        existing
-            .iter()
-            .filter(|route| !applied_ids.contains(route.id.as_str()))
-            .map(|route| route.id.clone())
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-
-    RouteApplyPlan {
-        created,
-        updated,
-        removed,
-    }
-}
-
 fn route_rule_to_create_request(route: &tunnelmux_core::RouteRule) -> CreateRouteRequest {
     CreateRouteRequest {
         id: route.id.clone(),
@@ -1196,101 +1103,5 @@ mod tests {
             },
         ];
         assert!(ensure_unique_route_ids(&routes).is_err());
-    }
-
-    #[test]
-    fn ensure_apply_payload_safe_rejects_empty_replace_without_allow() {
-        let routes = Vec::<CreateRouteRequest>::new();
-        let result = ensure_apply_payload_safe(&routes, true, false);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn ensure_apply_payload_safe_allows_empty_replace_with_allow_flag() {
-        let routes = Vec::<CreateRouteRequest>::new();
-        let result = ensure_apply_payload_safe(&routes, true, true);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn build_route_apply_plan_classifies_create_update_and_remove() {
-        let existing = vec![
-            tunnelmux_core::RouteRule {
-                id: "svc-a".to_string(),
-                match_host: None,
-                match_path_prefix: None,
-                strip_path_prefix: None,
-                upstream_url: "http://127.0.0.1:3000".to_string(),
-                fallback_upstream_url: None,
-                health_check_path: None,
-                enabled: true,
-            },
-            tunnelmux_core::RouteRule {
-                id: "svc-b".to_string(),
-                match_host: None,
-                match_path_prefix: None,
-                strip_path_prefix: None,
-                upstream_url: "http://127.0.0.1:3001".to_string(),
-                fallback_upstream_url: None,
-                health_check_path: None,
-                enabled: true,
-            },
-        ];
-        let requests = vec![
-            CreateRouteRequest {
-                id: "svc-b".to_string(),
-                match_host: None,
-                match_path_prefix: None,
-                strip_path_prefix: None,
-                upstream_url: "http://127.0.0.1:3010".to_string(),
-                fallback_upstream_url: None,
-                health_check_path: None,
-                enabled: Some(true),
-            },
-            CreateRouteRequest {
-                id: "svc-c".to_string(),
-                match_host: None,
-                match_path_prefix: None,
-                strip_path_prefix: None,
-                upstream_url: "http://127.0.0.1:3002".to_string(),
-                fallback_upstream_url: None,
-                health_check_path: None,
-                enabled: Some(true),
-            },
-        ];
-
-        let plan = build_route_apply_plan(&existing, &requests, true);
-        assert_eq!(plan.created, vec!["svc-c".to_string()]);
-        assert_eq!(plan.updated, vec!["svc-b".to_string()]);
-        assert_eq!(plan.removed, vec!["svc-a".to_string()]);
-    }
-
-    #[test]
-    fn build_route_apply_plan_without_replace_keeps_removed_empty() {
-        let existing = vec![tunnelmux_core::RouteRule {
-            id: "svc-a".to_string(),
-            match_host: None,
-            match_path_prefix: None,
-            strip_path_prefix: None,
-            upstream_url: "http://127.0.0.1:3000".to_string(),
-            fallback_upstream_url: None,
-            health_check_path: None,
-            enabled: true,
-        }];
-        let requests = vec![CreateRouteRequest {
-            id: "svc-b".to_string(),
-            match_host: None,
-            match_path_prefix: None,
-            strip_path_prefix: None,
-            upstream_url: "http://127.0.0.1:3001".to_string(),
-            fallback_upstream_url: None,
-            health_check_path: None,
-            enabled: Some(true),
-        }];
-
-        let plan = build_route_apply_plan(&existing, &requests, false);
-        assert_eq!(plan.created, vec!["svc-b".to_string()]);
-        assert_eq!(plan.updated, Vec::<String>::new());
-        assert_eq!(plan.removed, Vec::<String>::new());
     }
 }

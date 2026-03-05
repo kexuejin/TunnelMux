@@ -84,6 +84,24 @@ pub struct RoutesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplyRoutesRequest {
+    pub routes: Vec<CreateRouteRequest>,
+    pub replace: Option<bool>,
+    pub dry_run: Option<bool>,
+    pub allow_empty: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplyRoutesResponse {
+    pub applied: usize,
+    pub created: Vec<String>,
+    pub updated: Vec<String>,
+    pub removed: Vec<String>,
+    pub replace: bool,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpstreamHealthEntry {
     pub upstream_url: String,
     pub health_check_path: String,

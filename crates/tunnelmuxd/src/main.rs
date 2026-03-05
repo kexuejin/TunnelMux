@@ -48,11 +48,12 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
-    CreateRouteRequest, DEFAULT_CONTROL_ADDR, DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse,
-    ErrorResponse, HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse,
-    MetricsResponse, RouteRule, RoutesResponse, TunnelLogsResponse, TunnelProvider,
-    TunnelStartRequest, TunnelState, TunnelStatus, TunnelStatusResponse,
-    UpdateHealthCheckSettingsRequest, UpstreamHealthEntry, UpstreamsHealthResponse,
+    ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
+    DEFAULT_GATEWAY_TARGET_URL, DeleteRouteResponse, ErrorResponse, HealthCheckSettings,
+    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, RouteRule, RoutesResponse,
+    TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState, TunnelStatus,
+    TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
+    UpstreamsHealthResponse,
 };
 use url::Url;
 
@@ -330,6 +331,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/metrics", get(get_metrics))
         .route("/v1/upstreams/health", get(get_upstreams_health))
         .route("/v1/routes", get(list_routes).post(add_route))
+        .route("/v1/routes/apply", post(apply_routes))
         .route("/v1/routes/{id}", delete(delete_route).put(update_route))
         .layer(middleware::from_fn_with_state(
             shared.clone(),
@@ -781,6 +783,48 @@ async fn delete_route(
 
     persist_from_runtime(&state).await?;
     Ok(Json(DeleteRouteResponse { removed: true }))
+}
+
+async fn apply_routes(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ApplyRoutesRequest>,
+) -> Result<Json<ApplyRoutesResponse>, ApiError> {
+    let replace = request.replace.unwrap_or(false);
+    let dry_run = request.dry_run.unwrap_or(false);
+    let allow_empty = request.allow_empty.unwrap_or(false);
+
+    let normalized = request
+        .routes
+        .into_iter()
+        .map(normalize_route_request)
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure_unique_route_ids(&normalized)?;
+    ensure_apply_payload_safe(&normalized, replace, allow_empty)?;
+
+    let applied = normalized.len();
+    let plan = if dry_run {
+        let runtime = state.runtime.lock().await;
+        build_route_apply_plan(&runtime.persisted.routes, &normalized, replace)
+    } else {
+        let mut runtime = state.runtime.lock().await;
+        let plan = build_route_apply_plan(&runtime.persisted.routes, &normalized, replace);
+        runtime.persisted.routes =
+            apply_route_rules(&runtime.persisted.routes, normalized, replace);
+        plan
+    };
+
+    if !dry_run {
+        persist_from_runtime(&state).await?;
+    }
+
+    Ok(Json(ApplyRoutesResponse {
+        applied,
+        created: plan.created,
+        updated: plan.updated,
+        removed: plan.removed,
+        replace,
+        dry_run,
+    }))
 }
 
 async fn proxy_request(
@@ -1447,6 +1491,96 @@ fn replace_route(routes: &mut [RouteRule], route: RouteRule) -> bool {
         return true;
     }
     false
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RouteApplyPlan {
+    created: Vec<String>,
+    updated: Vec<String>,
+    removed: Vec<String>,
+}
+
+fn ensure_unique_route_ids(routes: &[RouteRule]) -> Result<(), ApiError> {
+    let mut ids = HashSet::new();
+    for route in routes {
+        if !ids.insert(route.id.as_str()) {
+            return Err(ApiError::bad_request(format!(
+                "duplicate route id in payload: {}",
+                route.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_apply_payload_safe(
+    routes: &[RouteRule],
+    replace: bool,
+    allow_empty: bool,
+) -> Result<(), ApiError> {
+    if replace && routes.is_empty() && !allow_empty {
+        return Err(ApiError::bad_request(
+            "refusing empty payload with replace=true; set allow_empty=true to confirm full cleanup",
+        ));
+    }
+    Ok(())
+}
+
+fn build_route_apply_plan(
+    existing: &[RouteRule],
+    incoming: &[RouteRule],
+    replace: bool,
+) -> RouteApplyPlan {
+    let existing_ids = existing
+        .iter()
+        .map(|route| route.id.as_str())
+        .collect::<HashSet<_>>();
+    let mut incoming_ids = HashSet::new();
+    let mut created = Vec::new();
+    let mut updated = Vec::new();
+
+    for route in incoming {
+        incoming_ids.insert(route.id.as_str());
+        if existing_ids.contains(route.id.as_str()) {
+            updated.push(route.id.clone());
+        } else {
+            created.push(route.id.clone());
+        }
+    }
+
+    let removed = if replace {
+        existing
+            .iter()
+            .filter(|route| !incoming_ids.contains(route.id.as_str()))
+            .map(|route| route.id.clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    RouteApplyPlan {
+        created,
+        updated,
+        removed,
+    }
+}
+
+fn apply_route_rules(
+    existing: &[RouteRule],
+    incoming: Vec<RouteRule>,
+    replace: bool,
+) -> Vec<RouteRule> {
+    if replace {
+        return incoming;
+    }
+
+    let mut next = existing.to_vec();
+    for route in incoming {
+        if !replace_route(&mut next, route.clone()) {
+            next.push(route);
+        }
+    }
+    next
 }
 
 fn normalize_health_check_interval_ms(value: u64) -> anyhow::Result<u64> {
@@ -2450,6 +2584,8 @@ mod tests {
                 get(get_health_check_settings).put(update_health_check_settings),
             )
             .route("/v1/metrics", get(get_metrics))
+            .route("/v1/routes", get(list_routes))
+            .route("/v1/routes/apply", post(apply_routes))
             .route("/v1/routes/{id}", axum::routing::put(update_route))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -2832,6 +2968,188 @@ mod tests {
             .send()
             .await
             .expect("mismatch request should complete");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn apply_routes_endpoint_dry_run_does_not_mutate_runtime() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .post(format!("{base_url}/v1/routes/apply"))
+            .json(&ApplyRoutesRequest {
+                routes: vec![CreateRouteRequest {
+                    id: "svc-b".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/b".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3001".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: Some(true),
+                }],
+                replace: Some(true),
+                dry_run: Some(true),
+                allow_empty: Some(false),
+            })
+            .send()
+            .await
+            .expect("apply request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload: ApplyRoutesResponse =
+            response.json().await.expect("apply response should decode");
+        assert_eq!(payload.applied, 1);
+        assert_eq!(payload.created, vec!["svc-b".to_string()]);
+        assert_eq!(payload.updated, Vec::<String>::new());
+        assert_eq!(payload.removed, vec!["svc-a".to_string()]);
+        assert!(payload.replace);
+        assert!(payload.dry_run);
+
+        let runtime = state.runtime.lock().await;
+        assert_eq!(runtime.persisted.routes.len(), 1);
+        assert_eq!(runtime.persisted.routes[0].id, "svc-a");
+        drop(runtime);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn apply_routes_endpoint_replaces_routes_when_enabled() {
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    id: "svc-a".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/a".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    id: "svc-b".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/b".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3001".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+            ],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .post(format!("{base_url}/v1/routes/apply"))
+            .json(&ApplyRoutesRequest {
+                routes: vec![
+                    CreateRouteRequest {
+                        id: "svc-b".to_string(),
+                        match_host: Some("demo.local".to_string()),
+                        match_path_prefix: Some("/b".to_string()),
+                        strip_path_prefix: None,
+                        upstream_url: "http://127.0.0.1:3011".to_string(),
+                        fallback_upstream_url: None,
+                        health_check_path: None,
+                        enabled: Some(false),
+                    },
+                    CreateRouteRequest {
+                        id: "svc-c".to_string(),
+                        match_host: Some("demo.local".to_string()),
+                        match_path_prefix: Some("/c".to_string()),
+                        strip_path_prefix: None,
+                        upstream_url: "http://127.0.0.1:3002".to_string(),
+                        fallback_upstream_url: None,
+                        health_check_path: Some("/ready".to_string()),
+                        enabled: Some(true),
+                    },
+                ],
+                replace: Some(true),
+                dry_run: Some(false),
+                allow_empty: Some(false),
+            })
+            .send()
+            .await
+            .expect("apply request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload: ApplyRoutesResponse =
+            response.json().await.expect("apply response should decode");
+        assert_eq!(payload.applied, 2);
+        assert_eq!(payload.created, vec!["svc-c".to_string()]);
+        assert_eq!(payload.updated, vec!["svc-b".to_string()]);
+        assert_eq!(payload.removed, vec!["svc-a".to_string()]);
+        assert!(payload.replace);
+        assert!(!payload.dry_run);
+
+        let runtime = state.runtime.lock().await;
+        assert_eq!(runtime.persisted.routes.len(), 2);
+        assert_eq!(runtime.persisted.routes[0].id, "svc-b");
+        assert_eq!(
+            runtime.persisted.routes[0].upstream_url,
+            "http://127.0.0.1:3011"
+        );
+        assert!(!runtime.persisted.routes[0].enabled);
+        assert_eq!(runtime.persisted.routes[1].id, "svc-c");
+        assert_eq!(
+            runtime.persisted.routes[1].health_check_path.as_deref(),
+            Some("/ready")
+        );
+        drop(runtime);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn apply_routes_endpoint_rejects_empty_replace_without_allow_empty() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .post(format!("{base_url}/v1/routes/apply"))
+            .json(&ApplyRoutesRequest {
+                routes: Vec::new(),
+                replace: Some(true),
+                dry_run: Some(false),
+                allow_empty: Some(false),
+            })
+            .send()
+            .await
+            .expect("apply request should complete");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         server_task.abort();
@@ -3502,6 +3820,114 @@ mod tests {
             },
         );
         assert!(!updated);
+    }
+
+    #[test]
+    fn ensure_unique_route_ids_rejects_duplicates() {
+        let routes = vec![
+            RouteRule {
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+            RouteRule {
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/b".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3001".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+        ];
+        assert!(ensure_unique_route_ids(&routes).is_err());
+    }
+
+    #[test]
+    fn build_route_apply_plan_classifies_operations() {
+        let existing = vec![
+            RouteRule {
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+            RouteRule {
+                id: "svc-b".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/b".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3001".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+        ];
+        let incoming = vec![
+            RouteRule {
+                id: "svc-b".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/b".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3011".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: false,
+            },
+            RouteRule {
+                id: "svc-c".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/c".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3002".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+        ];
+
+        let plan = build_route_apply_plan(&existing, &incoming, true);
+        assert_eq!(plan.created, vec!["svc-c".to_string()]);
+        assert_eq!(plan.updated, vec!["svc-b".to_string()]);
+        assert_eq!(plan.removed, vec!["svc-a".to_string()]);
+    }
+
+    #[test]
+    fn apply_route_rules_replaces_when_enabled() {
+        let existing = vec![RouteRule {
+            id: "svc-a".to_string(),
+            match_host: None,
+            match_path_prefix: Some("/a".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: None,
+            health_check_path: None,
+            enabled: true,
+        }];
+        let incoming = vec![RouteRule {
+            id: "svc-b".to_string(),
+            match_host: None,
+            match_path_prefix: Some("/b".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3001".to_string(),
+            fallback_upstream_url: None,
+            health_check_path: None,
+            enabled: true,
+        }];
+
+        let applied = apply_route_rules(&existing, incoming, true);
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].id, "svc-b");
     }
 
     #[test]
