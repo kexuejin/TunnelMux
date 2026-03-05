@@ -930,6 +930,7 @@ async fn apply_routes(
         applied,
         created: plan.created,
         updated: plan.updated,
+        unchanged: plan.unchanged,
         removed: plan.removed,
         replace,
         dry_run,
@@ -1606,6 +1607,7 @@ fn replace_route(routes: &mut [RouteRule], route: RouteRule) -> bool {
 struct RouteApplyPlan {
     created: Vec<String>,
     updated: Vec<String>,
+    unchanged: Vec<String>,
     removed: Vec<String>,
 }
 
@@ -1640,20 +1642,27 @@ fn build_route_apply_plan(
     incoming: &[RouteRule],
     replace: bool,
 ) -> RouteApplyPlan {
-    let existing_ids = existing
+    let existing_by_id = existing
         .iter()
-        .map(|route| route.id.as_str())
-        .collect::<HashSet<_>>();
+        .map(|route| (route.id.as_str(), route))
+        .collect::<HashMap<_, _>>();
     let mut incoming_ids = HashSet::new();
     let mut created = Vec::new();
     let mut updated = Vec::new();
+    let mut unchanged = Vec::new();
 
     for route in incoming {
         incoming_ids.insert(route.id.as_str());
-        if existing_ids.contains(route.id.as_str()) {
-            updated.push(route.id.clone());
-        } else {
-            created.push(route.id.clone());
+        match existing_by_id.get(route.id.as_str()) {
+            Some(current) if *current == route => {
+                unchanged.push(route.id.clone());
+            }
+            Some(_) => {
+                updated.push(route.id.clone());
+            }
+            None => {
+                created.push(route.id.clone());
+            }
         }
     }
 
@@ -1670,6 +1679,7 @@ fn build_route_apply_plan(
     RouteApplyPlan {
         created,
         updated,
+        unchanged,
         removed,
     }
 }
@@ -1685,7 +1695,11 @@ fn apply_route_rules(
 
     let mut next = existing.to_vec();
     for route in incoming {
-        if !replace_route(&mut next, route.clone()) {
+        if let Some(index) = next.iter().position(|item| item.id == route.id) {
+            if next[index] != route {
+                next[index] = route;
+            }
+        } else {
             next.push(route);
         }
     }
@@ -3140,6 +3154,7 @@ mod tests {
         assert_eq!(payload.applied, 1);
         assert_eq!(payload.created, vec!["svc-b".to_string()]);
         assert_eq!(payload.updated, Vec::<String>::new());
+        assert_eq!(payload.unchanged, Vec::<String>::new());
         assert_eq!(payload.removed, vec!["svc-a".to_string()]);
         assert!(payload.replace);
         assert!(payload.dry_run);
@@ -3221,6 +3236,7 @@ mod tests {
         assert_eq!(payload.applied, 2);
         assert_eq!(payload.created, vec!["svc-c".to_string()]);
         assert_eq!(payload.updated, vec!["svc-b".to_string()]);
+        assert_eq!(payload.unchanged, Vec::<String>::new());
         assert_eq!(payload.removed, vec!["svc-a".to_string()]);
         assert!(payload.replace);
         assert!(!payload.dry_run);
@@ -3273,6 +3289,57 @@ mod tests {
             .await
             .expect("apply request should complete");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn apply_routes_endpoint_reports_unchanged_routes() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .post(format!("{base_url}/v1/routes/apply"))
+            .json(&ApplyRoutesRequest {
+                routes: vec![CreateRouteRequest {
+                    id: "svc-a".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/a".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: Some(true),
+                }],
+                replace: Some(false),
+                dry_run: Some(true),
+                allow_empty: Some(false),
+            })
+            .send()
+            .await
+            .expect("apply request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload: ApplyRoutesResponse =
+            response.json().await.expect("apply response should decode");
+        assert_eq!(payload.applied, 1);
+        assert_eq!(payload.created, Vec::<String>::new());
+        assert_eq!(payload.updated, Vec::<String>::new());
+        assert_eq!(payload.unchanged, vec!["svc-a".to_string()]);
+        assert_eq!(payload.removed, Vec::<String>::new());
 
         server_task.abort();
     }
@@ -4132,6 +4199,7 @@ mod tests {
         let plan = build_route_apply_plan(&existing, &incoming, true);
         assert_eq!(plan.created, vec!["svc-c".to_string()]);
         assert_eq!(plan.updated, vec!["svc-b".to_string()]);
+        assert_eq!(plan.unchanged, Vec::<String>::new());
         assert_eq!(plan.removed, vec!["svc-a".to_string()]);
     }
 
