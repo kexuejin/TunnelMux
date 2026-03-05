@@ -4,6 +4,11 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-05
+
+- Sync `Cargo.lock` with workspace version bump so `--locked` release builds pass.
+- Keep GitHub Actions release matrix compatible with current macOS Intel runner labels.
+
 ## [0.1.1] - 2026-03-05
 
 - Add open-source repository baseline (governance docs and issue/PR templates).
