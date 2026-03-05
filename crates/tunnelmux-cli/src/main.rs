@@ -236,6 +236,9 @@ enum UpstreamsCommand {
         #[arg(long, default_value_t = false)]
         watch: bool,
 
+        #[arg(long, default_value_t = false, conflicts_with = "watch")]
+        stream: bool,
+
         #[arg(long, default_value_t = 2_000)]
         interval_ms: u64,
 
@@ -492,6 +495,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Upstreams { command } => match command {
             UpstreamsCommand::Health {
                 watch,
+                stream,
                 interval_ms,
                 json,
                 table: _,
@@ -501,12 +505,22 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     UpstreamsOutputFormat::Table
                 };
-                if watch {
+                let interval_ms = normalize_watch_interval_ms(interval_ms)?;
+                if stream {
+                    stream_upstreams_health(
+                        &client,
+                        &base_url,
+                        token.as_deref(),
+                        interval_ms,
+                        format,
+                    )
+                    .await?;
+                } else if watch {
                     watch_upstreams_health(
                         &client,
                         &base_url,
                         token.as_deref(),
-                        normalize_watch_interval_ms(interval_ms)?,
+                        interval_ms,
                         format,
                     )
                     .await?;
@@ -797,6 +811,57 @@ async fn stream_dashboard(
     Ok(())
 }
 
+async fn stream_upstreams_health(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    interval_ms: u64,
+    format: UpstreamsOutputFormat,
+) -> anyhow::Result<()> {
+    let url = format!("{}/v1/upstreams/health/stream", base_url);
+    let mut response = request_with_token(client.get(&url), token)
+        .query(&[("interval_ms", interval_ms)])
+        .send()
+        .await
+        .with_context(|| format!("request failed: {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .context("failed to read stream error response body")?;
+        let message = serde_json::from_str::<ErrorResponse>(&body)
+            .map(|err| err.error)
+            .unwrap_or(body);
+        return Err(anyhow!("HTTP {}: {}", status, message));
+    }
+
+    let mut pending = String::new();
+    let mut builder = SseFrameBuilder::default();
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            chunk = response.chunk() => {
+                let chunk = chunk.context("failed to read upstreams stream chunk")?;
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                pending.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line) = take_next_sse_line(&mut pending) {
+                    if let Some(frame) = builder.push_line(&line) {
+                        render_upstreams_stream_frame(&frame, interval_ms, format)?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SseFrame {
     event: String,
@@ -873,6 +938,33 @@ fn render_dashboard_stream_frame(frame: &SseFrame, interval_ms: u64) -> anyhow::
         }
         "error" => {
             eprintln!("dashboard stream error: {}", frame.data);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn render_upstreams_stream_frame(
+    frame: &SseFrame,
+    interval_ms: u64,
+    format: UpstreamsOutputFormat,
+) -> anyhow::Result<()> {
+    match frame.event.as_str() {
+        "snapshot" => {
+            let snapshot: UpstreamsHealthResponse = serde_json::from_str(&frame.data)
+                .with_context(|| {
+                    format!("failed to parse upstreams snapshot event: {}", frame.data)
+                })?;
+            print!("\x1B[2J\x1B[H");
+            println!("{}", format_upstreams_health(&snapshot, format)?);
+            println!();
+            println!(
+                "upstreams stream interval {}ms, press Ctrl+C to stop",
+                interval_ms
+            );
+        }
+        "error" => {
+            eprintln!("upstreams stream error: {}", frame.data);
         }
         _ => {}
     }

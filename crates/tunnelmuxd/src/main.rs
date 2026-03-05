@@ -242,7 +242,7 @@ struct TunnelLogsStreamQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct DashboardStreamQuery {
+struct StreamIntervalQuery {
     interval_ms: Option<u64>,
 }
 
@@ -337,6 +337,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/dashboard/stream", get(stream_dashboard))
         .route("/v1/metrics", get(get_metrics))
         .route("/v1/upstreams/health", get(get_upstreams_health))
+        .route("/v1/upstreams/health/stream", get(stream_upstreams_health))
         .route("/v1/routes", get(list_routes).post(add_route))
         .route("/v1/routes/apply", post(apply_routes))
         .route("/v1/routes/{id}", delete(delete_route).put(update_route))
@@ -676,25 +677,49 @@ async fn list_routes(State(state): State<Arc<AppState>>) -> Json<RoutesResponse>
 }
 
 async fn get_upstreams_health(State(state): State<Arc<AppState>>) -> Json<UpstreamsHealthResponse> {
-    let routes = {
-        let runtime = state.runtime.lock().await;
-        runtime.persisted.routes.clone()
-    };
-    let health_map = {
-        let upstream_health = state.upstream_health.lock().await;
-        upstream_health.clone()
-    };
-    let default_health_check_path = {
-        let settings = state.health_check_settings.read().await;
-        settings.path.clone()
-    };
-    Json(UpstreamsHealthResponse {
-        upstreams: collect_upstream_health_entries(
-            &routes,
-            &default_health_check_path,
-            &health_map,
-        ),
-    })
+    Json(build_upstreams_health_snapshot(&state).await)
+}
+
+async fn stream_upstreams_health(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<StreamIntervalQuery>,
+) -> Result<Response, ApiError> {
+    let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
+    let state_for_task = state.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let snapshot = build_upstreams_health_snapshot(&state_for_task).await;
+            let payload = match serde_json::to_string(&snapshot) {
+                Ok(value) => value,
+                Err(err) => {
+                    let _ = tx
+                        .send(Ok(Event::default().event("error").data(format!(
+                            "failed to serialize upstream health snapshot: {err}"
+                        ))))
+                        .await;
+                    return;
+                }
+            };
+            if tx
+                .send(Ok(Event::default().event("snapshot").data(payload)))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            sleep(Duration::from_millis(interval_ms)).await;
+        }
+    });
+
+    Ok(Sse::new(ReceiverStream::new(rx))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response())
 }
 
 async fn get_metrics(State(state): State<Arc<AppState>>) -> Json<MetricsResponse> {
@@ -736,9 +761,9 @@ async fn get_dashboard(
 
 async fn stream_dashboard(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<DashboardStreamQuery>,
+    Query(query): Query<StreamIntervalQuery>,
 ) -> Result<Response, ApiError> {
-    let interval_ms = normalize_dashboard_stream_interval_ms(query.interval_ms)?;
+    let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     let state_for_task = state.clone();
 
@@ -827,6 +852,28 @@ async fn build_dashboard_snapshot(state: &Arc<AppState>) -> Result<DashboardResp
         routes,
         upstreams,
     })
+}
+
+async fn build_upstreams_health_snapshot(state: &Arc<AppState>) -> UpstreamsHealthResponse {
+    let routes = {
+        let runtime = state.runtime.lock().await;
+        runtime.persisted.routes.clone()
+    };
+    let health_map = {
+        let upstream_health = state.upstream_health.lock().await;
+        upstream_health.clone()
+    };
+    let default_health_check_path = {
+        let settings = state.health_check_settings.read().await;
+        settings.path.clone()
+    };
+    UpstreamsHealthResponse {
+        upstreams: collect_upstream_health_entries(
+            &routes,
+            &default_health_check_path,
+            &health_map,
+        ),
+    }
 }
 
 async fn add_route(
@@ -1816,7 +1863,7 @@ fn normalize_log_stream_poll_ms(poll_ms: Option<u64>) -> Result<u64, ApiError> {
     Ok(poll_ms)
 }
 
-fn normalize_dashboard_stream_interval_ms(interval_ms: Option<u64>) -> Result<u64, ApiError> {
+fn normalize_stream_interval_ms(interval_ms: Option<u64>) -> Result<u64, ApiError> {
     let interval_ms = interval_ms.unwrap_or(2_000);
     if interval_ms < 200 {
         return Err(ApiError::bad_request("interval_ms must be >= 200"));
@@ -2720,6 +2767,8 @@ mod tests {
             .route("/v1/dashboard", get(get_dashboard))
             .route("/v1/dashboard/stream", get(stream_dashboard))
             .route("/v1/metrics", get(get_metrics))
+            .route("/v1/upstreams/health", get(get_upstreams_health))
+            .route("/v1/upstreams/health/stream", get(stream_upstreams_health))
             .route("/v1/routes", get(list_routes))
             .route("/v1/routes/apply", post(apply_routes))
             .route("/v1/routes/{id}", axum::routing::put(update_route))
@@ -3438,6 +3487,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstreams_health_stream_endpoint_emits_snapshot_event() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/a".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .get(format!(
+                "{base_url}/v1/upstreams/health/stream?interval_ms=200"
+            ))
+            .send()
+            .await
+            .expect("upstreams health stream request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(content_type.starts_with("text/event-stream"));
+
+        let mut stream = response.bytes_stream();
+        let first_chunk = timeout(Duration::from_secs(3), stream.next())
+            .await
+            .expect("stream should emit within timeout")
+            .expect("stream should produce chunk")
+            .expect("chunk should decode");
+        let body = String::from_utf8_lossy(&first_chunk);
+        assert!(body.contains("event: snapshot"));
+        assert!(body.contains("data: "));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
     async fn metrics_endpoint_returns_runtime_snapshot() {
         let state = test_state_with_routes(
             vec![
@@ -3676,21 +3772,15 @@ mod tests {
     }
 
     #[test]
-    fn normalize_dashboard_stream_interval_ms_applies_bounds() {
+    fn normalize_stream_interval_ms_applies_bounds() {
+        assert_eq!(normalize_stream_interval_ms(None).expect("default"), 2_000);
+        assert_eq!(normalize_stream_interval_ms(Some(200)).expect("min"), 200);
         assert_eq!(
-            normalize_dashboard_stream_interval_ms(None).expect("default"),
-            2_000
-        );
-        assert_eq!(
-            normalize_dashboard_stream_interval_ms(Some(200)).expect("min"),
-            200
-        );
-        assert_eq!(
-            normalize_dashboard_stream_interval_ms(Some(60_000)).expect("max"),
+            normalize_stream_interval_ms(Some(60_000)).expect("max"),
             60_000
         );
-        assert!(normalize_dashboard_stream_interval_ms(Some(199)).is_err());
-        assert!(normalize_dashboard_stream_interval_ms(Some(60_001)).is_err());
+        assert!(normalize_stream_interval_ms(Some(199)).is_err());
+        assert!(normalize_stream_interval_ms(Some(60_001)).is_err());
     }
 
     #[test]
