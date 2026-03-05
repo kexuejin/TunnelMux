@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "tunnelmux-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1718,14 +1718,14 @@ dependencies = [
 
 [[package]]
 name = "tunnelmux-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "tunnelmuxd"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
