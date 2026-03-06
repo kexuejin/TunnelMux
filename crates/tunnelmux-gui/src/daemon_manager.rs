@@ -306,10 +306,70 @@ pub fn find_binary_on_path(binary_name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.exists())
 }
 
+pub fn resolve_provider_binary(binary_name: &str) -> Option<PathBuf> {
+    resolve_binary_in_dirs(binary_name, common_provider_search_dirs())
+}
+
+fn resolve_binary_in_dirs(
+    binary_name: &str,
+    search_dirs: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    search_dirs
+        .into_iter()
+        .flat_map(|path| [path.join(binary_name), path.join(format!("{binary_name}.exe"))])
+        .find(|candidate| candidate.exists())
+}
+
+fn common_provider_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Some(path_var) = env::var_os("PATH") {
+        dirs.extend(env::split_paths(&path_var));
+    }
+
+    #[cfg(unix)]
+    {
+        dirs.extend([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+            PathBuf::from("/snap/bin"),
+        ]);
+    }
+
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 pub fn spawn_managed_daemon(
     binary: &ResolvedDaemonBinary,
     settings: &GuiSettings,
 ) -> anyhow::Result<ManagedDaemonProcess> {
+    let mut command = build_managed_daemon_command(
+        binary,
+        settings,
+        resolve_provider_binary("cloudflared"),
+        resolve_provider_binary("ngrok"),
+    )?;
+
+    let child = command
+        .spawn()
+        .with_context(|| format!("failed to spawn tunnelmuxd from {}", binary.path.display()))?;
+
+    Ok(ManagedDaemonProcess {
+        binary: binary.clone(),
+        handle: child,
+    })
+}
+
+fn build_managed_daemon_command(
+    binary: &ResolvedDaemonBinary,
+    settings: &GuiSettings,
+    cloudflared_binary: Option<PathBuf>,
+    ngrok_binary: Option<PathBuf>,
+) -> anyhow::Result<Command> {
     let listen = control_listen_arg(&settings.base_url)?;
     let gateway = gateway_listen_arg(&settings.gateway_target_url)?;
 
@@ -327,14 +387,14 @@ pub fn spawn_managed_daemon(
         command.arg("--api-token").arg(token);
     }
 
-    let child = command
-        .spawn()
-        .with_context(|| format!("failed to spawn tunnelmuxd from {}", binary.path.display()))?;
+    if let Some(path) = cloudflared_binary {
+        command.arg("--cloudflared-bin").arg(path);
+    }
+    if let Some(path) = ngrok_binary {
+        command.arg("--ngrok-bin").arg(path);
+    }
 
-    Ok(ManagedDaemonProcess {
-        binary: binary.clone(),
-        handle: child,
-    })
+    Ok(command)
 }
 
 pub async fn wait_for_daemon_ready(settings: &GuiSettings) -> anyhow::Result<()> {
@@ -412,6 +472,46 @@ mod tests {
 
         assert_eq!(resolved.path, path_binary);
         assert_eq!(resolved.source, DaemonBinarySource::Path);
+    }
+
+    #[test]
+    fn provider_binary_resolution_uses_common_directories() {
+        let temp_dir = prepare_temp_dir();
+        let tools_dir = temp_dir.join("tools");
+        std::fs::create_dir_all(&tools_dir).expect("tool dir should be created");
+        let provider = tools_dir.join("cloudflared");
+        std::fs::write(&provider, "").expect("provider fixture should write");
+
+        let resolved = resolve_binary_in_dirs("cloudflared", vec![tools_dir.clone()])
+            .expect("provider should resolve from common search dir");
+
+        assert_eq!(resolved, provider);
+    }
+
+    #[test]
+    fn managed_daemon_command_passes_resolved_provider_paths() {
+        let binary = ResolvedDaemonBinary {
+            path: PathBuf::from("/tmp/tunnelmuxd"),
+            source: DaemonBinarySource::Path,
+        };
+        let settings = GuiSettings::default();
+        let command = build_managed_daemon_command(
+            &binary,
+            &settings,
+            Some(PathBuf::from("/opt/homebrew/bin/cloudflared")),
+            Some(PathBuf::from("/opt/homebrew/bin/ngrok")),
+        )
+        .expect("command should build");
+
+        let args: Vec<String> = command
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.windows(2).any(|items| {
+            items == ["--cloudflared-bin", "/opt/homebrew/bin/cloudflared"]
+        }));
+        assert!(args.windows(2).any(|items| items == ["--ngrok-bin", "/opt/homebrew/bin/ngrok"]));
     }
 
     #[test]

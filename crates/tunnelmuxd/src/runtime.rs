@@ -501,6 +501,11 @@ pub(super) async fn spawn_provider_process(
     state: &Arc<AppState>,
     request: &TunnelStartRequest,
 ) -> anyhow::Result<SpawnedTunnel> {
+    let provider_binary = match request.provider {
+        TunnelProvider::Cloudflared => state.cloudflared_bin.as_str(),
+        TunnelProvider::Ngrok => state.ngrok_bin.as_str(),
+    };
+
     let mut command = match request.provider {
         TunnelProvider::Cloudflared => {
             let mut cmd = Command::new(&state.cloudflared_bin);
@@ -555,7 +560,7 @@ pub(super) async fn spawn_provider_process(
 
     let mut child = command
         .spawn()
-        .with_context(|| format!("failed to spawn provider command: {:?}", request.provider))?;
+        .map_err(|error| provider_spawn_error(&request.provider, provider_binary, error))?;
     let process_id = child.id();
     let public_url = wait_for_public_url(
         &mut child,
@@ -571,6 +576,22 @@ pub(super) async fn spawn_provider_process(
         public_url,
         process_id,
     })
+}
+
+pub(super) fn provider_spawn_error(
+    provider: &TunnelProvider,
+    binary: &str,
+    error: std::io::Error,
+) -> anyhow::Error {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return anyhow!(
+            "provider executable not found: {} ({:?}); install it or configure the daemon binary path",
+            binary,
+            provider
+        );
+    }
+
+    anyhow!(error).context(format!("failed to spawn provider command: {:?}", provider))
 }
 
 pub(super) async fn wait_for_public_url(
@@ -770,4 +791,25 @@ pub(super) async fn terminate_child(child: &mut Child) -> anyhow::Result<()> {
     let _ = child.start_kill();
     let _ = timeout(Duration::from_secs(5), child.wait()).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn provider_spawn_error_mentions_missing_executable_path() {
+        let error = provider_spawn_error(
+            &TunnelProvider::Cloudflared,
+            "/missing/cloudflared",
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+
+        assert!(
+            error
+                .to_string()
+                .contains("provider executable not found: /missing/cloudflared"),
+            "unexpected error: {error}"
+        );
+    }
 }
