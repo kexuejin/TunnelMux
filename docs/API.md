@@ -4,6 +4,18 @@ Base control URL: `http://127.0.0.1:4765`
 
 Gateway URL: `http://127.0.0.1:18080` (default; configurable via daemon flags)
 
+Runtime/config file split:
+- `~/.tunnelmux/config.json` stores declarative routes and health-check settings
+- `~/.tunnelmux/state.json` stores the daemon-owned runtime snapshot
+- when `config.json` exists, the daemon polls it and hot-reloads route / health-check changes
+
+Relevant daemon flags:
+- `--data-file <PATH>` (default `~/.tunnelmux/state.json`)
+- `--config-file <PATH>` (default `~/.tunnelmux/config.json`)
+- `--config-reload-interval-ms <MS>` (default `1000`)
+- `--provider-log-file <PATH>` (default `~/.tunnelmux/provider.log`)
+- `--api-token <TOKEN>`
+
 ## Authentication
 
 When `--api-token` (or `TUNNELMUX_API_TOKEN`) is configured:
@@ -37,8 +49,6 @@ Example response:
 
 Daemon flags related to lifecycle behavior:
 - `--max-auto-restarts <N>` (default `10`)
-- `--provider-log-file <PATH>` (default `~/.tunnelmux/provider.log`)
-- `--api-token <TOKEN>`
 - `--health-check-interval-ms <MS>` (default `5000`)
 - `--health-check-timeout-ms <MS>` (default `2000`)
 - `--health-check-path <PATH>` (default `/`)
@@ -130,7 +140,92 @@ curl -N -H "Authorization: Bearer dev-token" \
 }
 ```
 
-## 4. Upstream Health
+## 4. Settings
+
+- `GET /v1/settings/health-check`
+- `PUT /v1/settings/health-check`
+- `POST /v1/settings/reload`
+
+`GET /v1/settings/health-check` example:
+
+```json
+{
+  "health_check": {
+    "interval_ms": 5000,
+    "timeout_ms": 2000,
+    "path": "/"
+  }
+}
+```
+
+`PUT /v1/settings/health-check` request example:
+
+```json
+{
+  "interval_ms": 7500,
+  "timeout_ms": 1500,
+  "path": "/readyz"
+}
+```
+
+`PUT /v1/settings/health-check` response example:
+
+```json
+{
+  "health_check": {
+    "interval_ms": 7500,
+    "timeout_ms": 1500,
+    "path": "/readyz"
+  }
+}
+```
+
+`POST /v1/settings/reload` forces an immediate settings refresh.
+
+Reload behavior:
+- if `config.json` exists, reload prefers the declarative config file
+- if `config.json` does not exist, reload falls back to `state.json`
+- the current tunnel runtime state is preserved; routes and health-check settings are refreshed
+- request body is optional; an empty JSON object is accepted
+
+`POST /v1/settings/reload` response example:
+
+```json
+{
+  "reloaded": true,
+  "route_count": 1,
+  "tunnel_state": "error"
+}
+```
+
+## 5. Diagnostics
+
+- `GET /v1/diagnostics`
+
+Example response:
+
+```json
+{
+  "data_file": "/Users/example/.tunnelmux/state.json",
+  "config_file": "/Users/example/.tunnelmux/config.json",
+  "provider_log_file": "/Users/example/.tunnelmux/provider.log",
+  "route_count": 2,
+  "enabled_route_count": 1,
+  "tunnel_state": "running",
+  "pending_restart": true,
+  "config_reload_enabled": true,
+  "config_reload_interval_ms": 1000,
+  "last_config_reload_at": null,
+  "last_config_reload_error": null
+}
+```
+
+Notes:
+- `config_reload_enabled` indicates whether background polling is active
+- `last_config_reload_at` reports the last successful declarative config apply time
+- `last_config_reload_error` reports the latest polling / parse error while keeping the last good config active
+
+## 6. Upstream Health
 
 - `GET /v1/upstreams/health`
 - `GET /v1/upstreams/health/stream`
@@ -162,7 +257,7 @@ Notes:
 - dedupe key is `(upstream_url, health_check_path)`
 - `healthy = null` means no probe result yet
 
-## 5. Gateway Forwarding Behavior
+## 7. Gateway Forwarding Behavior
 
 Routing behavior:
 - only `enabled = true` routes are considered
