@@ -190,7 +190,9 @@ fn tunnel_state_label(state: &TunnelState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tunnelmux_core::{DiagnosticsResponse, TunnelLogsResponse, TunnelState, UpstreamHealthEntry};
+    use tunnelmux_core::{
+        DiagnosticsResponse, TunnelLogsResponse, TunnelState, UpstreamHealthEntry,
+    };
 
     #[test]
     fn diagnostics_summary_vm_preserves_counts_and_reload_state() {
@@ -238,20 +240,14 @@ mod tests {
         let log_tail = LogTailVm::from_response(
             200,
             TunnelLogsResponse {
-                lines: vec![
-                    "first log line".to_string(),
-                    "second log line".to_string(),
-                ],
+                lines: vec!["first log line".to_string(), "second log line".to_string()],
             },
         );
 
         assert_eq!(log_tail.requested_lines, 200);
         assert_eq!(
             log_tail.lines,
-            vec![
-                "first log line".to_string(),
-                "second log line".to_string(),
-            ]
+            vec!["first log line".to_string(), "second log line".to_string(),]
         );
     }
 }
