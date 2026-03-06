@@ -137,13 +137,121 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Windows signing CLI
+        if: runner.os == 'Windows' && vars.GUI_WINDOWS_SIGNING_REQUIRED == 'true'
+        shell: bash
+        run: cargo install trusted-signing-cli --locked
+
+      - name: Prepare GUI signing
+        shell: bash
+        env:
+          GUI_MACOS_SIGNING_REQUIRED: ${{ vars.GUI_MACOS_SIGNING_REQUIRED }}
+          GUI_WINDOWS_SIGNING_REQUIRED: ${{ vars.GUI_WINDOWS_SIGNING_REQUIRED }}
+          WINDOWS_TRUSTED_SIGNING_ENDPOINT: ${{ vars.WINDOWS_TRUSTED_SIGNING_ENDPOINT }}
+          WINDOWS_TRUSTED_SIGNING_ACCOUNT: ${{ vars.WINDOWS_TRUSTED_SIGNING_ACCOUNT }}
+          WINDOWS_TRUSTED_SIGNING_PROFILE: ${{ vars.WINDOWS_TRUSTED_SIGNING_PROFILE }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          BUILD_ARGS="--bundles ${{ matrix.bundle }} --target ${{ matrix.target }}"
+
+          case "${{ runner.os }}" in
+            macOS)
+              if [[ "${GUI_MACOS_SIGNING_REQUIRED:-}" == "true" ]]; then
+                required=(
+                  APPLE_CERTIFICATE
+                  APPLE_CERTIFICATE_PASSWORD
+                  APPLE_SIGNING_IDENTITY
+                  APPLE_API_ISSUER
+                  APPLE_API_KEY
+                  APPLE_API_PRIVATE_KEY
+                )
+                missing=()
+                for var_name in "${required[@]}"; do
+                  if [[ -z "${!var_name:-}" ]]; then
+                    missing+=("$var_name")
+                  fi
+                done
+                if [[ ${#missing[@]} -gt 0 ]]; then
+                  printf 'macOS signing required but missing: %s\n' "${missing[*]}" >&2
+                  exit 1
+                fi
+
+                key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+                printf '%s' "$APPLE_API_PRIVATE_KEY" > "$key_path"
+                chmod 600 "$key_path"
+                echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+                echo "GUI_SIGNING_MODE=macos-signed" >> "$GITHUB_ENV"
+                echo "macOS GUI signing enabled"
+              else
+                echo "GUI_SIGNING_MODE=unsigned" >> "$GITHUB_ENV"
+                echo "macOS GUI signing disabled; building unsigned installer"
+              fi
+              ;;
+            Windows)
+              if [[ "${GUI_WINDOWS_SIGNING_REQUIRED:-}" == "true" ]]; then
+                required=(
+                  AZURE_CLIENT_ID
+                  AZURE_CLIENT_SECRET
+                  AZURE_TENANT_ID
+                  WINDOWS_TRUSTED_SIGNING_ENDPOINT
+                  WINDOWS_TRUSTED_SIGNING_ACCOUNT
+                  WINDOWS_TRUSTED_SIGNING_PROFILE
+                )
+                missing=()
+                for var_name in "${required[@]}"; do
+                  if [[ -z "${!var_name:-}" ]]; then
+                    missing+=("$var_name")
+                  fi
+                done
+                if [[ ${#missing[@]} -gt 0 ]]; then
+                  printf 'Windows signing required but missing: %s\n' "${missing[*]}" >&2
+                  exit 1
+                fi
+
+                signing_config="$RUNNER_TEMP/tauri.windows.signing.conf.json"
+                bash scripts/write-gui-windows-signing-config.sh "$signing_config"
+                BUILD_ARGS="$BUILD_ARGS -c $signing_config"
+                echo "TAURI_WINDOWS_SIGNING_CONFIG=$signing_config" >> "$GITHUB_ENV"
+                echo "GUI_SIGNING_MODE=windows-signed" >> "$GITHUB_ENV"
+                echo "Windows GUI signing enabled"
+              else
+                echo "GUI_SIGNING_MODE=unsigned" >> "$GITHUB_ENV"
+                echo "Windows GUI signing disabled; building unsigned installer"
+              fi
+              ;;
+            *)
+              echo "GUI_SIGNING_MODE=unsigned" >> "$GITHUB_ENV"
+              echo "Linux GUI bundles remain unsigned in this workflow"
+              ;;
+          esac
+
+          echo "TAURI_BUILD_ARGS=$BUILD_ARGS" >> "$GITHUB_ENV"
+
       - name: Build GUI bundle
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         with:
           projectPath: crates/tunnelmux-gui
-          args: --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
+          args: ${{ env.TAURI_BUILD_ARGS }}
 
       - name: Collect GUI bundle artifacts
         shell: bash
