@@ -5,8 +5,8 @@ use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DashboardResponse,
     DeleteRouteResponse, DiagnosticsResponse, ErrorResponse, HealthCheckSettingsResponse,
     HealthResponse, MetricsResponse, ReloadSettingsResponse, RouteMatchResponse, RouteRule,
-    RoutesResponse, TunnelStartRequest, TunnelStatusResponse, UpdateHealthCheckSettingsRequest,
-    UpstreamsHealthResponse,
+    RoutesResponse, TunnelLogsResponse, TunnelStartRequest, TunnelStatusResponse,
+    UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +71,17 @@ impl TunnelmuxControlClient {
 
     pub async fn diagnostics(&self) -> anyhow::Result<DiagnosticsResponse> {
         self.get("/v1/diagnostics").await
+    }
+
+    pub async fn tunnel_logs(&self, lines: usize) -> anyhow::Result<TunnelLogsResponse> {
+        let url = self.url("/v1/tunnel/logs");
+        let response = self
+            .request_with_token(self.client.get(&url))
+            .query(&[("lines", lines)])
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
     }
 
     pub async fn dashboard(&self) -> anyhow::Result<DashboardResponse> {
@@ -284,17 +295,18 @@ mod tests {
     use super::*;
     use axum::{
         Json, Router,
-        extract::State,
+        extract::{Query, State},
         http::{HeaderMap, StatusCode},
         routing::{get, post},
     };
-    use std::{net::SocketAddr, sync::Arc};
+    use std::{collections::HashMap, net::SocketAddr, sync::Arc};
     use tokio::{net::TcpListener, sync::Mutex};
     use tunnelmux_core::{TunnelProvider, TunnelState};
 
     #[derive(Debug, Default)]
     struct TestState {
         auth_headers: Mutex<Vec<Option<String>>>,
+        log_line_queries: Mutex<Vec<Option<String>>>,
     }
 
     #[tokio::test]
@@ -325,6 +337,59 @@ mod tests {
         assert_eq!(
             auth_headers.as_slice(),
             &[Some("Bearer dev-token".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn tunnel_logs_decodes_success_payload() {
+        let state = Arc::new(TestState::default());
+        let app = Router::new()
+            .route("/v1/tunnel/logs", get(tunnel_logs_handler))
+            .with_state(state.clone());
+        let base_url = spawn_test_server(app).await;
+        let client = TunnelmuxControlClient::new(ControlClientConfig::new(
+            base_url,
+            Some("dev-token".to_string()),
+        ));
+
+        let response = client
+            .tunnel_logs(50)
+            .await
+            .expect("logs request should succeed");
+
+        assert_eq!(
+            response.lines,
+            vec![
+                "provider booted".to_string(),
+                "tunnel connected".to_string()
+            ]
+        );
+
+        let auth_headers = state.auth_headers.lock().await;
+        assert_eq!(
+            auth_headers.as_slice(),
+            &[Some("Bearer dev-token".to_string())]
+        );
+        drop(auth_headers);
+
+        let log_line_queries = state.log_line_queries.lock().await;
+        assert_eq!(log_line_queries.as_slice(), &[Some("50".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn tunnel_logs_surfaces_structured_error_message() {
+        let app = Router::new().route("/v1/tunnel/logs", get(logs_error_handler));
+        let base_url = spawn_test_server(app).await;
+        let client = TunnelmuxControlClient::new(ControlClientConfig::new(base_url, None));
+
+        let err = client
+            .tunnel_logs(100)
+            .await
+            .expect_err("logs request should fail");
+
+        assert!(
+            err.to_string().contains("provider log unavailable"),
+            "unexpected error: {err:#}"
         );
     }
 
@@ -379,6 +444,40 @@ mod tests {
                 last_error: None,
             },
         })
+    }
+
+    async fn tunnel_logs_handler(
+        State(state): State<Arc<TestState>>,
+        headers: HeaderMap,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<TunnelLogsResponse> {
+        state.auth_headers.lock().await.push(
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+        );
+        state
+            .log_line_queries
+            .lock()
+            .await
+            .push(query.get("lines").cloned());
+
+        Json(TunnelLogsResponse {
+            lines: vec![
+                "provider booted".to_string(),
+                "tunnel connected".to_string(),
+            ],
+        })
+    }
+
+    async fn logs_error_handler() -> (StatusCode, Json<ErrorResponse>) {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "provider log unavailable".to_string(),
+            }),
+        )
     }
 
     async fn route_error_handler() -> (StatusCode, Json<ErrorResponse>) {
