@@ -1,5 +1,6 @@
 use crate::settings::{GuiSettings, load_settings_from_dir, save_settings_to_dir};
 use crate::state::GuiAppState;
+use crate::view_models::{RouteFormData, RouteWorkspaceSnapshot};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -86,6 +87,35 @@ pub async fn stop_tunnel(
     stop_tunnel_from_settings_dir(&settings_dir).await
 }
 
+#[tauri::command]
+pub async fn list_routes(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<RouteWorkspaceSnapshot, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    list_routes_from_settings_dir(&settings_dir).await
+}
+
+#[tauri::command]
+pub async fn save_route(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    form: RouteFormData,
+) -> Result<RouteWorkspaceSnapshot, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    save_route_from_settings_dir(&settings_dir, form).await
+}
+
+#[tauri::command]
+pub async fn delete_route(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    id: String,
+) -> Result<RouteWorkspaceSnapshot, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    delete_route_from_settings_dir(&settings_dir, id).await
+}
+
 pub async fn probe_connection_from_settings_dir(settings_dir: &Path) -> Result<ConnectionStatus, String> {
     let (_, client) = load_client(settings_dir)?;
     match client.health().await {
@@ -166,6 +196,50 @@ pub async fn stop_tunnel_from_settings_dir(settings_dir: &Path) -> Result<Dashbo
         tunnel: Some(response.tunnel),
         message: None,
     })
+}
+
+
+pub async fn list_routes_from_settings_dir(
+    settings_dir: &Path,
+) -> Result<RouteWorkspaceSnapshot, String> {
+    let (_, client) = load_client(settings_dir)?;
+    let response = client.list_routes().await.map_err(command_error)?;
+    Ok(RouteWorkspaceSnapshot::from_routes(response.routes, None))
+}
+
+pub async fn save_route_from_settings_dir(
+    settings_dir: &Path,
+    form: RouteFormData,
+) -> Result<RouteWorkspaceSnapshot, String> {
+    let (_, client) = load_client(settings_dir)?;
+    let request = form.into_create_request();
+    if let Some(original_id) = form.original_id.as_deref() {
+        client
+            .update_route_with_options(original_id, &request, true)
+            .await
+            .map_err(command_error)?;
+    } else {
+        client.create_route(&request).await.map_err(command_error)?;
+    }
+
+    let routes = client.list_routes().await.map_err(command_error)?;
+    Ok(RouteWorkspaceSnapshot::from_routes(
+        routes.routes,
+        Some("Route saved.".to_string()),
+    ))
+}
+
+pub async fn delete_route_from_settings_dir(
+    settings_dir: &Path,
+    id: String,
+) -> Result<RouteWorkspaceSnapshot, String> {
+    let (_, client) = load_client(settings_dir)?;
+    client.delete_route(&id, false).await.map_err(command_error)?;
+    let routes = client.list_routes().await.map_err(command_error)?;
+    Ok(RouteWorkspaceSnapshot::from_routes(
+        routes.routes,
+        Some("Route deleted.".to_string()),
+    ))
 }
 
 fn load_client(settings_dir: &Path) -> Result<(GuiSettings, TunnelmuxControlClient), String> {
@@ -282,6 +356,87 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn save_route_creates_enabled_route_and_returns_fresh_list() {
+        let temp_dir = prepare_temp_dir();
+        let routes = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<tunnelmux_core::RouteRule>::new()));
+        let base_url = spawn_routes_server(routes.clone()).await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+            },
+        )
+        .expect("settings should save");
+
+        let snapshot = save_route_from_settings_dir(
+            &temp_dir,
+            crate::view_models::RouteFormData {
+                original_id: None,
+                id: "svc-a".to_string(),
+                match_host: "demo.local".to_string(),
+                match_path_prefix: "/".to_string(),
+                strip_path_prefix: String::new(),
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: String::new(),
+                health_check_path: String::new(),
+                enabled: true,
+            },
+        )
+        .await
+        .expect("save route should succeed");
+
+        assert_eq!(snapshot.routes.len(), 1);
+        assert_eq!(snapshot.routes[0].id, "svc-a");
+        assert!(snapshot.routes[0].enabled);
+        assert_eq!(routes.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_route_returns_updated_route_list() {
+        let temp_dir = prepare_temp_dir();
+        let routes = std::sync::Arc::new(tokio::sync::Mutex::new(vec![
+            tunnelmux_core::RouteRule {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+            tunnelmux_core::RouteRule {
+                id: "svc-b".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/api".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:4000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: false,
+            },
+        ]));
+        let base_url = spawn_routes_server(routes.clone()).await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+            },
+        )
+        .expect("settings should save");
+
+        let snapshot = delete_route_from_settings_dir(&temp_dir, "svc-a".to_string())
+            .await
+            .expect("delete route should succeed");
+
+        assert_eq!(snapshot.routes.len(), 1);
+        assert_eq!(snapshot.routes[0].id, "svc-b");
+        assert_eq!(routes.lock().await.len(), 1);
+    }
+
     async fn spawn_test_server(app: Router) -> String {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -291,6 +446,83 @@ mod tests {
             axum::serve(listener, app).await.expect("server should run");
         });
         format!("http://{}", address)
+    }
+
+    async fn spawn_routes_server(
+        routes: std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
+    ) -> String {
+        let app = Router::new()
+            .route("/v1/routes", get(list_routes_handler).post(create_route_handler))
+            .route("/v1/routes/{id}", axum::routing::delete(delete_route_handler).put(update_route_handler))
+            .with_state(routes);
+        spawn_test_server(app).await
+    }
+
+    async fn list_routes_handler(
+        tauri_state: axum::extract::State<std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>>,
+    ) -> Json<tunnelmux_core::RoutesResponse> {
+        let routes = tauri_state.0.lock().await.clone();
+        Json(tunnelmux_core::RoutesResponse { routes })
+    }
+
+    async fn create_route_handler(
+        tauri_state: axum::extract::State<std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>>,
+        Json(request): Json<tunnelmux_core::CreateRouteRequest>,
+    ) -> Json<tunnelmux_core::RouteRule> {
+        let route = tunnelmux_core::RouteRule {
+            id: request.id,
+            match_host: request.match_host,
+            match_path_prefix: request.match_path_prefix,
+            strip_path_prefix: request.strip_path_prefix,
+            upstream_url: request.upstream_url,
+            fallback_upstream_url: request.fallback_upstream_url,
+            health_check_path: request.health_check_path,
+            enabled: request.enabled.unwrap_or(true),
+        };
+        tauri_state.0.lock().await.push(route.clone());
+        Json(route)
+    }
+
+    async fn update_route_handler(
+        axum::extract::Path(id): axum::extract::Path<String>,
+        tauri_state: axum::extract::State<std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>>,
+        Json(request): Json<tunnelmux_core::CreateRouteRequest>,
+    ) -> Result<Json<tunnelmux_core::RouteRule>, (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>)> {
+        let route = tunnelmux_core::RouteRule {
+            id: request.id,
+            match_host: request.match_host,
+            match_path_prefix: request.match_path_prefix,
+            strip_path_prefix: request.strip_path_prefix,
+            upstream_url: request.upstream_url,
+            fallback_upstream_url: request.fallback_upstream_url,
+            health_check_path: request.health_check_path,
+            enabled: request.enabled.unwrap_or(true),
+        };
+        let mut routes = tauri_state.0.lock().await;
+        if let Some(existing) = routes.iter_mut().find(|item| item.id == id) {
+            *existing = route.clone();
+            return Ok(Json(route));
+        }
+        routes.push(route.clone());
+        Ok(Json(route))
+    }
+
+    async fn delete_route_handler(
+        axum::extract::Path(id): axum::extract::Path<String>,
+        tauri_state: axum::extract::State<std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>>,
+    ) -> Result<Json<tunnelmux_core::DeleteRouteResponse>, (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>)> {
+        let mut routes = tauri_state.0.lock().await;
+        let before = routes.len();
+        routes.retain(|item| item.id != id);
+        if routes.len() == before {
+            return Err((
+                axum::http::StatusCode::NOT_FOUND,
+                Json(tunnelmux_core::ErrorResponse {
+                    error: "route not found".to_string(),
+                }),
+            ));
+        }
+        Ok(Json(tunnelmux_core::DeleteRouteResponse { removed: true }))
     }
 
     fn prepare_temp_dir() -> PathBuf {
