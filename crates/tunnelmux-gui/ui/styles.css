@@ -104,6 +104,9 @@ select:disabled {
 
 .hero-card {
   min-height: 250px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
 .compact-panel {
@@ -114,7 +117,7 @@ select:disabled {
   padding: 22px;
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 22px;
-  background: rgba(15, 23, 42, 0.76);
+  background: rgba(18, 24, 34, 0.84);
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.34);
   backdrop-filter: blur(16px);
 }
@@ -138,6 +141,13 @@ select:disabled {
 
 .card-eyebrow {
   margin-bottom: 10px;
+}
+
+.hero-url {
+  font-size: clamp(1.9rem, 3vw, 2.7rem);
+  line-height: 1;
+  letter-spacing: -0.03em;
+  margin-bottom: 14px;
 }
 
 h1,
@@ -200,6 +210,10 @@ select {
   flex-wrap: wrap;
 }
 
+.hero-actions button:first-child {
+  min-width: 180px;
+}
+
 .inline-field {
   display: flex;
   align-items: center;
@@ -259,6 +273,43 @@ select {
   color: #e2e8f0;
 }
 
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  background: rgba(30, 41, 59, 0.58);
+  color: #94a3b8;
+  margin-bottom: 18px;
+}
+
+.status-pill::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.status-pill.running {
+  color: #34d399;
+}
+
+.status-pill.idle,
+.status-pill.stopped,
+.status-pill.offline {
+  color: #94a3b8;
+}
+
+.status-pill.error {
+  color: #f87171;
+}
+
 .status-badge.running,
 .service-badge.enabled,
 .health-badge.healthy {
@@ -296,9 +347,9 @@ select {
 
 .service-card,
 .diagnostics-card {
-  padding: 18px;
-  border-radius: 18px;
-  background: rgba(15, 23, 42, 0.7);
+  padding: 16px 18px;
+  border-radius: 20px;
+  background: rgba(22, 27, 34, 0.96);
   border: 1px solid rgba(148, 163, 184, 0.12);
 }
 
@@ -307,7 +358,7 @@ select {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  align-items: flex-start;
+  align-items: center;
 }
 
 .service-card h3,
@@ -320,12 +371,15 @@ select {
 }
 
 .service-exposure {
-  color: #bfdbfe;
+  color: #dbeafe;
   word-break: break-word;
+  font-weight: 700;
 }
 
 .service-local {
-  color: #cbd5e1;
+  color: #94a3b8;
+  font-size: 0.88rem;
+  margin-top: 4px;
 }
 
 .empty-state {
@@ -337,7 +391,21 @@ select {
 }
 
 .compact-actions {
-  margin-top: 16px;
+  margin-top: 10px;
+  justify-content: flex-end;
+}
+
+.compact-actions button {
+  padding: 8px 10px;
+  min-width: auto;
+}
+
+.action-link {
+  padding-inline: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #60a5fa;
 }
 
 .advanced-section {

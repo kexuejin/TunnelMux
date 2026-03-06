@@ -459,7 +459,7 @@ function renderDashboard(snapshot) {
   elements.stopTunnel.hidden = !publicUrl;
 
   elements.stateBadge.textContent = titleCase(tunnelState);
-  elements.stateBadge.className = `status-badge ${escapeClassName(tunnelState)}`;
+  elements.stateBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
 
   if (!connected) {
     elements.homePublicUrlMeta.textContent = 'TunnelMux daemon is not ready. Retry or open Settings.';
@@ -513,9 +513,9 @@ function renderRoutes(snapshot) {
         <span class="service-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'Live' : 'Paused'}</span>
       </div>
       <div class="actions compact-actions">
-        <button type="button" class="secondary" data-route-action="edit" data-route-id="${escapeAttribute(route.id)}">Edit</button>
-        <button type="button" class="secondary" data-route-action="toggle" data-route-id="${escapeAttribute(route.id)}">${route.enabled ? 'Disable' : 'Enable'}</button>
-        <button type="button" data-route-action="delete" data-route-id="${escapeAttribute(route.id)}">Delete</button>
+        <button type="button" class="secondary" data-route-action="edit" data-route-id="${escapeAttribute(route.id)}">✎</button>
+        <button type="button" class="secondary" data-route-action="toggle" data-route-id="${escapeAttribute(route.id)}">${route.enabled ? '◐' : '○'}</button>
+        <button type="button" class="secondary" data-route-action="delete" data-route-id="${escapeAttribute(route.id)}">✕</button>
       </div>
     `;
     elements.routesList.appendChild(item);

@@ -31,15 +31,15 @@
           <article class="panel hero-card">
             <div class="panel-header">
               <div>
+                <div id="dashboard-state-badge" class="status-pill idle">Tunnel inactive</div>
                 <p class="eyebrow card-eyebrow">Public URL</p>
-                <h2 id="dashboard-public-url">Not running</h2>
+                <h2 id="dashboard-public-url" class="hero-url">Not running</h2>
                 <p id="home-public-url-meta" class="panel-subtle">
                   Start TunnelMux to generate a shareable public address.
                 </p>
               </div>
-              <span id="dashboard-state-badge" class="status-badge idle">Idle</span>
             </div>
-            <div class="actions">
+            <div class="actions hero-actions">
               <button id="start-tunnel" type="button">Start Tunnel</button>
               <button id="copy-public-url" type="button" class="secondary">Copy URL</button>
               <button id="open-public-url" type="button" class="secondary">Open</button>
@@ -67,10 +67,11 @@
         <section id="services-shell" class="panel services-shell">
           <div class="panel-header">
             <div>
+              <p class="eyebrow card-eyebrow">Active Services</p>
               <h2>Services</h2>
               <p id="routes-message" class="panel-subtle">No services loaded yet.</p>
             </div>
-            <button id="new-route" type="button">Add Service</button>
+            <button id="new-route" type="button" class="secondary action-link">+ Add Service</button>
           </div>
 
           <div id="routes-empty" class="empty-state">
