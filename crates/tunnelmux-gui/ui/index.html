@@ -14,62 +14,72 @@
         <p id="app-status" class="subtle">Loading local settings and dashboard snapshot…</p>
       </header>
 
-      <section class="panel-grid">
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Connection</h2>
-            <button id="refresh-dashboard" type="button">Refresh</button>
-          </div>
-          <label class="field">
-            <span>Base URL</span>
-            <input id="settings-base-url" type="text" placeholder="http://127.0.0.1:4765" />
-          </label>
-          <label class="field">
-            <span>Bearer Token</span>
-            <input id="settings-token" type="password" placeholder="Optional" />
-          </label>
-          <div class="actions">
-            <button id="save-settings" type="button">Save Settings</button>
-          </div>
+      <nav class="workspace-nav" aria-label="Workspace navigation">
+        <button type="button" class="workspace-tab is-active" data-workspace-tab="operations">Operations</button>
+        <button type="button" class="workspace-tab" data-workspace-tab="routes">Routes</button>
+        <button type="button" class="workspace-tab" data-workspace-tab="diagnostics">Diagnostics</button>
+      </nav>
+
+      <section id="workspace-operations" class="workspace is-active" data-workspace="operations">
+        <section class="panel-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Connection</h2>
+              <button id="refresh-dashboard" type="button">Refresh</button>
+            </div>
+            <label class="field">
+              <span>Base URL</span>
+              <input id="settings-base-url" type="text" placeholder="http://127.0.0.1:4765" />
+            </label>
+            <label class="field">
+              <span>Bearer Token</span>
+              <input id="settings-token" type="password" placeholder="Optional" />
+            </label>
+            <div class="actions">
+              <button id="save-settings" type="button">Save Settings</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Tunnel Status</h2>
+            <dl class="stats-list">
+              <div><dt>Connected</dt><dd id="dashboard-connected">Unknown</dd></div>
+              <div><dt>State</dt><dd id="dashboard-state">—</dd></div>
+              <div><dt>Provider</dt><dd id="dashboard-provider">—</dd></div>
+              <div><dt>Public URL</dt><dd id="dashboard-public-url">—</dd></div>
+              <div><dt>Target URL</dt><dd id="dashboard-target-url">—</dd></div>
+            </dl>
+            <p id="dashboard-message" class="message muted">No dashboard data yet.</p>
+          </section>
         </section>
 
-        <section class="panel">
-          <h2>Tunnel Status</h2>
-          <dl class="stats-list">
-            <div><dt>Connected</dt><dd id="dashboard-connected">Unknown</dd></div>
-            <div><dt>State</dt><dd id="dashboard-state">—</dd></div>
-            <div><dt>Provider</dt><dd id="dashboard-provider">—</dd></div>
-            <div><dt>Public URL</dt><dd id="dashboard-public-url">—</dd></div>
-            <div><dt>Target URL</dt><dd id="dashboard-target-url">—</dd></div>
-          </dl>
-          <p id="dashboard-message" class="message muted">No dashboard data yet.</p>
+        <section class="panel-grid">
+          <section class="panel">
+            <h2>Start Tunnel</h2>
+            <label class="field">
+              <span>Provider</span>
+              <select id="start-provider">
+                <option value="cloudflared">cloudflared</option>
+                <option value="ngrok">ngrok</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Target URL</span>
+              <input id="start-target-url" type="text" value="http://127.0.0.1:18080" />
+            </label>
+            <label class="checkbox-row">
+              <input id="start-auto-restart" type="checkbox" checked />
+              <span>Auto restart</span>
+            </label>
+            <div class="actions">
+              <button id="start-tunnel" type="button">Start Tunnel</button>
+              <button id="stop-tunnel" type="button" class="secondary">Stop Tunnel</button>
+            </div>
+          </section>
         </section>
       </section>
 
-      <section class="panel-grid two-up">
-        <section class="panel">
-          <h2>Start Tunnel</h2>
-          <label class="field">
-            <span>Provider</span>
-            <select id="start-provider">
-              <option value="cloudflared">cloudflared</option>
-              <option value="ngrok">ngrok</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Target URL</span>
-            <input id="start-target-url" type="text" value="http://127.0.0.1:18080" />
-          </label>
-          <label class="checkbox-row">
-            <input id="start-auto-restart" type="checkbox" checked />
-            <span>Auto restart</span>
-          </label>
-          <div class="actions">
-            <button id="start-tunnel" type="button">Start Tunnel</button>
-            <button id="stop-tunnel" type="button" class="secondary">Stop Tunnel</button>
-          </div>
-        </section>
-
+      <section id="workspace-routes" class="workspace" data-workspace="routes" hidden>
         <section class="panel routes-shell">
           <div class="panel-header">
             <div>
@@ -130,6 +140,71 @@
               </div>
             </section>
           </div>
+        </section>
+      </section>
+
+      <section id="workspace-diagnostics" class="workspace" data-workspace="diagnostics" hidden>
+        <section class="panel diagnostics-shell">
+          <div class="panel-header">
+            <div>
+              <h2>Diagnostics Workspace</h2>
+              <p id="diagnostics-overview" class="panel-subtle">Open this workspace to start automatic diagnostics polling.</p>
+            </div>
+            <button id="refresh-diagnostics" type="button">Refresh Diagnostics</button>
+          </div>
+        </section>
+
+        <section class="panel diagnostics-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Runtime Summary</h2>
+              <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
+            </div>
+          </div>
+          <dl class="stats-list diagnostics-stats">
+            <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
+            <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
+            <div><dt>Routes</dt><dd id="diagnostics-route-count">—</dd></div>
+            <div><dt>Enabled Routes</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
+            <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
+            <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
+            <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
+            <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
+            <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
+          </dl>
+        </section>
+
+        <section class="panel diagnostics-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Upstream Health</h2>
+              <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
+            </div>
+          </div>
+          <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
+          <div id="upstreams-list" class="diagnostics-list"></div>
+        </section>
+
+        <section class="panel diagnostics-panel">
+          <div class="panel-header diagnostics-header-wrap">
+            <div>
+              <h2>Recent Logs</h2>
+              <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
+            </div>
+            <div class="actions diagnostics-actions">
+              <label class="inline-field">
+                <span>Tail Size</span>
+                <select id="log-lines-select">
+                  <option value="50">50</option>
+                  <option value="100" selected>100</option>
+                  <option value="200">200</option>
+                </select>
+              </label>
+              <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
+              <button id="clear-logs" type="button" class="secondary">Clear Display</button>
+            </div>
+          </div>
+          <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
         </section>
       </section>
     </main>

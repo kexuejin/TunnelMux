@@ -35,7 +35,8 @@ button.secondary {
   color: #bfdbfe;
 }
 
-button:disabled {
+button:disabled,
+select:disabled {
   opacity: 0.55;
   cursor: progress;
 }
@@ -47,7 +48,7 @@ button:disabled {
 }
 
 .hero {
-  margin-bottom: 28px;
+  margin-bottom: 24px;
 }
 
 .eyebrow {
@@ -70,19 +71,39 @@ h3 {
   max-width: 760px;
 }
 
-.subtle.error {
+.subtle.error,
+.panel-subtle.error {
   color: #fecaca;
+}
+
+.workspace-nav {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.workspace-tab {
+  background: rgba(15, 23, 42, 0.72);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.workspace-tab.is-active {
+  background: rgba(37, 99, 235, 0.28);
+  color: #eff6ff;
+  border-color: rgba(96, 165, 250, 0.52);
+}
+
+.workspace {
+  display: grid;
+  gap: 20px;
 }
 
 .panel-grid {
   display: grid;
   gap: 20px;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  margin-bottom: 20px;
-}
-
-.two-up {
-  align-items: start;
 }
 
 .panel {
@@ -100,6 +121,10 @@ h3 {
   gap: 12px;
 }
 
+.diagnostics-header-wrap {
+  align-items: flex-start;
+}
+
 .field {
   display: grid;
   gap: 8px;
@@ -107,7 +132,8 @@ h3 {
 }
 
 .field span,
-.checkbox-row {
+.checkbox-row,
+.inline-field span {
   color: #cbd5e1;
   font-size: 0.95rem;
 }
@@ -133,6 +159,17 @@ select {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inline-field select {
+  width: auto;
+  min-width: 84px;
 }
 
 .compact-actions {
@@ -164,6 +201,7 @@ select {
 .route-meta dd {
   margin: 0;
   text-align: right;
+  word-break: break-word;
 }
 
 .message {
@@ -187,35 +225,41 @@ select {
   min-width: 0;
 }
 
-.route-list {
+.route-list,
+.diagnostics-list {
   display: grid;
   gap: 14px;
 }
 
-.route-card {
+.route-card,
+.diagnostics-card {
   padding: 16px;
   border-radius: 16px;
   background: rgba(15, 23, 42, 0.72);
   border: 1px solid rgba(148, 163, 184, 0.16);
 }
 
-.route-card-header {
+.route-card-header,
+.diagnostics-card-header {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  align-items: start;
+  align-items: flex-start;
 }
 
-.route-card h3 {
+.route-card h3,
+.diagnostics-card h3 {
   margin-bottom: 6px;
 }
 
 .route-match {
   margin: 0;
   color: #bfdbfe;
+  word-break: break-word;
 }
 
-.route-badge {
+.route-badge,
+.health-badge {
   padding: 6px 10px;
   border-radius: 999px;
   font-size: 0.8rem;
@@ -223,14 +267,21 @@ select {
   letter-spacing: 0.08em;
 }
 
-.route-badge.enabled {
+.route-badge.enabled,
+.health-badge.healthy {
   background: rgba(34, 197, 94, 0.18);
   color: #bbf7d0;
 }
 
-.route-badge.disabled {
+.route-badge.disabled,
+.health-badge.unknown {
   background: rgba(148, 163, 184, 0.14);
   color: #cbd5e1;
+}
+
+.health-badge.unhealthy {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fecaca;
 }
 
 .route-editor-card {
@@ -252,6 +303,23 @@ select {
   text-align: center;
 }
 
+.log-tail {
+  margin: 0;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(2, 6, 23, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  color: #e2e8f0;
+  font-family: "SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  min-height: 280px;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 ul {
   margin: 0;
   padding-left: 20px;
@@ -264,5 +332,15 @@ code {
 @media (max-width: 900px) {
   .routes-grid {
     grid-template-columns: 1fr;
+  }
+
+  .panel-header,
+  .diagnostics-header-wrap {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .diagnostics-actions {
+    width: 100%;
   }
 }

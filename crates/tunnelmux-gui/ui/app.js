@@ -11,25 +11,53 @@ const state = {
   busy: false,
   routeCache: [],
   editingOriginalId: null,
+  activeWorkspace: 'operations',
+  diagnostics: {
+    logLines: 100,
+    summary: null,
+    upstreams: [],
+    logTail: null,
+    summaryUpdatedAt: null,
+    upstreamsUpdatedAt: null,
+    logsUpdatedAt: null,
+    intervals: {
+      summary: null,
+      logs: null,
+    },
+    inFlight: {
+      summary: false,
+      upstreams: false,
+      logs: false,
+    },
+  },
 };
 
 window.addEventListener('DOMContentLoaded', async () => {
   bindElements();
   bindEvents();
+  resetRouteForm();
+  setActiveWorkspace('operations');
 
   if (!isTauri) {
     renderStatus('Preview shell loaded outside Tauri. Open the desktop app to enable commands.', true);
     renderRoutes({ routes: [], message: 'Routes preview unavailable outside Tauri.' });
+    renderDiagnosticsOverview('Diagnostics preview unavailable outside Tauri.', true);
+    renderDiagnosticsSummaryMeta('Preview mode only.', true);
+    renderUpstreamsMeta('Preview mode only.', true);
+    renderLogsMeta('Preview mode only.', true);
+    renderRecentLogs({ requested_lines: state.diagnostics.logLines, lines: [] });
     return;
   }
 
-  resetRouteForm();
   await loadSettings();
   await refreshAll();
 });
 
 function bindElements() {
   elements.status = document.getElementById('app-status');
+  elements.workspaceTabs = [...document.querySelectorAll('[data-workspace-tab]')];
+  elements.workspaces = [...document.querySelectorAll('[data-workspace]')];
+
   elements.message = document.getElementById('dashboard-message');
   elements.connected = document.getElementById('dashboard-connected');
   elements.state = document.getElementById('dashboard-state');
@@ -45,6 +73,7 @@ function bindElements() {
   elements.startAutoRestart = document.getElementById('start-auto-restart');
   elements.startTunnel = document.getElementById('start-tunnel');
   elements.stopTunnel = document.getElementById('stop-tunnel');
+
   elements.routesMessage = document.getElementById('routes-message');
   elements.routesEmpty = document.getElementById('routes-empty');
   elements.routesList = document.getElementById('routes-list');
@@ -60,9 +89,36 @@ function bindElements() {
   elements.routeHealthCheckPath = document.getElementById('route-health-check-path');
   elements.routeEnabled = document.getElementById('route-enabled');
   elements.saveRoute = document.getElementById('save-route');
+
+  elements.refreshDiagnostics = document.getElementById('refresh-diagnostics');
+  elements.diagnosticsOverview = document.getElementById('diagnostics-overview');
+  elements.diagnosticsSummaryMeta = document.getElementById('diagnostics-summary-meta');
+  elements.diagnosticsTunnelState = document.getElementById('diagnostics-tunnel-state');
+  elements.diagnosticsPendingRestart = document.getElementById('diagnostics-pending-restart');
+  elements.diagnosticsRouteCount = document.getElementById('diagnostics-route-count');
+  elements.diagnosticsEnabledRouteCount = document.getElementById('diagnostics-enabled-route-count');
+  elements.diagnosticsConfigReload = document.getElementById('diagnostics-config-reload');
+  elements.diagnosticsConfigReloadInterval = document.getElementById('diagnostics-config-reload-interval');
+  elements.diagnosticsLastReloadAt = document.getElementById('diagnostics-last-reload-at');
+  elements.diagnosticsProviderLogFile = document.getElementById('diagnostics-provider-log-file');
+  elements.diagnosticsLastReloadError = document.getElementById('diagnostics-last-reload-error');
+
+  elements.upstreamsMeta = document.getElementById('upstreams-meta');
+  elements.upstreamsEmpty = document.getElementById('upstreams-empty');
+  elements.upstreamsList = document.getElementById('upstreams-list');
+
+  elements.logsMeta = document.getElementById('logs-meta');
+  elements.logLinesSelect = document.getElementById('log-lines-select');
+  elements.refreshLogs = document.getElementById('refresh-logs');
+  elements.clearLogs = document.getElementById('clear-logs');
+  elements.recentLogs = document.getElementById('recent-logs');
 }
 
 function bindEvents() {
+  elements.workspaceTabs.forEach((button) => {
+    button.addEventListener('click', () => setActiveWorkspace(button.dataset.workspaceTab));
+  });
+
   elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
   elements.refreshDashboard?.addEventListener('click', () => withBusy(refreshAll));
   elements.startTunnel?.addEventListener('click', () => withBusy(startTunnel));
@@ -70,6 +126,14 @@ function bindEvents() {
   elements.newRoute?.addEventListener('click', () => resetRouteForm());
   elements.cancelRouteEdit?.addEventListener('click', () => resetRouteForm());
   elements.saveRoute?.addEventListener('click', () => withBusy(saveRoute));
+
+  elements.refreshDiagnostics?.addEventListener('click', () => withBusy(() => refreshDiagnosticsWorkspace({ manual: true })));
+  elements.refreshLogs?.addEventListener('click', () => withBusy(() => refreshRecentLogs({ manual: true })));
+  elements.clearLogs?.addEventListener('click', clearDisplayedLogs);
+  elements.logLinesSelect?.addEventListener('change', () => {
+    state.diagnostics.logLines = Number(elements.logLinesSelect.value) || 100;
+    void refreshRecentLogs({ manual: false });
+  });
 }
 
 async function withBusy(fn) {
@@ -87,7 +151,7 @@ async function withBusy(fn) {
 }
 
 function setBusyState(nextBusy) {
-  const staticButtons = [
+  const staticControls = [
     elements.saveSettings,
     elements.refreshDashboard,
     elements.startTunnel,
@@ -95,14 +159,41 @@ function setBusyState(nextBusy) {
     elements.newRoute,
     elements.cancelRouteEdit,
     elements.saveRoute,
+    elements.refreshDiagnostics,
+    elements.refreshLogs,
+    elements.clearLogs,
+    elements.logLinesSelect,
   ];
-  staticButtons.filter(Boolean).forEach((button) => {
-    button.disabled = nextBusy;
+
+  staticControls.filter(Boolean).forEach((element) => {
+    element.disabled = nextBusy;
   });
 
   document.querySelectorAll('[data-route-action]').forEach((button) => {
     button.disabled = nextBusy;
   });
+}
+
+function setActiveWorkspace(name) {
+  state.activeWorkspace = name;
+  elements.workspaceTabs.forEach((button) => {
+    const isActive = button.dataset.workspaceTab === name;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-pressed', String(isActive));
+  });
+
+  elements.workspaces.forEach((section) => {
+    const isActive = section.dataset.workspace === name;
+    section.hidden = !isActive;
+    section.classList.toggle('is-active', isActive);
+  });
+
+  if (name === 'diagnostics' && isTauri) {
+    renderDiagnosticsOverview('Diagnostics polling is active while this workspace is open.');
+    startDiagnosticsPolling();
+  } else {
+    stopDiagnosticsPolling();
+  }
 }
 
 async function loadSettings() {
@@ -127,6 +218,9 @@ async function saveSettings() {
     elements.token.value = settings.token ?? '';
     renderStatus('Settings saved. Refreshing dashboard and routes…');
     await refreshAll();
+    if (state.activeWorkspace === 'diagnostics') {
+      await refreshDiagnosticsWorkspace({ manual: false });
+    }
   } catch (error) {
     renderStatus(`Failed to save settings: ${formatError(error)}`, true);
   }
@@ -165,7 +259,10 @@ async function startTunnel() {
       },
     });
     renderDashboard(snapshot);
-    renderStatus('Tunnel start command completed.');
+    renderStatus('Tunnel started.');
+    if (state.activeWorkspace === 'diagnostics') {
+      void refreshDiagnosticsWorkspace({ manual: false });
+    }
   } catch (error) {
     renderStatus(`Failed to start tunnel: ${formatError(error)}`, true);
   }
@@ -175,7 +272,10 @@ async function stopTunnel() {
   try {
     const snapshot = await invoke('stop_tunnel');
     renderDashboard(snapshot);
-    renderStatus('Tunnel stop command completed.');
+    renderStatus('Tunnel stopped.');
+    if (state.activeWorkspace === 'diagnostics') {
+      void refreshDiagnosticsWorkspace({ manual: false });
+    }
   } catch (error) {
     renderStatus(`Failed to stop tunnel: ${formatError(error)}`, true);
   }
@@ -199,6 +299,9 @@ async function saveRoute() {
     renderRoutes(snapshot);
     renderStatus(snapshot.message ?? 'Route saved.');
     resetRouteForm();
+    if (state.activeWorkspace === 'diagnostics') {
+      void refreshDiagnosticsWorkspace({ manual: false });
+    }
   } catch (error) {
     renderStatus(`Failed to save route: ${formatError(error)}`, true);
   }
@@ -215,6 +318,9 @@ async function deleteRoute(id) {
     renderStatus(snapshot.message ?? 'Route deleted.');
     if (state.editingOriginalId === id) {
       resetRouteForm();
+    }
+    if (state.activeWorkspace === 'diagnostics') {
+      void refreshDiagnosticsWorkspace({ manual: false });
     }
   } catch (error) {
     renderStatus(`Failed to delete route: ${formatError(error)}`, true);
@@ -234,7 +340,10 @@ function renderDashboard(snapshot) {
   elements.targetUrl.textContent = tunnel.target_url ?? '—';
   elements.message.textContent = snapshot.message ?? (snapshot.connected ? 'Daemon reachable.' : 'Daemon unavailable.');
   elements.message.classList.toggle('muted', !snapshot.message);
-  renderStatus(snapshot.connected ? 'Dashboard refreshed.' : `Dashboard updated: ${snapshot.message ?? 'daemon unavailable'}`, !snapshot.connected);
+  renderStatus(
+    snapshot.connected ? 'Dashboard refreshed.' : `Dashboard updated: ${snapshot.message ?? 'daemon unavailable'}`,
+    !snapshot.connected,
+  );
 }
 
 function renderRoutes(snapshot) {
@@ -276,12 +385,221 @@ function renderRoutes(snapshot) {
   bindRouteActionButtons();
 }
 
+async function refreshDiagnosticsWorkspace({ manual = false } = {}) {
+  const results = await Promise.all([
+    refreshDiagnosticsSummary(),
+    refreshUpstreamsHealth(),
+    refreshRecentLogs({ manual: false }),
+  ]);
+
+  if (manual) {
+    const failed = results.some((result) => result === false);
+    renderStatus(
+      failed ? 'Diagnostics refreshed with some panel errors.' : 'Diagnostics refreshed.',
+      failed,
+    );
+  }
+}
+
+function startDiagnosticsPolling() {
+  stopDiagnosticsPolling();
+  void refreshDiagnosticsWorkspace({ manual: false });
+  state.diagnostics.intervals.summary = window.setInterval(() => {
+    void refreshDiagnosticsSummary();
+    void refreshUpstreamsHealth();
+  }, 5000);
+  state.diagnostics.intervals.logs = window.setInterval(() => {
+    void refreshRecentLogs({ manual: false });
+  }, 3000);
+}
+
+function stopDiagnosticsPolling() {
+  if (state.diagnostics.intervals.summary) {
+    window.clearInterval(state.diagnostics.intervals.summary);
+    state.diagnostics.intervals.summary = null;
+  }
+  if (state.diagnostics.intervals.logs) {
+    window.clearInterval(state.diagnostics.intervals.logs);
+    state.diagnostics.intervals.logs = null;
+  }
+}
+
+async function refreshDiagnosticsSummary() {
+  if (state.diagnostics.inFlight.summary) {
+    return false;
+  }
+  state.diagnostics.inFlight.summary = true;
+  renderDiagnosticsSummaryMeta('Loading runtime summary…');
+  try {
+    const summary = await invoke('load_diagnostics_summary');
+    state.diagnostics.summary = summary;
+    state.diagnostics.summaryUpdatedAt = new Date().toISOString();
+    renderDiagnosticsSummary(summary);
+    renderDiagnosticsOverview('Diagnostics polling is active while this workspace is open.');
+    return true;
+  } catch (error) {
+    renderDiagnosticsSummaryMeta(`Failed to load runtime summary: ${formatError(error)}`, true);
+    renderDiagnosticsOverview('Diagnostics is partially unavailable. Check panel errors for details.', true);
+    return false;
+  } finally {
+    state.diagnostics.inFlight.summary = false;
+  }
+}
+
+async function refreshUpstreamsHealth() {
+  if (state.diagnostics.inFlight.upstreams) {
+    return false;
+  }
+  state.diagnostics.inFlight.upstreams = true;
+  renderUpstreamsMeta('Loading upstream health…');
+  try {
+    const upstreams = await invoke('load_upstreams_health');
+    state.diagnostics.upstreams = upstreams;
+    state.diagnostics.upstreamsUpdatedAt = new Date().toISOString();
+    renderUpstreamsHealth(upstreams);
+    return true;
+  } catch (error) {
+    renderUpstreamsMeta(`Failed to load upstream health: ${formatError(error)}`, true);
+    elements.upstreamsEmpty.hidden = !state.diagnostics.upstreams.length;
+    return false;
+  } finally {
+    state.diagnostics.inFlight.upstreams = false;
+  }
+}
+
+async function refreshRecentLogs({ manual = false } = {}) {
+  if (state.diagnostics.inFlight.logs) {
+    return false;
+  }
+  state.diagnostics.inFlight.logs = true;
+  renderLogsMeta(`Loading last ${state.diagnostics.logLines} log lines…`);
+  try {
+    const logTail = await invoke('load_recent_logs', { lines: state.diagnostics.logLines });
+    state.diagnostics.logTail = logTail;
+    state.diagnostics.logsUpdatedAt = new Date().toISOString();
+    renderRecentLogs(logTail);
+    if (manual) {
+      renderStatus('Recent logs refreshed.');
+    }
+    return true;
+  } catch (error) {
+    renderLogsMeta(`Failed to load recent logs: ${formatError(error)}`, true);
+    if (manual) {
+      renderStatus(`Failed to refresh logs: ${formatError(error)}`, true);
+    }
+    return false;
+  } finally {
+    state.diagnostics.inFlight.logs = false;
+  }
+}
+
+function clearDisplayedLogs() {
+  state.diagnostics.logTail = {
+    requested_lines: state.diagnostics.logLines,
+    lines: [],
+  };
+  renderRecentLogs(state.diagnostics.logTail);
+  renderLogsMeta('Local log display cleared. Auto-refresh will repopulate on the next poll.');
+}
+
+function renderDiagnosticsOverview(message, isError = false) {
+  if (!elements.diagnosticsOverview) {
+    return;
+  }
+  elements.diagnosticsOverview.textContent = message;
+  elements.diagnosticsOverview.classList.toggle('error', isError);
+}
+
+function renderDiagnosticsSummary(summary) {
+  if (!summary) {
+    return;
+  }
+
+  elements.diagnosticsTunnelState.textContent = summary.tunnel_state ?? '—';
+  elements.diagnosticsPendingRestart.textContent = formatYesNo(summary.pending_restart);
+  elements.diagnosticsRouteCount.textContent = String(summary.route_count ?? '—');
+  elements.diagnosticsEnabledRouteCount.textContent = String(summary.enabled_route_count ?? '—');
+  elements.diagnosticsConfigReload.textContent = formatYesNo(summary.config_reload_enabled);
+  elements.diagnosticsConfigReloadInterval.textContent = summary.config_reload_interval_ms
+    ? `${summary.config_reload_interval_ms} ms`
+    : '—';
+  elements.diagnosticsLastReloadAt.textContent = formatTimestamp(summary.last_config_reload_at);
+  elements.diagnosticsProviderLogFile.textContent = summary.provider_log_file ?? '—';
+  elements.diagnosticsLastReloadError.textContent = summary.last_config_reload_error ?? '—';
+  renderDiagnosticsSummaryMeta(`Updated ${formatRelativeNow(state.diagnostics.summaryUpdatedAt)}`);
+}
+
+function renderUpstreamsHealth(upstreams) {
+  elements.upstreamsList.innerHTML = '';
+  const items = Array.isArray(upstreams) ? upstreams : [];
+
+  if (!items.length) {
+    elements.upstreamsEmpty.hidden = false;
+    renderUpstreamsMeta(`Updated ${formatRelativeNow(state.diagnostics.upstreamsUpdatedAt)} • no upstream data returned`);
+    return;
+  }
+
+  elements.upstreamsEmpty.hidden = true;
+  for (const upstream of items) {
+    const item = document.createElement('article');
+    item.className = 'diagnostics-card';
+    item.innerHTML = `
+      <div class="diagnostics-card-header">
+        <div>
+          <h3>${escapeHtml(upstream.upstream_url ?? 'unknown upstream')}</h3>
+          <p class="route-match">${escapeHtml(upstream.health_check_path ?? '/')}</p>
+        </div>
+        <span class="health-badge ${escapeAttribute(upstream.health_label ?? 'unknown')}">${escapeHtml(upstream.health_label ?? 'unknown')}</span>
+      </div>
+      <dl class="route-meta">
+        <div><dt>Last Checked</dt><dd>${escapeHtml(formatTimestamp(upstream.last_checked_at))}</dd></div>
+        <div><dt>Last Error</dt><dd>${escapeHtml(upstream.last_error ?? '—')}</dd></div>
+      </dl>
+    `;
+    elements.upstreamsList.appendChild(item);
+  }
+
+  renderUpstreamsMeta(`Updated ${formatRelativeNow(state.diagnostics.upstreamsUpdatedAt)} • ${items.length} upstream entries`);
+}
+
+function renderRecentLogs(logTail) {
+  const lines = logTail?.lines ?? [];
+  elements.recentLogs.textContent = lines.length ? lines.join('\n') : 'No logs loaded yet.';
+  if (logTail?.requested_lines) {
+    elements.logLinesSelect.value = String(logTail.requested_lines);
+  }
+  if (state.diagnostics.logsUpdatedAt) {
+    renderLogsMeta(`Updated ${formatRelativeNow(state.diagnostics.logsUpdatedAt)} • showing last ${logTail?.requested_lines ?? state.diagnostics.logLines} lines`);
+  }
+}
+
+function renderDiagnosticsSummaryMeta(message, isError = false) {
+  setPanelMeta(elements.diagnosticsSummaryMeta, message, isError);
+}
+
+function renderUpstreamsMeta(message, isError = false) {
+  setPanelMeta(elements.upstreamsMeta, message, isError);
+}
+
+function renderLogsMeta(message, isError = false) {
+  setPanelMeta(elements.logsMeta, message, isError);
+}
+
+function setPanelMeta(element, message, isError = false) {
+  if (!element) {
+    return;
+  }
+  element.textContent = message;
+  element.classList.toggle('error', isError);
+}
+
 function bindRouteActionButtons() {
   document.querySelectorAll('[data-route-action="edit"]').forEach((button) => {
     button.addEventListener('click', () => {
       const route = state.routeCache.find((item) => item.id === button.dataset.routeId);
       if (route) {
         populateRouteForm(route);
+        setActiveWorkspace('routes');
       }
     });
   });
@@ -327,6 +645,29 @@ function renderStatus(message, isError = false) {
   }
   elements.status.textContent = message;
   elements.status.classList.toggle('error', isError);
+}
+
+function formatYesNo(value) {
+  return value ? 'Yes' : 'No';
+}
+
+function formatTimestamp(value) {
+  if (!value) {
+    return '—';
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatRelativeNow(value) {
+  if (!value) {
+    return 'just now';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleTimeString();
 }
 
 function formatError(error) {
