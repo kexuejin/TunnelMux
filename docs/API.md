@@ -34,7 +34,7 @@ Example response:
 {
   "ok": true,
   "service": "tunnelmuxd",
-  "version": "0.1.3"
+  "version": "0.1.4"
 }
 ```
 

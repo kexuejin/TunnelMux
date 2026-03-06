@@ -4,6 +4,15 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-06
+
+- Add desktop GUI product surface for dashboard, route management, tunnel controls, and diagnostics.
+- Add declarative config reload support plus updated API/runtime documentation for reload and diagnostics flows.
+- Add native GUI installer packaging for macOS (`.dmg`), Windows (`.msi`), and Linux (`.deb`) in the release workflow.
+- Add GUI release signing preflight for macOS and Windows, including temporary workflow wiring for Apple notarization inputs and Trusted Signing config generation.
+- Add manual `workflow_dispatch` release rehearsal mode with artifact-only publishing, version validation, and documented operator steps.
+- Fix release workflow follow-ups discovered during GitHub rehearsal, including the Tauri action ref and unsigned macOS signing environment scoping.
+
 ## [0.1.3] - 2026-03-05
 
 - Add `scripts/install.sh` for one-command install from GitHub Releases (macOS/Linux).
