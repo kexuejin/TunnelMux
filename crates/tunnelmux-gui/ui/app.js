@@ -11,8 +11,8 @@ const state = {
   busy: false,
   routeCache: [],
   editingOriginalId: null,
-  activeWorkspace: 'home',
-  troubleshootingOpen: false,
+  settingsDrawerOpen: false,
+  serviceDrawerOpen: false,
   diagnostics: {
     logLines: 100,
     summary: null,
@@ -33,7 +33,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   bindElements();
   bindEvents();
   resetRouteForm();
-  setActiveWorkspace('home');
 
   if (!isTauri) {
     renderStatus('Preview shell loaded outside Tauri. Open the desktop app to enable commands.', true);
@@ -58,43 +57,49 @@ window.addEventListener('DOMContentLoaded', async () => {
 function bindElements() {
   elements.status = document.getElementById('app-status');
   elements.retryConnection = document.getElementById('retry-connection');
-  elements.workspaceTabs = [...document.querySelectorAll('[data-workspace-tab]')];
-  elements.workspaces = [...document.querySelectorAll('[data-workspace]')];
+  elements.openSettings = document.getElementById('open-settings');
 
-  elements.connected = document.getElementById('dashboard-connected');
-  elements.provider = document.getElementById('dashboard-provider');
   elements.publicUrl = document.getElementById('dashboard-public-url');
   elements.stateBadge = document.getElementById('dashboard-state-badge');
   elements.homePublicUrlMeta = document.getElementById('home-public-url-meta');
-  elements.dashboardMessage = document.getElementById('dashboard-message');
-  elements.copyPublicUrl = document.getElementById('copy-public-url');
-  elements.openPublicUrl = document.getElementById('open-public-url');
-  elements.startProvider = document.getElementById('start-provider');
-  elements.startTunnel = document.getElementById('start-tunnel');
-  elements.stopTunnel = document.getElementById('stop-tunnel');
-  elements.homeProviderHint = document.getElementById('home-provider-hint');
-  elements.manageServices = document.getElementById('manage-services');
+  elements.dashboardConnected = document.getElementById('dashboard-connected');
+  elements.dashboardProvider = document.getElementById('dashboard-provider');
   elements.servicesCount = document.getElementById('services-count');
   elements.servicesEnabledCount = document.getElementById('services-enabled-count');
+  elements.dashboardMessage = document.getElementById('dashboard-message');
+  elements.homeProviderHint = document.getElementById('home-provider-hint');
+
+  elements.startTunnel = document.getElementById('start-tunnel');
+  elements.stopTunnel = document.getElementById('stop-tunnel');
+  elements.copyPublicUrl = document.getElementById('copy-public-url');
+  elements.openPublicUrl = document.getElementById('open-public-url');
 
   elements.routesMessage = document.getElementById('routes-message');
   elements.routesEmpty = document.getElementById('routes-empty');
   elements.routesList = document.getElementById('routes-list');
   elements.newRoute = document.getElementById('new-route');
+  elements.newRouteEmpty = document.getElementById('new-route-empty');
+  elements.servicesShell = document.getElementById('services-shell');
+
+  elements.serviceBackdrop = document.getElementById('service-backdrop');
+  elements.serviceDrawer = document.getElementById('service-drawer');
   elements.cancelRouteEdit = document.getElementById('cancel-route-edit');
   elements.routeFormTitle = document.getElementById('route-form-title');
   elements.routeId = document.getElementById('route-id');
-  elements.routeMatchPathPrefix = document.getElementById('route-match-path-prefix');
-  elements.routeMatchHost = document.getElementById('route-match-host');
   elements.routeUpstreamUrl = document.getElementById('route-upstream-url');
-  elements.routeFallbackUpstreamUrl = document.getElementById('route-fallback-upstream-url');
-  elements.routeHealthCheckPath = document.getElementById('route-health-check-path');
+  elements.routeMatchPathPrefix = document.getElementById('route-match-path-prefix');
   elements.routeEnabled = document.getElementById('route-enabled');
-  elements.saveRoute = document.getElementById('save-route');
+  elements.routeMatchHost = document.getElementById('route-match-host');
+  elements.routeHealthCheckPath = document.getElementById('route-health-check-path');
+  elements.routeFallbackUpstreamUrl = document.getElementById('route-fallback-upstream-url');
   elements.serviceAdvanced = document.getElementById('service-advanced');
   elements.serviceExposureMode = document.getElementById('service-exposure-mode');
   elements.serviceHostField = document.getElementById('service-host-field');
+  elements.saveRoute = document.getElementById('save-route');
 
+  elements.settingsBackdrop = document.getElementById('settings-backdrop');
+  elements.settingsDrawer = document.getElementById('settings-drawer');
+  elements.closeSettings = document.getElementById('close-settings');
   elements.baseUrl = document.getElementById('settings-base-url');
   elements.token = document.getElementById('settings-token');
   elements.settingsDefaultProvider = document.getElementById('settings-default-provider');
@@ -104,9 +109,10 @@ function bindElements() {
   elements.settingsNgrokDomain = document.getElementById('settings-ngrok-domain');
   elements.saveSettings = document.getElementById('save-settings');
 
-  elements.toggleTroubleshooting = document.getElementById('toggle-troubleshooting');
-  elements.troubleshootingPanel = document.getElementById('troubleshooting-panel');
+  elements.troubleshootingDetails = document.getElementById('troubleshooting-details');
   elements.refreshDiagnostics = document.getElementById('refresh-diagnostics');
+  elements.refreshLogs = document.getElementById('refresh-logs');
+  elements.clearLogs = document.getElementById('clear-logs');
   elements.diagnosticsOverview = document.getElementById('diagnostics-overview');
   elements.diagnosticsSummaryMeta = document.getElementById('diagnostics-summary-meta');
   elements.diagnosticsTunnelState = document.getElementById('diagnostics-tunnel-state');
@@ -123,41 +129,69 @@ function bindElements() {
   elements.upstreamsList = document.getElementById('upstreams-list');
   elements.logsMeta = document.getElementById('logs-meta');
   elements.logLinesSelect = document.getElementById('log-lines-select');
-  elements.refreshLogs = document.getElementById('refresh-logs');
-  elements.clearLogs = document.getElementById('clear-logs');
   elements.recentLogs = document.getElementById('recent-logs');
 }
 
 function bindEvents() {
-  elements.workspaceTabs.forEach((button) => {
-    button.addEventListener('click', () => setActiveWorkspace(button.dataset.workspaceTab));
-  });
-
   elements.retryConnection?.addEventListener('click', () => withBusy(refreshAll));
-  elements.copyPublicUrl?.addEventListener('click', () => withBusy(copyPublicUrl));
-  elements.openPublicUrl?.addEventListener('click', () => withBusy(openPublicUrl));
+  elements.openSettings?.addEventListener('click', () => openSettingsDrawer());
+  elements.closeSettings?.addEventListener('click', closeSettingsDrawer);
+  elements.settingsBackdrop?.addEventListener('click', closeSettingsDrawer);
+
   elements.startTunnel?.addEventListener('click', () => withBusy(startTunnel));
   elements.stopTunnel?.addEventListener('click', () => withBusy(stopTunnel));
-  elements.manageServices?.addEventListener('click', () => setActiveWorkspace('services'));
+  elements.copyPublicUrl?.addEventListener('click', () => withBusy(copyPublicUrl));
+  elements.openPublicUrl?.addEventListener('click', () => withBusy(openPublicUrl));
 
-  elements.newRoute?.addEventListener('click', () => resetRouteForm());
-  elements.cancelRouteEdit?.addEventListener('click', () => resetRouteForm());
+  elements.newRoute?.addEventListener('click', () => {
+    resetRouteForm();
+    openServiceDrawer();
+  });
+  elements.newRouteEmpty?.addEventListener('click', () => {
+    resetRouteForm();
+    openServiceDrawer();
+  });
+  elements.cancelRouteEdit?.addEventListener('click', closeServiceDrawer);
+  elements.serviceBackdrop?.addEventListener('click', closeServiceDrawer);
   elements.saveRoute?.addEventListener('click', () => withBusy(saveRoute));
   elements.serviceExposureMode?.addEventListener('change', applyExposureMode);
 
   elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
-  elements.settingsDefaultProvider?.addEventListener('change', syncProviderControls);
+  elements.settingsDefaultProvider?.addEventListener('change', syncProviderHints);
 
-  elements.toggleTroubleshooting?.addEventListener('click', () => withBusy(toggleTroubleshooting));
   elements.refreshDiagnostics?.addEventListener('click', () => withBusy(() => refreshDiagnosticsWorkspace({ manual: true })));
   elements.refreshLogs?.addEventListener('click', () => withBusy(() => refreshRecentLogs({ manual: true })));
   elements.clearLogs?.addEventListener('click', clearDisplayedLogs);
   elements.logLinesSelect?.addEventListener('change', () => {
     state.diagnostics.logLines = Number(elements.logLinesSelect.value) || 100;
-    if (state.troubleshootingOpen) {
+    if (elements.troubleshootingDetails?.open) {
       void refreshRecentLogs({ manual: false });
     }
   });
+}
+
+function openSettingsDrawer() {
+  state.settingsDrawerOpen = true;
+  elements.settingsBackdrop.hidden = false;
+  elements.settingsDrawer.hidden = false;
+}
+
+function closeSettingsDrawer() {
+  state.settingsDrawerOpen = false;
+  elements.settingsBackdrop.hidden = true;
+  elements.settingsDrawer.hidden = true;
+}
+
+function openServiceDrawer() {
+  state.serviceDrawerOpen = true;
+  elements.serviceBackdrop.hidden = false;
+  elements.serviceDrawer.hidden = false;
+}
+
+function closeServiceDrawer() {
+  state.serviceDrawerOpen = false;
+  elements.serviceBackdrop.hidden = true;
+  elements.serviceDrawer.hidden = true;
 }
 
 async function withBusy(fn) {
@@ -177,16 +211,17 @@ async function withBusy(fn) {
 function setBusyState(nextBusy) {
   const controls = [
     elements.retryConnection,
-    elements.copyPublicUrl,
-    elements.openPublicUrl,
+    elements.openSettings,
     elements.startTunnel,
     elements.stopTunnel,
-    elements.manageServices,
+    elements.copyPublicUrl,
+    elements.openPublicUrl,
     elements.newRoute,
+    elements.newRouteEmpty,
     elements.cancelRouteEdit,
     elements.saveRoute,
+    elements.closeSettings,
     elements.saveSettings,
-    elements.toggleTroubleshooting,
     elements.refreshDiagnostics,
     elements.refreshLogs,
     elements.clearLogs,
@@ -199,21 +234,6 @@ function setBusyState(nextBusy) {
 
   document.querySelectorAll('[data-route-action]').forEach((button) => {
     button.disabled = nextBusy;
-  });
-}
-
-function setActiveWorkspace(name) {
-  state.activeWorkspace = name;
-  elements.workspaceTabs.forEach((button) => {
-    const isActive = button.dataset.workspaceTab === name;
-    button.classList.toggle('is-active', isActive);
-    button.setAttribute('aria-pressed', String(isActive));
-  });
-
-  elements.workspaces.forEach((section) => {
-    const isActive = section.dataset.workspace === name;
-    section.hidden = !isActive;
-    section.classList.toggle('is-active', isActive);
   });
 }
 
@@ -237,17 +257,14 @@ function populateSettingsFields(settings) {
   elements.settingsAutoRestart.checked = Boolean(settings.auto_restart);
   elements.settingsNgrokAuthtoken.value = settings.ngrok_authtoken ?? '';
   elements.settingsNgrokDomain.value = settings.ngrok_domain ?? '';
-  syncProviderControls();
+  syncProviderHints();
 }
 
-function syncProviderControls() {
-  if (elements.settingsDefaultProvider?.value) {
-    elements.startProvider.value = elements.settingsDefaultProvider.value;
-  }
-  const provider = elements.startProvider.value || 'cloudflared';
+function syncProviderHints() {
+  const provider = elements.settingsDefaultProvider.value || 'cloudflared';
   const gatewayTarget = elements.settingsGatewayTargetUrl.value || 'http://127.0.0.1:18080';
   const restartLabel = elements.settingsAutoRestart.checked ? 'enabled' : 'disabled';
-  elements.homeProviderHint.textContent = `${provider} will target ${gatewayTarget} • auto restart ${restartLabel}.`;
+  elements.homeProviderHint.textContent = `${provider} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
 }
 
 async function loadSettings() {
@@ -261,15 +278,11 @@ async function loadSettings() {
 
 async function saveSettings() {
   try {
-    const settings = await invoke('save_settings', {
-      settings: collectSettingsForm(),
-    });
+    const settings = await invoke('save_settings', { settings: collectSettingsForm() });
     populateSettingsFields(settings);
     renderStatus('Settings saved. Refreshing tunnel and service state…');
     await refreshAll();
-    if (state.troubleshootingOpen) {
-      await refreshDiagnosticsWorkspace({ manual: false });
-    }
+    closeSettingsDrawer();
   } catch (error) {
     renderStatus(`Failed to save settings: ${formatError(error)}`, true);
   }
@@ -303,16 +316,13 @@ async function startTunnel() {
     const settings = collectSettingsForm();
     const snapshot = await invoke('start_tunnel', {
       input: {
-        provider: elements.startProvider.value,
+        provider: settings.default_provider,
         target_url: settings.gateway_target_url,
         auto_restart: settings.auto_restart,
       },
     });
     renderDashboard(snapshot);
     renderStatus('Tunnel started.');
-    if (state.troubleshootingOpen) {
-      await refreshDiagnosticsWorkspace({ manual: false });
-    }
   } catch (error) {
     renderStatus(`Failed to start tunnel: ${formatError(error)}`, true);
   }
@@ -323,9 +333,6 @@ async function stopTunnel() {
     const snapshot = await invoke('stop_tunnel');
     renderDashboard(snapshot);
     renderStatus('Tunnel stopped.');
-    if (state.troubleshootingOpen) {
-      await refreshDiagnosticsWorkspace({ manual: false });
-    }
   } catch (error) {
     renderStatus(`Failed to stop tunnel: ${formatError(error)}`, true);
   }
@@ -350,10 +357,7 @@ async function saveRoute() {
     renderRoutes(snapshot);
     renderStatus(snapshot.message ?? 'Service saved.');
     resetRouteForm();
-    setActiveWorkspace('services');
-    if (state.troubleshootingOpen) {
-      await refreshDiagnosticsWorkspace({ manual: false });
-    }
+    closeServiceDrawer();
   } catch (error) {
     renderStatus(`Failed to save service: ${formatError(error)}`, true);
   }
@@ -370,9 +374,7 @@ async function deleteRoute(id) {
     renderStatus(snapshot.message ?? 'Service deleted.');
     if (state.editingOriginalId === id) {
       resetRouteForm();
-    }
-    if (state.troubleshootingOpen) {
-      await refreshDiagnosticsWorkspace({ manual: false });
+      closeServiceDrawer();
     }
   } catch (error) {
     renderStatus(`Failed to delete service: ${formatError(error)}`, true);
@@ -406,35 +408,26 @@ async function toggleRouteEnabled(id) {
   }
 }
 
-async function toggleTroubleshooting() {
-  state.troubleshootingOpen = !state.troubleshootingOpen;
-  elements.troubleshootingPanel.hidden = !state.troubleshootingOpen;
-  elements.toggleTroubleshooting.textContent = state.troubleshootingOpen ? 'Hide Details' : 'View Details';
-  if (state.troubleshootingOpen) {
-    await refreshDiagnosticsWorkspace({ manual: true });
-  }
-}
-
 function renderDashboard(snapshot) {
   const tunnel = snapshot?.tunnel ?? null;
   const connected = Boolean(snapshot?.connected);
   const publicUrl = tunnel?.public_base_url ?? '';
   const tunnelState = tunnel?.state ?? (connected ? 'idle' : 'offline');
-  const provider = tunnel?.provider ?? elements.startProvider.value ?? '—';
 
-  elements.connected.textContent = connected ? 'Yes' : 'No';
-  elements.provider.textContent = provider ?? '—';
   elements.publicUrl.textContent = publicUrl || 'Not running';
-  elements.openPublicUrl.disabled = !publicUrl;
+  elements.dashboardConnected.textContent = connected ? 'Yes' : 'No';
+  elements.dashboardProvider.textContent = tunnel?.provider ?? collectSettingsForm().default_provider ?? '—';
   elements.copyPublicUrl.disabled = !publicUrl;
+  elements.openPublicUrl.disabled = !publicUrl;
+  elements.stopTunnel.disabled = !publicUrl;
 
   elements.stateBadge.textContent = titleCase(tunnelState);
   elements.stateBadge.className = `status-badge ${escapeClassName(tunnelState)}`;
 
   if (!connected) {
-    elements.homePublicUrlMeta.textContent = 'TunnelMux daemon is not ready. Retry or check connection settings.';
+    elements.homePublicUrlMeta.textContent = 'TunnelMux daemon is not ready. Retry or open Settings.';
     elements.dashboardMessage.textContent = snapshot?.message ?? 'Unable to reach the local daemon.';
-    renderStatus(`Daemon unavailable: ${snapshot?.message ?? 'check connection settings'}`, true);
+    renderStatus(`Daemon unavailable: ${snapshot?.message ?? 'check Settings'}`, true);
     return;
   }
 
@@ -455,9 +448,13 @@ function renderRoutes(snapshot) {
   elements.routesMessage.textContent = snapshot?.message ?? 'Services loaded from the daemon.';
   elements.routesList.innerHTML = '';
 
+  const configured = state.routeCache.length;
+  const enabled = state.routeCache.filter((route) => route.enabled).length;
+  elements.servicesCount.textContent = String(configured);
+  elements.servicesEnabledCount.textContent = String(enabled);
+
   if (!state.routeCache.length) {
     elements.routesEmpty.hidden = false;
-    renderServiceSummary();
     return;
   }
 
@@ -471,14 +468,10 @@ function renderRoutes(snapshot) {
         <div>
           <h3>${escapeHtml(route.id)}</h3>
           <p class="service-exposure">${escapeHtml(describeRouteExposure(route))}</p>
+          <p class="service-local">${escapeHtml(route.upstream_url)}</p>
         </div>
         <span class="service-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'Live' : 'Paused'}</span>
       </div>
-      <dl class="route-meta">
-        <div><dt>Local URL</dt><dd>${escapeHtml(route.upstream_url)}</dd></div>
-        <div><dt>Fallback</dt><dd>${escapeHtml(route.fallback_upstream_url ?? '—')}</dd></div>
-        <div><dt>Health Check</dt><dd>${escapeHtml(route.health_check_path ?? '—')}</dd></div>
-      </dl>
       <div class="actions compact-actions">
         <button type="button" class="secondary" data-route-action="edit" data-route-id="${escapeAttribute(route.id)}">Edit</button>
         <button type="button" class="secondary" data-route-action="toggle" data-route-id="${escapeAttribute(route.id)}">${route.enabled ? 'Disable' : 'Enable'}</button>
@@ -488,15 +481,7 @@ function renderRoutes(snapshot) {
     elements.routesList.appendChild(item);
   }
 
-  renderServiceSummary();
   bindRouteActionButtons();
-}
-
-function renderServiceSummary() {
-  const configured = state.routeCache.length;
-  const enabled = state.routeCache.filter((route) => route.enabled).length;
-  elements.servicesCount.textContent = String(configured);
-  elements.servicesEnabledCount.textContent = String(enabled);
 }
 
 async function refreshDiagnosticsWorkspace({ manual = false } = {}) {
@@ -509,7 +494,7 @@ async function refreshDiagnosticsWorkspace({ manual = false } = {}) {
   if (manual) {
     const failed = results.some((result) => result === false);
     renderStatus(
-      failed ? 'Troubleshooting details refreshed with some panel errors.' : 'Troubleshooting details refreshed.',
+      failed ? 'Troubleshooting refreshed with some panel errors.' : 'Troubleshooting refreshed.',
       failed,
     );
   }
@@ -526,7 +511,7 @@ async function refreshDiagnosticsSummary() {
     state.diagnostics.summary = summary;
     state.diagnostics.summaryUpdatedAt = new Date().toISOString();
     renderDiagnosticsSummary(summary);
-    renderDiagnosticsOverview('Use troubleshooting only when something looks wrong or you need more context.');
+    renderDiagnosticsOverview('Open these details only when something looks wrong.');
     return true;
   } catch (error) {
     renderDiagnosticsSummaryMeta(`Failed to load runtime summary: ${formatError(error)}`, true);
@@ -687,7 +672,7 @@ function bindRouteActionButtons() {
       const route = state.routeCache.find((item) => item.id === button.dataset.routeId);
       if (route) {
         populateRouteForm(route);
-        setActiveWorkspace('services');
+        openServiceDrawer();
       }
     });
   });
@@ -713,9 +698,7 @@ function populateRouteForm(route) {
   elements.routeHealthCheckPath.value = route.health_check_path ?? '';
   elements.routeEnabled.checked = Boolean(route.enabled);
   elements.serviceExposureMode.value = route.match_host ? 'subdomain' : 'path';
-  elements.serviceAdvanced.open = Boolean(
-    route.match_host || route.fallback_upstream_url || route.health_check_path,
-  );
+  elements.serviceAdvanced.open = Boolean(route.match_host || route.fallback_upstream_url || route.health_check_path);
   applyExposureMode();
   elements.saveRoute.textContent = 'Update Service';
 }
@@ -738,8 +721,7 @@ function resetRouteForm() {
 }
 
 function applyExposureMode() {
-  const isSubdomain = elements.serviceExposureMode.value === 'subdomain';
-  elements.serviceHostField.hidden = !isSubdomain;
+  elements.serviceHostField.hidden = elements.serviceExposureMode.value !== 'subdomain';
 }
 
 async function copyPublicUrl() {
@@ -773,10 +755,7 @@ async function openPublicUrl() {
 function describeRouteExposure(route) {
   const host = route.match_host?.trim();
   const path = ensurePath(route.match_path_prefix ?? '/');
-  if (host) {
-    return path === '/' ? host : `${host}${path}`;
-  }
-  return path;
+  return host ? (path === '/' ? host : `${host}${path}`) : path;
 }
 
 function ensurePath(value) {

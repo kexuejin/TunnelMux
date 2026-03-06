@@ -20,16 +20,13 @@
         </div>
         <div class="header-actions">
           <button id="retry-connection" type="button" class="secondary">Retry</button>
+          <button id="open-settings" type="button" class="secondary settings-button" aria-label="Open Settings">
+            Settings
+          </button>
         </div>
       </header>
 
-      <nav class="workspace-nav" aria-label="Primary navigation">
-        <button type="button" class="workspace-tab is-active" data-workspace-tab="home">Home</button>
-        <button type="button" class="workspace-tab" data-workspace-tab="services">Services</button>
-        <button type="button" class="workspace-tab" data-workspace-tab="settings">Settings</button>
-      </nav>
-
-      <section id="workspace-home" class="workspace is-active" data-workspace="home">
+      <section class="layout-stack">
         <section class="home-grid">
           <article class="panel hero-card">
             <div class="panel-header">
@@ -43,41 +40,19 @@
               <span id="dashboard-state-badge" class="status-badge idle">Idle</span>
             </div>
             <div class="actions">
-              <button id="copy-public-url" type="button">Copy URL</button>
-              <button id="open-public-url" type="button" class="secondary">Open</button>
-            </div>
-          </article>
-
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Tunnel Control</h2>
-                <p class="panel-subtle">One click to start or stop your current tunnel.</p>
-              </div>
-            </div>
-            <label class="field">
-              <span>Provider</span>
-              <select id="start-provider">
-                <option value="cloudflared">cloudflared</option>
-                <option value="ngrok">ngrok</option>
-              </select>
-            </label>
-            <div class="actions">
               <button id="start-tunnel" type="button">Start Tunnel</button>
+              <button id="copy-public-url" type="button" class="secondary">Copy URL</button>
+              <button id="open-public-url" type="button" class="secondary">Open</button>
               <button id="stop-tunnel" type="button" class="secondary">Stop Tunnel</button>
             </div>
-            <p id="home-provider-hint" class="panel-subtle">
-              Uses tunnel settings for gateway target and restart behavior.
-            </p>
           </article>
 
-          <article class="panel">
+          <article class="panel compact-panel">
             <div class="panel-header">
               <div>
-                <h2>Services</h2>
-                <p class="panel-subtle">Manage what gets exposed through the current tunnel.</p>
+                <h2>Tunnel</h2>
+                <p class="panel-subtle">Your current connection and provider status.</p>
               </div>
-              <button id="manage-services" type="button" class="secondary">Manage Services</button>
             </div>
             <dl class="stats-list">
               <div><dt>Connected</dt><dd id="dashboard-connected">Unknown</dd></div>
@@ -85,13 +60,11 @@
               <div><dt>Configured</dt><dd id="services-count">0</dd></div>
               <div><dt>Enabled</dt><dd id="services-enabled-count">0</dd></div>
             </dl>
-            <p id="dashboard-message" class="message muted">No service data yet.</p>
+            <p id="home-provider-hint" class="message muted">No tunnel data yet.</p>
           </article>
         </section>
-      </section>
 
-      <section id="workspace-services" class="workspace" data-workspace="services" hidden>
-        <section class="panel services-shell">
+        <section id="services-shell" class="panel services-shell">
           <div class="panel-header">
             <div>
               <h2>Services</h2>
@@ -99,86 +72,96 @@
             </div>
             <button id="new-route" type="button">Add Service</button>
           </div>
-          <div class="services-grid">
-            <section class="service-list-column">
-              <div id="routes-empty" class="empty-state">
-                No services yet. Add your first local service to expose it through the current tunnel.
-              </div>
-              <div id="routes-list" class="service-list"></div>
-            </section>
 
-            <section class="service-editor-column">
-              <div class="panel service-editor-card">
-                <div class="panel-header form-header">
-                  <div>
-                    <h3 id="route-form-title">Add Service</h3>
-                    <p class="panel-subtle">Keep the basics simple. Expand Advanced only when needed.</p>
-                  </div>
-                  <button id="cancel-route-edit" type="button" class="secondary">Reset</button>
-                </div>
-
-                <label class="field">
-                  <span>Service Name</span>
-                  <input id="route-id" type="text" placeholder="web-app" />
-                </label>
-                <label class="field">
-                  <span>Local Service URL</span>
-                  <input id="route-upstream-url" type="text" placeholder="http://127.0.0.1:3000" />
-                </label>
-                <label class="field">
-                  <span>Public Path</span>
-                  <input id="route-match-path-prefix" type="text" placeholder="/" value="/" />
-                </label>
-                <label class="checkbox-row">
-                  <input id="route-enabled" type="checkbox" checked />
-                  <span>Service enabled</span>
-                </label>
-
-                <details id="service-advanced" class="advanced-section">
-                  <summary>Advanced</summary>
-
-                  <label class="field">
-                    <span>Exposure</span>
-                    <select id="service-exposure-mode">
-                      <option value="path">Path</option>
-                      <option value="subdomain">Subdomain</option>
-                    </select>
-                  </label>
-
-                  <label id="service-host-field" class="field" hidden>
-                    <span>Public Host</span>
-                    <input id="route-match-host" type="text" placeholder="app.example.com" />
-                  </label>
-
-                  <label class="field">
-                    <span>Health Check Path</span>
-                    <input id="route-health-check-path" type="text" placeholder="/healthz" />
-                  </label>
-
-                  <label class="field">
-                    <span>Fallback Local URL</span>
-                    <input id="route-fallback-upstream-url" type="text" placeholder="http://127.0.0.1:3001" />
-                  </label>
-                </details>
-
-                <div class="actions">
-                  <button id="save-route" type="button">Save Service</button>
-                </div>
-              </div>
-            </section>
+          <div id="routes-empty" class="empty-state">
+            <p class="empty-title">No services yet.</p>
+            <p class="panel-subtle">Add your first local service and TunnelMux will expose it through the current tunnel.</p>
+            <div class="actions">
+              <button id="new-route-empty" type="button">Add Service</button>
+            </div>
           </div>
+
+          <div id="routes-list" class="service-list"></div>
+          <p id="dashboard-message" class="message muted">No service data yet.</p>
         </section>
       </section>
 
-      <section id="workspace-settings" class="workspace" data-workspace="settings" hidden>
-        <section class="panel-grid">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Connection Settings</h2>
-                <p class="panel-subtle">Only change these when your local TunnelMux daemon is not on the default address.</p>
-              </div>
-            </div>
+      <div id="service-backdrop" class="drawer-backdrop" hidden></div>
+      <aside id="service-drawer" class="drawer service-drawer" hidden aria-label="Service editor">
+        <div class="drawer-header">
+          <div>
+            <p class="eyebrow">Service</p>
+            <h2 id="route-form-title">Add Service</h2>
+            <p class="panel-subtle">Keep the basics simple. Expand Advanced only when needed.</p>
+          </div>
+          <button id="cancel-route-edit" type="button" class="secondary">Close</button>
+        </div>
+
+        <div class="drawer-body">
+          <label class="field">
+            <span>Service Name</span>
+            <input id="route-id" type="text" placeholder="web-app" />
+          </label>
+          <label class="field">
+            <span>Local Service URL</span>
+            <input id="route-upstream-url" type="text" placeholder="http://127.0.0.1:3000" />
+          </label>
+          <label class="field">
+            <span>Public Path</span>
+            <input id="route-match-path-prefix" type="text" placeholder="/" value="/" />
+          </label>
+          <label class="checkbox-row">
+            <input id="route-enabled" type="checkbox" checked />
+            <span>Service enabled</span>
+          </label>
+
+          <details id="service-advanced" class="advanced-section">
+            <summary>Advanced</summary>
+
+            <label class="field">
+              <span>Exposure</span>
+              <select id="service-exposure-mode">
+                <option value="path">Path</option>
+                <option value="subdomain">Subdomain</option>
+              </select>
+            </label>
+
+            <label id="service-host-field" class="field" hidden>
+              <span>Public Host</span>
+              <input id="route-match-host" type="text" placeholder="app.example.com" />
+            </label>
+
+            <label class="field">
+              <span>Health Check Path</span>
+              <input id="route-health-check-path" type="text" placeholder="/healthz" />
+            </label>
+
+            <label class="field">
+              <span>Fallback Local URL</span>
+              <input id="route-fallback-upstream-url" type="text" placeholder="http://127.0.0.1:3001" />
+            </label>
+          </details>
+        </div>
+
+        <div class="drawer-footer">
+          <button id="save-route" type="button">Save Service</button>
+        </div>
+      </aside>
+
+      <div id="settings-backdrop" class="drawer-backdrop" hidden></div>
+      <aside id="settings-drawer" class="drawer settings-drawer" hidden aria-label="Settings">
+        <div class="drawer-header">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2>Settings</h2>
+            <p class="panel-subtle">Only open this when you need to change connection or tunnel defaults.</p>
+          </div>
+          <button id="close-settings" type="button" class="secondary">Close</button>
+        </div>
+
+        <div class="drawer-body">
+          <section class="drawer-section">
+            <h3>Connection</h3>
             <label class="field">
               <span>Base URL</span>
               <input id="settings-base-url" type="text" placeholder="http://127.0.0.1:4765" />
@@ -189,13 +172,8 @@
             </label>
           </section>
 
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Tunnel Settings</h2>
-                <p class="panel-subtle">Provider defaults live here so Home stays lightweight.</p>
-              </div>
-            </div>
+          <section class="drawer-section">
+            <h3>Tunnel</h3>
             <label class="field">
               <span>Default Provider</span>
               <select id="settings-default-provider">
@@ -219,37 +197,22 @@
               <span>ngrok Reserved Domain</span>
               <input id="settings-ngrok-domain" type="text" placeholder="Optional" />
             </label>
-            <div class="actions">
-              <button id="save-settings" type="button">Save Settings</button>
-            </div>
           </section>
-        </section>
 
-        <section class="panel support-panel">
-          <div class="panel-header">
-            <div>
-              <h2>Troubleshooting</h2>
-              <p id="diagnostics-overview" class="panel-subtle">
-                Hidden by default so the app stays focused on start, copy, and service management.
-              </p>
-            </div>
-            <button id="toggle-troubleshooting" type="button" class="secondary">View Details</button>
-          </div>
-
-          <div id="troubleshooting-panel" class="troubleshooting-shell" hidden>
-            <div class="actions">
+          <details id="troubleshooting-details" class="advanced-section">
+            <summary>View details</summary>
+            <p id="diagnostics-overview" class="panel-subtle">
+              Hidden by default so the app stays focused on start, copy, and service management.
+            </p>
+            <div class="actions compact-actions">
               <button id="refresh-diagnostics" type="button">Refresh Details</button>
               <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
               <button id="clear-logs" type="button" class="secondary">Clear Logs</button>
             </div>
 
-            <section class="panel diagnostics-panel">
-              <div class="panel-header">
-                <div>
-                  <h3>Runtime Summary</h3>
-                  <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
-                </div>
-              </div>
+            <section class="drawer-section diagnostics-panel">
+              <h3>Runtime Summary</h3>
+              <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
               <dl class="stats-list diagnostics-stats">
                 <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
                 <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
@@ -263,18 +226,14 @@
               </dl>
             </section>
 
-            <section class="panel diagnostics-panel">
-              <div class="panel-header">
-                <div>
-                  <h3>Upstream Health</h3>
-                  <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
-                </div>
-              </div>
+            <section class="drawer-section diagnostics-panel">
+              <h3>Upstream Health</h3>
+              <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
               <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
               <div id="upstreams-list" class="diagnostics-list"></div>
             </section>
 
-            <section class="panel diagnostics-panel">
+            <section class="drawer-section diagnostics-panel">
               <div class="panel-header">
                 <div>
                   <h3>Recent Logs</h3>
@@ -291,9 +250,13 @@
               </div>
               <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
             </section>
-          </div>
-        </section>
-      </section>
+          </details>
+        </div>
+
+        <div class="drawer-footer">
+          <button id="save-settings" type="button">Save Settings</button>
+        </div>
+      </aside>
     </main>
 
     <script type="module" src="./app.js"></script>

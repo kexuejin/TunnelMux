@@ -125,11 +125,12 @@ cargo run -p tunnelmux-gui
 
 The GUI connects to an already-running `tunnelmuxd`; it does not launch or manage the daemon process itself.
 
-Current GUI focuses on an easy-first flow:
-- `Home` highlights the current public URL and tunnel start/stop actions
-- `Services` manages exposed local services without surfacing raw route terminology first
-- `Settings` groups connection and tunnel defaults in one place
-- `Troubleshooting` is available on demand instead of being a primary daily-use workspace
+Current GUI focuses on a single easy-first page:
+- the main page highlights the current public URL and tunnel start/stop actions,
+- the service list is always visible on the same page,
+- service add/edit opens in a side drawer,
+- settings live behind a top-right settings entry,
+- troubleshooting remains available on demand instead of occupying the default shell.
 
 Current native GUI installers may still be unsigned, so first-launch trust prompts may still appear depending on platform policy. Maintainers can enable the signed macOS/Windows GUI release path described in `docs/RELEASING.md` once CI signing credentials are configured.
 
