@@ -228,16 +228,18 @@ jobs:
           set -euo pipefail
           BUILD_ARGS="--bundles ${{ matrix.bundle }} --target ${{ matrix.target }}"
           CONFIG_DIR="crates/tunnelmux-gui/.ci"
+          CONFIG_DIR_ARG=".ci"
           mkdir -p "$CONFIG_DIR"
-          DAEMON_CONFIG="$CONFIG_DIR/tauri.gui.daemon.bundle.conf.json"
-          cat > "$DAEMON_CONFIG" <<'JSON'
+          DAEMON_CONFIG_PATH="$CONFIG_DIR/tauri.gui.daemon.bundle.conf.json"
+          DAEMON_CONFIG_ARG="$CONFIG_DIR_ARG/tauri.gui.daemon.bundle.conf.json"
+          cat > "$DAEMON_CONFIG_PATH" <<'JSON'
           {
             "bundle": {
               "externalBin": ["bin/tunnelmuxd"]
             }
           }
           JSON
-          COMBINED_CONFIG="$DAEMON_CONFIG"
+          COMBINED_CONFIG_ARG="$DAEMON_CONFIG_ARG"
 
           macos_required="${EFFECTIVE_MACOS_SIGNING_REQUIRED:-}"
           windows_required="${EFFECTIVE_WINDOWS_SIGNING_REQUIRED:-}"
@@ -298,10 +300,11 @@ jobs:
 
                 signing_config="$RUNNER_TEMP/tauri.windows.signing.conf.json"
                 bash scripts/write-gui-windows-signing-config.sh "$signing_config"
-                COMBINED_CONFIG="$CONFIG_DIR/tauri.gui.combined.conf.json"
+                COMBINED_CONFIG_PATH="$CONFIG_DIR/tauri.gui.combined.conf.json"
+                COMBINED_CONFIG_ARG="$CONFIG_DIR_ARG/tauri.gui.combined.conf.json"
                 jq -s 'reduce .[] as $item ({}; . * $item)' \
-                  "$DAEMON_CONFIG" \
-                  "$signing_config" > "$COMBINED_CONFIG"
+                  "$DAEMON_CONFIG_PATH" \
+                  "$signing_config" > "$COMBINED_CONFIG_PATH"
                 echo "TAURI_WINDOWS_SIGNING_CONFIG=$signing_config" >> "$GITHUB_ENV"
                 echo "GUI_SIGNING_MODE=windows-signed" >> "$GITHUB_ENV"
                 echo "Windows GUI signing enabled"
@@ -316,7 +319,7 @@ jobs:
               ;;
           esac
 
-          BUILD_ARGS="$BUILD_ARGS -c $COMBINED_CONFIG"
+          BUILD_ARGS="$BUILD_ARGS -c $COMBINED_CONFIG_ARG"
           echo "TAURI_BUILD_ARGS=$BUILD_ARGS" >> "$GITHUB_ENV"
 
       - name: Build signed macOS GUI bundle
