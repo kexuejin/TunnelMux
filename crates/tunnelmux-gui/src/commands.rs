@@ -1,3 +1,4 @@
+use crate::daemon_manager::{self, DaemonStatusSnapshot};
 use crate::settings::{GuiSettings, load_settings_from_dir, save_settings_to_dir};
 use crate::state::GuiAppState;
 use crate::view_models::{
@@ -15,6 +16,25 @@ use tunnelmux_core::{HealthResponse, TunnelProvider, TunnelStartRequest, TunnelS
 pub struct ConnectionStatus {
     pub connected: bool,
     pub message: Option<String>,
+}
+
+#[tauri::command]
+pub async fn ensure_local_daemon(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<DaemonStatusSnapshot, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    let settings = load_settings_from_dir(&settings_dir).map_err(command_error)?;
+    daemon_manager::ensure_local_daemon(&app, &state.daemon_runtime, &settings)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn daemon_connection_state(
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<DaemonStatusSnapshot, String> {
+    Ok(daemon_manager::read_daemon_status(&state.daemon_runtime))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

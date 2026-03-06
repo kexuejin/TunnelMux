@@ -123,7 +123,7 @@ Desktop GUI:
 cargo run -p tunnelmux-gui
 ```
 
-The GUI connects to an already-running `tunnelmuxd`; it does not launch or manage the daemon process itself.
+The GUI now prefers to auto-start a local `tunnelmuxd` when no daemon is reachable at the configured control URL. If an existing daemon is already running, the GUI connects to it without taking ownership.
 
 Current GUI focuses on a single easy-first page:
 - the main page highlights the current public URL and tunnel start/stop actions,
@@ -131,6 +131,8 @@ Current GUI focuses on a single easy-first page:
 - service add/edit opens in a side drawer,
 - settings live behind a top-right settings entry,
 - troubleshooting remains available on demand instead of occupying the default shell.
+
+When the GUI starts its own local daemon, that daemon is scoped to the GUI session and stops when the GUI exits. Externally started daemons are never stopped by the GUI.
 
 Current native GUI installers may still be unsigned, so first-launch trust prompts may still appear depending on platform policy. Maintainers can enable the signed macOS/Windows GUI release path described in `docs/RELEASING.md` once CI signing credentials are configured.
 

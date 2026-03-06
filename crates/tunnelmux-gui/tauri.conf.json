@@ -29,6 +29,9 @@
     "targets": "all",
     "category": "DeveloperTool",
     "publisher": "TunnelMux",
+    "externalBin": [
+      "bin/tunnelmuxd"
+    ],
     "shortDescription": "Desktop control console for TunnelMux tunnels, routes, and diagnostics.",
     "longDescription": "TunnelMux is a local desktop control console for operating tunnel lifecycle, route configuration, and diagnostics against a running tunnelmuxd daemon.",
     "useLocalToolsDir": true,

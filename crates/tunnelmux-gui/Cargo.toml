@@ -18,8 +18,10 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.10.3" }
+tokio.workspace = true
 tunnelmux-control-client.workspace = true
 tunnelmux-core.workspace = true
+url.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2.5.6" }

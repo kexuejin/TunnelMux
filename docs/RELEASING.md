@@ -48,6 +48,8 @@ Asset naming:
 - as a raw desktop binary inside the platform archive package
 - as a native GUI installer asset where supported
 
+GUI installers also embed `tunnelmuxd` as a bundled external binary so the desktop app can auto-start a local daemon for installer users.
+
 Current first-release native GUI installers include:
 - `.dmg`
 - `.msi`

@@ -51,7 +51,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   await loadSettings();
-  await refreshAll();
+  await ensureLocalDaemonAndRefresh();
 });
 
 function bindElements() {
@@ -133,7 +133,7 @@ function bindElements() {
 }
 
 function bindEvents() {
-  elements.retryConnection?.addEventListener('click', () => withBusy(refreshAll));
+  elements.retryConnection?.addEventListener('click', () => withBusy(ensureLocalDaemonAndRefresh));
   elements.openSettings?.addEventListener('click', () => openSettingsDrawer());
   elements.closeSettings?.addEventListener('click', closeSettingsDrawer);
   elements.settingsBackdrop?.addEventListener('click', closeSettingsDrawer);
@@ -280,17 +280,50 @@ async function saveSettings() {
   try {
     const settings = await invoke('save_settings', { settings: collectSettingsForm() });
     populateSettingsFields(settings);
-    renderStatus('Settings saved. Refreshing tunnel and service state…');
-    await refreshAll();
+    renderStatus('Settings saved. Reconnecting to local TunnelMux…');
+    await ensureLocalDaemonAndRefresh();
     closeSettingsDrawer();
   } catch (error) {
     renderStatus(`Failed to save settings: ${formatError(error)}`, true);
   }
 }
 
+async function ensureLocalDaemonAndRefresh() {
+  try {
+    const daemon = await invoke('ensure_local_daemon');
+    renderDaemonStatus(daemon);
+  } catch (error) {
+    renderDaemonStatus({
+      connected: false,
+      ownership: 'unavailable',
+      message: `Could not start local TunnelMux: ${formatError(error)}`,
+    });
+  }
+
+  await refreshAll();
+}
+
 async function refreshAll() {
   await refreshDashboard();
   await refreshRoutes();
+}
+
+function renderDaemonStatus(snapshot) {
+  const ownership = snapshot?.ownership ?? 'unavailable';
+  const connected = Boolean(snapshot?.connected);
+  const message = snapshot?.message ?? '';
+
+  if (connected && ownership === 'managed') {
+    renderStatus(message || 'Connected to a GUI-managed local TunnelMux daemon.');
+    return;
+  }
+
+  if (connected && ownership === 'external') {
+    renderStatus(message || 'Using an existing local TunnelMux daemon.');
+    return;
+  }
+
+  renderStatus(message || 'Local TunnelMux is unavailable.', true);
 }
 
 async function refreshDashboard() {
