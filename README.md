@@ -25,6 +25,8 @@ TunnelMux solves this by separating concerns:
 ## Key Capabilities
 
 - Independent daemon (`tunnelmuxd`) and CLI (`tunnelmux-cli`)
+- Desktop GUI MVP (`tunnelmux-gui`) for local operations control
+- Shared Rust control client for CLI and GUI surfaces
 - Tunnel lifecycle API: start, stop, status, logs, streams
 - Host/path routing to multiple local upstream services
 - Primary/fallback failover with active health checks
@@ -57,6 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/ins
 Download the platform package from Releases and extract:
 - `tunnelmuxd`
 - `tunnelmux-cli`
+- `tunnelmux-gui`
 
 ### 3) Install from source
 
@@ -70,6 +73,7 @@ For local development:
 ```bash
 cargo install --path crates/tunnelmuxd --force
 cargo install --path crates/tunnelmux-cli --force
+cargo run -p tunnelmux-gui
 ```
 
 Windows users should use release `.zip` assets.
@@ -106,12 +110,31 @@ tunnelmux diagnostics
 tunnelmux settings reload
 ```
 
+Desktop GUI:
+
+```bash
+cargo run -p tunnelmux-gui
+```
+
+The GUI connects to an already-running `tunnelmuxd`; it does not launch or manage the daemon process itself.
+
 Config files:
 
 - `~/.tunnelmux/config.json` — declarative routes and health-check settings
 - `~/.tunnelmux/state.json` — daemon-owned runtime snapshot
 
 The daemon polls `config.json` and applies route / health-check changes without restarting the process.
+
+## GUI Development Notes
+
+- `tunnelmux-gui` is a Tauri desktop shell with a plain `HTML/CSS/JS` frontend.
+- The GUI stores only local connection settings such as daemon `base_url` and optional token.
+- The GUI is an API client of `tunnelmuxd`, the same as `tunnelmux-cli`.
+
+Platform prerequisites for local GUI builds:
+- macOS: system WebKit
+- Windows: WebView2 runtime
+- Linux: WebKitGTK development packages (see `docs/RELEASING.md`)
 
 ## Architecture and Integration
 
@@ -125,8 +148,10 @@ The daemon polls `config.json` and applies route / health-check changes without 
 ## Repository Layout
 
 - `crates/tunnelmux-core` — shared domain models and protocol types
+- `crates/tunnelmux-control-client` — shared HTTP control client for CLI and GUI
 - `crates/tunnelmuxd` — daemon runtime and control-plane API
 - `crates/tunnelmux-cli` — CLI client and operational commands
+- `crates/tunnelmux-gui` — Tauri desktop control console
 - `scripts/install.sh` — release installer for macOS/Linux
 - `docs/` — architecture, API, integration, roadmap, release process
 
@@ -136,6 +161,7 @@ The daemon polls `config.json` and applies route / health-check changes without 
 - Optional bearer token (`--api-token` / `TUNNELMUX_API_TOKEN`)
 - Provider logs available via API and SSE streams
 - Runtime health snapshots for upstream and route observability
+- GUI stores local connection settings separately from daemon runtime/config files
 
 ## Contributing
 

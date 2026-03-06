@@ -25,10 +25,10 @@
 - [x] active health checks
 - [x] `wss/https` upstream support baseline
 
-## Phase 3: Productization and Ecosystem Integration (In Progress)
+## Phase 3: Productization and Ecosystem Integration (Completed)
 
 - [x] generic third-party integration templates
-- [ ] GUI MVP (Tauri)
+- [x] GUI MVP (Tauri)
 - [x] hot configuration reload
 - [x] operational audit and diagnostics
 
@@ -38,4 +38,3 @@
 - [ ] signed short-link management API
 - [ ] provider plugin model and extension APIs
 - [ ] observability (metrics, tracing, profiling)
-

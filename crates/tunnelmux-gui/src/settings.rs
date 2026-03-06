@@ -30,9 +30,12 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
 
     let raw = std::fs::read_to_string(&path)
         .map_err(|error| anyhow::anyhow!(error))
-        .map_err(|error| anyhow::anyhow!("failed to read settings file {}: {error}", path.display()))?;
-    let mut settings: GuiSettings = serde_json::from_str(&raw)
-        .map_err(|error| anyhow::anyhow!("failed to parse settings file {}: {error}", path.display()))?;
+        .map_err(|error| {
+            anyhow::anyhow!("failed to read settings file {}: {error}", path.display())
+        })?;
+    let mut settings: GuiSettings = serde_json::from_str(&raw).map_err(|error| {
+        anyhow::anyhow!("failed to parse settings file {}: {error}", path.display())
+    })?;
 
     settings.base_url = normalize_base_url(&settings.base_url);
     settings.token = normalize_token(settings.token);
@@ -40,8 +43,12 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
 }
 
 pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow::Result<()> {
-    std::fs::create_dir_all(config_dir)
-        .map_err(|error| anyhow::anyhow!("failed to create settings directory {}: {error}", config_dir.display()))?;
+    std::fs::create_dir_all(config_dir).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to create settings directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
     let path = settings_path(config_dir);
     let mut normalized = settings.clone();
     normalized.base_url = normalize_base_url(&normalized.base_url);
@@ -49,8 +56,9 @@ pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow
 
     let raw = serde_json::to_string_pretty(&normalized)
         .map_err(|error| anyhow::anyhow!("failed to serialize settings: {error}"))?;
-    std::fs::write(&path, format!("{raw}\n"))
-        .map_err(|error| anyhow::anyhow!("failed to write settings file {}: {error}", path.display()))?;
+    std::fs::write(&path, format!("{raw}\n")).map_err(|error| {
+        anyhow::anyhow!("failed to write settings file {}: {error}", path.display())
+    })?;
     Ok(())
 }
 

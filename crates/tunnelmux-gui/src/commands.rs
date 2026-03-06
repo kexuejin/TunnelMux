@@ -116,7 +116,9 @@ pub async fn delete_route(
     delete_route_from_settings_dir(&settings_dir, id).await
 }
 
-pub async fn probe_connection_from_settings_dir(settings_dir: &Path) -> Result<ConnectionStatus, String> {
+pub async fn probe_connection_from_settings_dir(
+    settings_dir: &Path,
+) -> Result<ConnectionStatus, String> {
     let (_, client) = load_client(settings_dir)?;
     match client.health().await {
         Ok(_) => Ok(ConnectionStatus {
@@ -185,7 +187,9 @@ pub async fn start_tunnel_from_settings_dir(
     })
 }
 
-pub async fn stop_tunnel_from_settings_dir(settings_dir: &Path) -> Result<DashboardSnapshot, String> {
+pub async fn stop_tunnel_from_settings_dir(
+    settings_dir: &Path,
+) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
     let response = client.stop_tunnel().await.map_err(command_error)?;
 
@@ -197,7 +201,6 @@ pub async fn stop_tunnel_from_settings_dir(settings_dir: &Path) -> Result<Dashbo
         message: None,
     })
 }
-
 
 pub async fn list_routes_from_settings_dir(
     settings_dir: &Path,
@@ -234,7 +237,10 @@ pub async fn delete_route_from_settings_dir(
     id: String,
 ) -> Result<RouteWorkspaceSnapshot, String> {
     let (_, client) = load_client(settings_dir)?;
-    client.delete_route(&id, false).await.map_err(command_error)?;
+    client
+        .delete_route(&id, false)
+        .await
+        .map_err(command_error)?;
     let routes = client.list_routes().await.map_err(command_error)?;
     Ok(RouteWorkspaceSnapshot::from_routes(
         routes.routes,
@@ -273,7 +279,10 @@ fn command_error(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use axum::{Json, Router, routing::get};
-    use std::{net::SocketAddr, sync::atomic::{AtomicU64, Ordering}};
+    use std::{
+        net::SocketAddr,
+        sync::atomic::{AtomicU64, Ordering},
+    };
     use tokio::net::TcpListener;
     use tunnelmux_core::{TunnelStatus, TunnelStatusResponse};
 
@@ -301,8 +310,17 @@ mod tests {
 
         assert!(snapshot.connected);
         assert_eq!(snapshot.settings.token.as_deref(), Some("dev-token"));
-        assert_eq!(snapshot.tunnel.as_ref().map(|item| item.state.clone()), Some(tunnelmux_core::TunnelState::Running));
-        assert_eq!(snapshot.tunnel.as_ref().and_then(|item| item.public_base_url.as_deref()), Some("https://demo.trycloudflare.com"));
+        assert_eq!(
+            snapshot.tunnel.as_ref().map(|item| item.state.clone()),
+            Some(tunnelmux_core::TunnelState::Running)
+        );
+        assert_eq!(
+            snapshot
+                .tunnel
+                .as_ref()
+                .and_then(|item| item.public_base_url.as_deref()),
+            Some("https://demo.trycloudflare.com")
+        );
     }
 
     #[tokio::test]
@@ -328,7 +346,10 @@ mod tests {
         .await
         .expect_err("start should fail against unreachable daemon");
 
-        assert!(error.contains("request failed") || error.contains("error sending request"), "unexpected error: {error}");
+        assert!(
+            error.contains("request failed") || error.contains("error sending request"),
+            "unexpected error: {error}"
+        );
     }
 
     async fn health_handler() -> Json<HealthResponse> {
@@ -359,7 +380,9 @@ mod tests {
     #[tokio::test]
     async fn save_route_creates_enabled_route_and_returns_fresh_list() {
         let temp_dir = prepare_temp_dir();
-        let routes = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<tunnelmux_core::RouteRule>::new()));
+        let routes = std::sync::Arc::new(tokio::sync::Mutex::new(
+            Vec::<tunnelmux_core::RouteRule>::new(),
+        ));
         let base_url = spawn_routes_server(routes.clone()).await;
         save_settings_to_dir(
             &temp_dir,
@@ -452,21 +475,31 @@ mod tests {
         routes: std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
     ) -> String {
         let app = Router::new()
-            .route("/v1/routes", get(list_routes_handler).post(create_route_handler))
-            .route("/v1/routes/{id}", axum::routing::delete(delete_route_handler).put(update_route_handler))
+            .route(
+                "/v1/routes",
+                get(list_routes_handler).post(create_route_handler),
+            )
+            .route(
+                "/v1/routes/{id}",
+                axum::routing::delete(delete_route_handler).put(update_route_handler),
+            )
             .with_state(routes);
         spawn_test_server(app).await
     }
 
     async fn list_routes_handler(
-        tauri_state: axum::extract::State<std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>>,
+        tauri_state: axum::extract::State<
+            std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
+        >,
     ) -> Json<tunnelmux_core::RoutesResponse> {
         let routes = tauri_state.0.lock().await.clone();
         Json(tunnelmux_core::RoutesResponse { routes })
     }
 
     async fn create_route_handler(
-        tauri_state: axum::extract::State<std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>>,
+        tauri_state: axum::extract::State<
+            std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
+        >,
         Json(request): Json<tunnelmux_core::CreateRouteRequest>,
     ) -> Json<tunnelmux_core::RouteRule> {
         let route = tunnelmux_core::RouteRule {
@@ -485,9 +518,14 @@ mod tests {
 
     async fn update_route_handler(
         axum::extract::Path(id): axum::extract::Path<String>,
-        tauri_state: axum::extract::State<std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>>,
+        tauri_state: axum::extract::State<
+            std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
+        >,
         Json(request): Json<tunnelmux_core::CreateRouteRequest>,
-    ) -> Result<Json<tunnelmux_core::RouteRule>, (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>)> {
+    ) -> Result<
+        Json<tunnelmux_core::RouteRule>,
+        (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>),
+    > {
         let route = tunnelmux_core::RouteRule {
             id: request.id,
             match_host: request.match_host,
@@ -509,8 +547,13 @@ mod tests {
 
     async fn delete_route_handler(
         axum::extract::Path(id): axum::extract::Path<String>,
-        tauri_state: axum::extract::State<std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>>,
-    ) -> Result<Json<tunnelmux_core::DeleteRouteResponse>, (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>)> {
+        tauri_state: axum::extract::State<
+            std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
+        >,
+    ) -> Result<
+        Json<tunnelmux_core::DeleteRouteResponse>,
+        (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>),
+    > {
         let mut routes = tauri_state.0.lock().await;
         let before = routes.len();
         routes.retain(|item| item.id != id);
