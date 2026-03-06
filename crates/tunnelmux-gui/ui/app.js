@@ -420,6 +420,10 @@ function renderDashboard(snapshot) {
   elements.copyPublicUrl.disabled = !publicUrl;
   elements.openPublicUrl.disabled = !publicUrl;
   elements.stopTunnel.disabled = !publicUrl;
+  elements.startTunnel.hidden = Boolean(publicUrl);
+  elements.copyPublicUrl.hidden = !publicUrl;
+  elements.openPublicUrl.hidden = !publicUrl;
+  elements.stopTunnel.hidden = !publicUrl;
 
   elements.stateBadge.textContent = titleCase(tunnelState);
   elements.stateBadge.className = `status-badge ${escapeClassName(tunnelState)}`;
@@ -452,13 +456,16 @@ function renderRoutes(snapshot) {
   const enabled = state.routeCache.filter((route) => route.enabled).length;
   elements.servicesCount.textContent = String(configured);
   elements.servicesEnabledCount.textContent = String(enabled);
+  elements.newRoute.hidden = configured === 0;
 
   if (!state.routeCache.length) {
     elements.routesEmpty.hidden = false;
+    elements.dashboardMessage.hidden = true;
     return;
   }
 
   elements.routesEmpty.hidden = true;
+  elements.dashboardMessage.hidden = false;
 
   for (const route of state.routeCache) {
     const item = document.createElement('article');
