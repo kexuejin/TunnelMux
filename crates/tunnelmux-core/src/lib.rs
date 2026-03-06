@@ -148,6 +148,13 @@ pub struct HealthCheckSettingsResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReloadSettingsResponse {
+    pub reloaded: bool,
+    pub route_count: usize,
+    pub tunnel_state: TunnelState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateHealthCheckSettingsRequest {
     pub interval_ms: Option<u64>,
     pub timeout_ms: Option<u64>,
@@ -163,6 +170,16 @@ pub struct MetricsResponse {
     pub enabled_route_count: usize,
     pub upstream_health_entries: usize,
     pub health_check: HealthCheckSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticsResponse {
+    pub data_file: String,
+    pub provider_log_file: String,
+    pub route_count: usize,
+    pub enabled_route_count: usize,
+    pub tunnel_state: TunnelState,
+    pub pending_restart: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

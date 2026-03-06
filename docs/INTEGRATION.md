@@ -2,6 +2,8 @@
 
 This document describes how any external platform can integrate with TunnelMux.
 
+Ready-to-adapt Bash, Node.js, and Python examples live in [Integration Templates](INTEGRATION-TEMPLATES.md).
+
 ## Integration Boundary
 
 - TunnelMux owns tunnel lifecycle and gateway routing.

@@ -6,7 +6,7 @@
 - [x] daemon + CLI baseline commands
 - [x] initial architecture and API documentation
 
-## Phase 1: Minimum Viable Product (In Progress)
+## Phase 1: Minimum Viable Product (Completed)
 
 - [x] provider process lifecycle (`cloudflared` / `ngrok`) baseline
 - [x] tunnel status persistence
@@ -16,7 +16,7 @@
 - [x] provider log persistence and streaming
 - [x] token-protected control-plane API
 
-## Phase 2: Gateway and Routing
+## Phase 2: Gateway and Routing (Completed)
 
 - [x] host/path route matching
 - [x] HTTP reverse proxy
@@ -25,9 +25,9 @@
 - [x] active health checks
 - [x] `wss/https` upstream support baseline
 
-## Phase 3: Productization and Ecosystem Integration
+## Phase 3: Productization and Ecosystem Integration (In Progress)
 
-- [ ] generic third-party integration templates
+- [x] generic third-party integration templates
 - [ ] GUI MVP (Tauri)
 - [ ] hot configuration reload
 - [ ] operational audit and diagnostics

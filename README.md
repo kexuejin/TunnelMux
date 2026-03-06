@@ -98,11 +98,19 @@ TUNNELMUX_API_TOKEN=dev-token cargo run -p tunnelmux-cli -- routes add \
 curl -H 'Host: app.local' http://127.0.0.1:18080/
 ```
 
+Operational helpers:
+
+```bash
+tunnelmux diagnostics
+tunnelmux settings reload
+```
+
 ## Architecture and Integration
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [API](docs/API.md)
 - [Third-Party Integration](docs/INTEGRATION.md)
+- [Integration Templates](docs/INTEGRATION-TEMPLATES.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Releasing](docs/RELEASING.md)
 
