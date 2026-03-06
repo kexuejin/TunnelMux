@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -39,5 +39,5 @@ tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2.5"
-tunnelmux-core = { version = "0.1.4", path = "crates/tunnelmux-core" }
-tunnelmux-control-client = { version = "0.1.4", path = "crates/tunnelmux-control-client" }
+tunnelmux-core = { version = "0.1.5", path = "crates/tunnelmux-core" }
+tunnelmux-control-client = { version = "0.1.5", path = "crates/tunnelmux-control-client" }

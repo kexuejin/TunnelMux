@@ -523,7 +523,7 @@ mod tests {
         Json(HealthResponse {
             ok: true,
             service: "tunnelmuxd".to_string(),
-            version: "0.1.4".to_string(),
+            version: "0.1.5".to_string(),
         })
     }
 

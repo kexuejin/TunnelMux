@@ -4,6 +4,14 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-03-06
+
+- Redesign the GUI into a single-page easy-first shell with the public URL, tunnel actions, and the service list on one screen.
+- Move service add/edit into a side drawer and move settings behind a top-right settings entry to reduce default UI complexity.
+- Add Rust-side daemon ownership logic so the GUI can auto-start a local `tunnelmuxd`, prefer bundled binaries, and avoid stopping externally managed daemons.
+- Bundle `tunnelmuxd` into native GUI installer workflows and validate the new GUI bundle path through GitHub release rehearsal runs.
+- Refine GUI release workflow config injection so bundled daemon assets resolve correctly during cross-platform Tauri packaging.
+
 ## [0.1.4] - 2026-03-06
 
 - Add desktop GUI product surface for dashboard, route management, tunnel controls, and diagnostics.
