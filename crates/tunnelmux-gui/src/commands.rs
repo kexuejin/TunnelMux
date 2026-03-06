@@ -1,6 +1,8 @@
 use crate::settings::{GuiSettings, load_settings_from_dir, save_settings_to_dir};
 use crate::state::GuiAppState;
-use crate::view_models::{RouteFormData, RouteWorkspaceSnapshot};
+use crate::view_models::{
+    DiagnosticsSummaryVm, LogTailVm, RouteFormData, RouteWorkspaceSnapshot, UpstreamHealthVm,
+};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -114,6 +116,34 @@ pub async fn delete_route(
 ) -> Result<RouteWorkspaceSnapshot, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     delete_route_from_settings_dir(&settings_dir, id).await
+}
+
+#[tauri::command]
+pub async fn load_diagnostics_summary(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<DiagnosticsSummaryVm, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    load_diagnostics_summary_from_settings_dir(&settings_dir).await
+}
+
+#[tauri::command]
+pub async fn load_upstreams_health(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<Vec<UpstreamHealthVm>, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    load_upstreams_health_from_settings_dir(&settings_dir).await
+}
+
+#[tauri::command]
+pub async fn load_recent_logs(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    lines: usize,
+) -> Result<LogTailVm, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    load_recent_logs_from_settings_dir(&settings_dir, lines).await
 }
 
 pub async fn probe_connection_from_settings_dir(
@@ -246,6 +276,39 @@ pub async fn delete_route_from_settings_dir(
         routes.routes,
         Some("Route deleted.".to_string()),
     ))
+}
+
+pub async fn load_diagnostics_summary_from_settings_dir(
+    settings_dir: &Path,
+) -> Result<DiagnosticsSummaryVm, String> {
+    let (_, client) = load_client(settings_dir)?;
+    let response = client.diagnostics().await.map_err(command_error)?;
+    Ok(DiagnosticsSummaryVm::from(response))
+}
+
+pub async fn load_upstreams_health_from_settings_dir(
+    settings_dir: &Path,
+) -> Result<Vec<UpstreamHealthVm>, String> {
+    let (_, client) = load_client(settings_dir)?;
+    let response = client.upstreams_health().await.map_err(command_error)?;
+    Ok(response
+        .upstreams
+        .into_iter()
+        .map(UpstreamHealthVm::from)
+        .collect())
+}
+
+pub async fn load_recent_logs_from_settings_dir(
+    settings_dir: &Path,
+    lines: usize,
+) -> Result<LogTailVm, String> {
+    if lines == 0 {
+        return Err("lines must be greater than zero".to_string());
+    }
+
+    let (_, client) = load_client(settings_dir)?;
+    let response = client.tunnel_logs(lines).await.map_err(command_error)?;
+    Ok(LogTailVm::from_response(lines, response))
 }
 
 fn load_client(settings_dir: &Path) -> Result<(GuiSettings, TunnelmuxControlClient), String> {
@@ -458,6 +521,155 @@ mod tests {
         assert_eq!(snapshot.routes.len(), 1);
         assert_eq!(snapshot.routes[0].id, "svc-b");
         assert_eq!(routes.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn load_diagnostics_summary_returns_connected_snapshot() {
+        let temp_dir = prepare_temp_dir();
+        let base_url =
+            spawn_test_server(Router::new().route("/v1/diagnostics", get(diagnostics_handler)))
+                .await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+            },
+        )
+        .expect("settings should save");
+
+        let summary = load_diagnostics_summary_from_settings_dir(&temp_dir)
+            .await
+            .expect("diagnostics summary should load");
+
+        assert_eq!(summary.route_count, 2);
+        assert_eq!(summary.enabled_route_count, 1);
+        assert_eq!(summary.tunnel_state, "running");
+        assert!(summary.pending_restart);
+    }
+
+    #[tokio::test]
+    async fn load_upstreams_health_maps_mixed_health_states() {
+        let temp_dir = prepare_temp_dir();
+        let base_url = spawn_test_server(
+            Router::new().route("/v1/upstreams/health", get(upstreams_health_handler)),
+        )
+        .await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+            },
+        )
+        .expect("settings should save");
+
+        let upstreams = load_upstreams_health_from_settings_dir(&temp_dir)
+            .await
+            .expect("upstreams health should load");
+
+        assert_eq!(upstreams.len(), 3);
+        assert_eq!(upstreams[0].health_label, "healthy");
+        assert_eq!(upstreams[1].health_label, "unhealthy");
+        assert_eq!(upstreams[2].health_label, "unknown");
+    }
+
+    #[tokio::test]
+    async fn load_recent_logs_returns_requested_tail_lines() {
+        let temp_dir = prepare_temp_dir();
+        let base_url =
+            spawn_test_server(Router::new().route("/v1/tunnel/logs", get(recent_logs_handler)))
+                .await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+            },
+        )
+        .expect("settings should save");
+
+        let log_tail = load_recent_logs_from_settings_dir(&temp_dir, 25)
+            .await
+            .expect("recent logs should load");
+
+        assert_eq!(log_tail.requested_lines, 25);
+        assert_eq!(
+            log_tail.lines,
+            vec!["first log line".to_string(), "second log line".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_commands_surface_connection_errors_cleanly() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url: "http://127.0.0.1:9".to_string(),
+                token: None,
+            },
+        )
+        .expect("settings should save");
+
+        let error = load_diagnostics_summary_from_settings_dir(&temp_dir)
+            .await
+            .expect_err("diagnostics summary should fail against unreachable daemon");
+
+        assert!(
+            error.contains("request failed") || error.contains("error sending request"),
+            "unexpected error: {error}"
+        );
+    }
+
+    async fn diagnostics_handler() -> Json<tunnelmux_core::DiagnosticsResponse> {
+        Json(tunnelmux_core::DiagnosticsResponse {
+            data_file: "/tmp/state.json".to_string(),
+            config_file: "/tmp/config.json".to_string(),
+            provider_log_file: "/tmp/provider.log".to_string(),
+            route_count: 2,
+            enabled_route_count: 1,
+            tunnel_state: tunnelmux_core::TunnelState::Running,
+            pending_restart: true,
+            config_reload_enabled: true,
+            config_reload_interval_ms: 1000,
+            last_config_reload_at: Some("2026-03-06T10:00:00Z".to_string()),
+            last_config_reload_error: None,
+        })
+    }
+
+    async fn upstreams_health_handler() -> Json<tunnelmux_core::UpstreamsHealthResponse> {
+        Json(tunnelmux_core::UpstreamsHealthResponse {
+            upstreams: vec![
+                tunnelmux_core::UpstreamHealthEntry {
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    health_check_path: "/healthz".to_string(),
+                    healthy: Some(true),
+                    last_checked_at: Some("2026-03-06T10:00:00Z".to_string()),
+                    last_error: None,
+                },
+                tunnelmux_core::UpstreamHealthEntry {
+                    upstream_url: "http://127.0.0.1:3001".to_string(),
+                    health_check_path: "/healthz".to_string(),
+                    healthy: Some(false),
+                    last_checked_at: Some("2026-03-06T10:00:01Z".to_string()),
+                    last_error: Some("status 503".to_string()),
+                },
+                tunnelmux_core::UpstreamHealthEntry {
+                    upstream_url: "http://127.0.0.1:3002".to_string(),
+                    health_check_path: "/healthz".to_string(),
+                    healthy: None,
+                    last_checked_at: None,
+                    last_error: None,
+                },
+            ],
+        })
+    }
+
+    async fn recent_logs_handler() -> Json<tunnelmux_core::TunnelLogsResponse> {
+        Json(tunnelmux_core::TunnelLogsResponse {
+            lines: vec!["first log line".to_string(), "second log line".to_string()],
+        })
     }
 
     async fn spawn_test_server(app: Router) -> String {

@@ -16,6 +16,9 @@ pub fn run() {
             commands::list_routes,
             commands::save_route,
             commands::delete_route,
+            commands::load_diagnostics_summary,
+            commands::load_upstreams_health,
+            commands::load_recent_logs,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run TunnelMux GUI");
