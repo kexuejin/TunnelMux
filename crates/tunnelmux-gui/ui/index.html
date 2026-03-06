@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TunnelMux</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="eyebrow">TunnelMux GUI MVP</p>
+        <h1>Desktop control console</h1>
+        <p id="app-status" class="subtle">Static shell ready. Command bridge comes next.</p>
+      </header>
+      <section class="panel-grid">
+        <section class="panel">
+          <h2>Connection</h2>
+          <p>Daemon target: <code>http://127.0.0.1:4765</code></p>
+          <p>Next step: load and save local GUI settings through Tauri commands.</p>
+        </section>
+        <section class="panel">
+          <h2>Operations Console</h2>
+          <ul>
+            <li>Dashboard snapshot</li>
+            <li>Tunnel start / stop</li>
+            <li>Route list / create / update / delete</li>
+          </ul>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

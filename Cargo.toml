@@ -4,6 +4,7 @@ members = [
   "crates/tunnelmuxd",
   "crates/tunnelmux-cli",
   "crates/tunnelmux-control-client",
+  "crates/tunnelmux-gui",
 ]
 resolver = "2"
 
