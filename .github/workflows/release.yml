@@ -297,7 +297,8 @@ jobs:
 
           echo "TAURI_BUILD_ARGS=$BUILD_ARGS" >> "$GITHUB_ENV"
 
-      - name: Build GUI bundle
+      - name: Build signed macOS GUI bundle
+        if: runner.os == 'macOS' && steps.signing_overrides.outputs.macos_signing_required == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -307,6 +308,15 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+        with:
+          projectPath: crates/tunnelmux-gui
+          args: ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Build GUI bundle
+        if: runner.os != 'macOS' || steps.signing_overrides.outputs.macos_signing_required != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
