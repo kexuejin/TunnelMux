@@ -115,6 +115,26 @@ Windows signed mode renders a temporary Tauri config overlay that uses `trusted-
 
 If either signing toggle is left unset or set to anything other than `true`, the corresponding GUI bundle continues to build in unsigned mode.
 
+## Manual Release Rehearsal
+
+The same `release.yml` workflow also supports `workflow_dispatch` for non-publishing rehearsals.
+
+Manual rehearsal inputs:
+
+- `version` — required and must match the checked-out project version in `Cargo.toml` / `tauri.conf.json`
+- `macos_signing_required` — optional override with `inherit`, `true`, or `false`
+- `windows_signing_required` — optional override with `inherit`, `true`, or `false`
+
+Rehearsal runs:
+
+- build the same raw archives and GUI bundles as the tagged release path,
+- apply the same signing preflight logic,
+- generate `SHA256SUMS`,
+- upload the merged output as the `rehearsal-dist` workflow artifact,
+- do **not** publish a GitHub Release.
+
+Use this path before cutting a real tag when you want to validate packaging, signing preflight, or artifact layout without touching the public release page.
+
 
 ## First-time GitHub publish
 
