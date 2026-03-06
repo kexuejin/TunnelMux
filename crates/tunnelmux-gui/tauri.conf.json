@@ -27,6 +27,17 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": []
+    "category": "DeveloperTool",
+    "publisher": "TunnelMux",
+    "shortDescription": "Desktop control console for TunnelMux tunnels, routes, and diagnostics.",
+    "longDescription": "TunnelMux is a local desktop control console for operating tunnel lifecycle, route configuration, and diagnostics against a running tunnelmuxd daemon.",
+    "useLocalToolsDir": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }
