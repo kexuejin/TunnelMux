@@ -5,8 +5,9 @@ use std::{fs, path::Path, path::PathBuf};
 
 use anyhow::{Context, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use reqwest::{Client, StatusCode as ReqwestStatusCode};
+use reqwest::Client;
 use serde_json::json;
+use tunnelmux_control_client::{ControlClientConfig, TunnelmuxControlClient};
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
     DEFAULT_GATEWAY_TARGET_URL, DashboardResponse, DeleteRouteResponse, DiagnosticsResponse,
@@ -929,6 +930,13 @@ fn resolve_api_token(arg_token: Option<String>) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+fn build_control_client(cli: &Cli) -> TunnelmuxControlClient {
+    TunnelmuxControlClient::new(ControlClientConfig::new(
+        normalize_base_url(&cli.server),
+        resolve_api_token(cli.token.clone()),
+    ))
+}
+
 fn normalize_watch_interval_ms(value: u64) -> anyhow::Result<u64> {
     if !(200..=60_000).contains(&value) {
         return Err(anyhow!(
@@ -958,14 +966,6 @@ fn normalize_match_route_path(value: String) -> anyhow::Result<String> {
         return Err(anyhow!("path must start with '/'"));
     }
     Ok(path.to_string())
-}
-
-fn build_route_update_endpoint(id: &str, upsert: bool) -> String {
-    if upsert {
-        format!("/v1/routes/{id}?upsert=true")
-    } else {
-        format!("/v1/routes/{id}")
-    }
 }
 
 fn should_start_tunnel(status: &TunnelStatusResponse) -> bool {
@@ -1948,5 +1948,27 @@ mod tests {
                 last_error: None,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_client_refactor_tests {
+    use super::*;
+
+    #[test]
+    fn build_control_client_normalizes_server_and_token() {
+        let cli = Cli::try_parse_from([
+            "tunnelmux",
+            "--server",
+            "127.0.0.1:4765/",
+            "--token",
+            "  dev-token  ",
+            "diagnostics",
+        ])
+        .expect("cli should parse");
+
+        let client = build_control_client(&cli);
+        assert_eq!(client.base_url(), "http://127.0.0.1:4765");
+        assert_eq!(client.token(), Some("dev-token"));
     }
 }

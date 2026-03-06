@@ -1,4 +1,5 @@
 use super::*;
+pub(super) use tunnelmux_control_client::{decode_response, extract_error_message};
 
 pub(super) async fn get_json<T: serde::de::DeserializeOwned>(
     client: &Client,
@@ -8,80 +9,6 @@ pub(super) async fn get_json<T: serde::de::DeserializeOwned>(
 ) -> anyhow::Result<T> {
     let url = format!("{}{}", base_url, path);
     let response = request_with_token(client.get(&url), token)
-        .send()
-        .await
-        .with_context(|| format!("request failed: {url}"))?;
-    decode_response(response).await
-}
-
-pub(super) async fn post_json<T: serde::de::DeserializeOwned>(
-    client: &Client,
-    base_url: &str,
-    path: &str,
-    payload: &impl serde::Serialize,
-    token: Option<&str>,
-) -> anyhow::Result<T> {
-    let url = format!("{}{}", base_url, path);
-    let response = request_with_token(client.post(&url), token)
-        .json(payload)
-        .send()
-        .await
-        .with_context(|| format!("request failed: {url}"))?;
-    decode_response(response).await
-}
-
-pub(super) async fn delete_json<T: serde::de::DeserializeOwned>(
-    client: &Client,
-    base_url: &str,
-    path: &str,
-    token: Option<&str>,
-) -> anyhow::Result<T> {
-    let url = format!("{}{}", base_url, path);
-    let response = request_with_token(client.delete(&url), token)
-        .send()
-        .await
-        .with_context(|| format!("request failed: {url}"))?;
-    decode_response(response).await
-}
-
-pub(super) async fn delete_route_by_id(
-    client: &Client,
-    base_url: &str,
-    id: &str,
-    token: Option<&str>,
-    ignore_missing: bool,
-) -> anyhow::Result<DeleteRouteResponse> {
-    let path = format!("/v1/routes/{id}");
-    let url = format!("{}{}", base_url, path);
-    let response = request_with_token(client.delete(&url), token)
-        .send()
-        .await
-        .with_context(|| format!("request failed: {url}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .context("failed to read response body")?;
-    if status == ReqwestStatusCode::NOT_FOUND && ignore_missing {
-        return Ok(DeleteRouteResponse { removed: false });
-    }
-    if !status.is_success() {
-        return Err(anyhow!("HTTP {}: {}", status, extract_error_message(&body)));
-    }
-    serde_json::from_str::<DeleteRouteResponse>(&body)
-        .with_context(|| format!("failed to parse delete route response: {}", body))
-}
-
-pub(super) async fn put_json<T: serde::de::DeserializeOwned>(
-    client: &Client,
-    base_url: &str,
-    path: &str,
-    payload: &impl serde::Serialize,
-    token: Option<&str>,
-) -> anyhow::Result<T> {
-    let url = format!("{}{}", base_url, path);
-    let response = request_with_token(client.put(&url), token)
-        .json(payload)
         .send()
         .await
         .with_context(|| format!("request failed: {url}"))?;
@@ -191,14 +118,11 @@ where
         let body = response.text().await.map_err(|error| {
             StreamAttemptError::Fatal(anyhow!(error).context("failed to read stream error body"))
         })?;
-        let message = serde_json::from_str::<ErrorResponse>(&body)
-            .map(|err| err.error)
-            .unwrap_or(body);
         return Err(StreamAttemptError::Fatal(anyhow!(
             "HTTP {} while opening {} stream: {}",
             status,
             stream_name,
-            message
+            extract_error_message(&body)
         )));
     }
 
@@ -245,33 +169,4 @@ pub(super) fn next_stream_retry_delay_ms(
     current_delay_ms
         .saturating_mul(2)
         .clamp(retry_policy.initial_ms, retry_policy.max_ms)
-}
-
-pub(super) async fn decode_response<T: serde::de::DeserializeOwned>(
-    response: reqwest::Response,
-) -> anyhow::Result<T> {
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .context("failed to read response body")?;
-    if !status.is_success() {
-        let message = serde_json::from_str::<ErrorResponse>(&body)
-            .map(|err| err.error)
-            .unwrap_or_else(|_| body.clone());
-        return Err(anyhow!("HTTP {}: {}", status, message));
-    }
-
-    serde_json::from_str::<T>(&body).with_context(|| {
-        format!(
-            "failed to parse success response (status {}): {}",
-            status, body
-        )
-    })
-}
-
-pub(super) fn extract_error_message(body: &str) -> String {
-    serde_json::from_str::<ErrorResponse>(body)
-        .map(|err| err.error)
-        .unwrap_or_else(|_| body.to_string())
 }

@@ -1,8 +1,9 @@
 use super::*;
 
 pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
-    let base_url = normalize_base_url(&cli.server);
-    let token = resolve_api_token(cli.token);
+    let control_client = build_control_client(&cli);
+    let base_url = control_client.base_url().to_string();
+    let token = control_client.token().map(str::to_string);
     let client = Client::new();
 
     match cli.command {
@@ -26,10 +27,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             } else if watch {
                 watch_status(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
-                let health: HealthResponse =
-                    get_json(&client, &base_url, "/v1/health", None).await?;
-                let tunnel: TunnelStatusResponse =
-                    get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
+                let health: HealthResponse = control_client.health().await?;
+                let tunnel: TunnelStatusResponse = control_client.tunnel_status().await?;
                 println!("{}", format_status_output(&health, &tunnel)?);
             }
         }
@@ -53,8 +52,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             } else if watch {
                 watch_dashboard(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
-                let dashboard: DashboardResponse =
-                    get_json(&client, &base_url, "/v1/dashboard", token.as_deref()).await?;
+                let dashboard: DashboardResponse = control_client.dashboard().await?;
                 println!("{}", serde_json::to_string_pretty(&dashboard)?);
             }
         }
@@ -78,14 +76,12 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             } else if watch {
                 watch_metrics(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
-                let metrics: MetricsResponse =
-                    get_json(&client, &base_url, "/v1/metrics", token.as_deref()).await?;
+                let metrics: MetricsResponse = control_client.metrics().await?;
                 println!("{}", serde_json::to_string_pretty(&metrics)?);
             }
         }
         Command::Diagnostics => {
-            let diagnostics: DiagnosticsResponse =
-                get_json(&client, &base_url, "/v1/diagnostics", token.as_deref()).await?;
+            let diagnostics: DiagnosticsResponse = control_client.diagnostics().await?;
             println!("{}", serde_json::to_string_pretty(&diagnostics)?);
         }
         Command::Tunnel { command } => match command {
@@ -100,14 +96,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     auto_restart: Some(auto_restart),
                     metadata: None,
                 };
-                let status: TunnelStatusResponse = post_json(
-                    &client,
-                    &base_url,
-                    "/v1/tunnel/start",
-                    &payload,
-                    token.as_deref(),
-                )
-                .await?;
+                let status: TunnelStatusResponse = control_client.start_tunnel(&payload).await?;
                 println!("{}", serde_json::to_string_pretty(&status)?);
             }
             TunnelCommand::Logs {
@@ -140,14 +129,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             TunnelCommand::Stop => {
-                let status: TunnelStatusResponse = post_json(
-                    &client,
-                    &base_url,
-                    "/v1/tunnel/stop",
-                    &json!({}),
-                    token.as_deref(),
-                )
-                .await?;
+                let status: TunnelStatusResponse = control_client.stop_tunnel().await?;
                 println!("{}", serde_json::to_string_pretty(&status)?);
             }
         },
@@ -180,13 +162,10 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 health_check_path,
                 enabled: Some(!disabled),
             };
-            let routes: RoutesResponse =
-                get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+            let routes: RoutesResponse = control_client.list_routes().await?;
             let existing_route = routes.routes.iter().find(|item| item.id == id).cloned();
             let route_action = infer_expose_route_action(existing_route.as_ref(), &route_payload);
-            let route_endpoint = build_route_update_endpoint(&id, true);
-            let mut tunnel: TunnelStatusResponse =
-                get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
+            let mut tunnel: TunnelStatusResponse = control_client.tunnel_status().await?;
             let tunnel_action = resolve_expose_tunnel_action(
                 &tunnel,
                 &provider,
@@ -224,14 +203,9 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     ExposeRouteAction::Unchanged => existing_route
                         .ok_or_else(|| anyhow!("existing route disappeared during expose apply"))?,
                     ExposeRouteAction::Create | ExposeRouteAction::Update => {
-                        put_json(
-                            &client,
-                            &base_url,
-                            &route_endpoint,
-                            &route_payload,
-                            token.as_deref(),
-                        )
-                        .await?
+                        control_client
+                            .update_route_with_options(&id, &route_payload, true)
+                            .await?
                     }
                 };
 
@@ -240,43 +214,24 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 match tunnel_action {
                     ExposeTunnelAction::Noop => {}
                     ExposeTunnelAction::Start => {
-                        tunnel = post_json(
-                            &client,
-                            &base_url,
-                            "/v1/tunnel/start",
-                            &TunnelStartRequest {
-                                provider: provider.clone(),
-                                target_url: target_url.clone(),
-                                auto_restart: Some(auto_restart),
-                                metadata: None,
-                            },
-                            token.as_deref(),
-                        )
-                        .await?;
+                        let start_request = TunnelStartRequest {
+                            provider: provider.clone(),
+                            target_url: target_url.clone(),
+                            auto_restart: Some(auto_restart),
+                            metadata: None,
+                        };
+                        tunnel = control_client.start_tunnel(&start_request).await?;
                         tunnel_started = true;
                     }
                     ExposeTunnelAction::Restart => {
-                        let _stopped: TunnelStatusResponse = post_json(
-                            &client,
-                            &base_url,
-                            "/v1/tunnel/stop",
-                            &json!({}),
-                            token.as_deref(),
-                        )
-                        .await?;
-                        tunnel = post_json(
-                            &client,
-                            &base_url,
-                            "/v1/tunnel/start",
-                            &TunnelStartRequest {
-                                provider: provider.clone(),
-                                target_url: target_url.clone(),
-                                auto_restart: Some(auto_restart),
-                                metadata: None,
-                            },
-                            token.as_deref(),
-                        )
-                        .await?;
+                        let _stopped: TunnelStatusResponse = control_client.stop_tunnel().await?;
+                        let start_request = TunnelStartRequest {
+                            provider: provider.clone(),
+                            target_url: target_url.clone(),
+                            auto_restart: Some(auto_restart),
+                            metadata: None,
+                        };
+                        tunnel = control_client.start_tunnel(&start_request).await?;
                         tunnel_started = true;
                         tunnel_restarted = true;
                     }
@@ -314,14 +269,12 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             ignore_missing,
             dry_run,
         } => {
-            let routes: RoutesResponse =
-                get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+            let routes: RoutesResponse = control_client.list_routes().await?;
             let route_exists = routes.routes.iter().any(|item| item.id == id);
             if !route_exists && !ignore_missing {
                 return Err(anyhow!("route '{}' not found", id));
             }
-            let mut tunnel: TunnelStatusResponse =
-                get_json(&client, &base_url, "/v1/tunnel/status", token.as_deref()).await?;
+            let mut tunnel: TunnelStatusResponse = control_client.tunnel_status().await?;
             let remaining_routes =
                 project_remaining_routes_after_unexpose(routes.routes.len(), route_exists);
             let tunnel_stopped =
@@ -339,18 +292,9 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     }))?
                 );
             } else {
-                let remove =
-                    delete_route_by_id(&client, &base_url, &id, token.as_deref(), ignore_missing)
-                        .await?;
+                let remove = control_client.delete_route(&id, ignore_missing).await?;
                 if tunnel_stopped {
-                    tunnel = post_json(
-                        &client,
-                        &base_url,
-                        "/v1/tunnel/stop",
-                        &json!({}),
-                        token.as_deref(),
-                    )
-                    .await?;
+                    tunnel = control_client.stop_tunnel().await?;
                 }
                 println!(
                     "{}",
@@ -391,8 +335,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 } else if watch {
                     watch_routes(&client, &base_url, token.as_deref(), interval_ms, format).await?;
                 } else {
-                    let routes: RoutesResponse =
-                        get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+                    let routes: RoutesResponse = control_client.list_routes().await?;
                     println!("{}", format_routes(&routes, format)?);
                 }
             }
@@ -423,32 +366,17 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 };
                 let route: tunnelmux_core::RouteRule =
-                    post_json(&client, &base_url, "/v1/routes", &payload, token.as_deref()).await?;
+                    control_client.create_route(&payload).await?;
                 println!("{}", serde_json::to_string_pretty(&route)?);
             }
             RoutesCommand::Remove { id } => {
-                let endpoint = format!("/v1/routes/{id}");
-                let response: DeleteRouteResponse =
-                    delete_json(&client, &base_url, &endpoint, token.as_deref()).await?;
+                let response: DeleteRouteResponse = control_client.delete_route(&id, false).await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
             RoutesCommand::Match { path, host, table } => {
                 let path = normalize_match_route_path(path)?;
-                let url = format!("{}/v1/routes/match", base_url);
-                let mut request = request_with_token(client.get(&url), token.as_deref());
-                request = request.query(&[("path", path.as_str())]);
-                if let Some(host) = host
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|item| !item.is_empty())
-                {
-                    request = request.query(&[("host", host)]);
-                }
-                let response = request
-                    .send()
-                    .await
-                    .with_context(|| format!("request failed: {url}"))?;
-                let payload: RouteMatchResponse = decode_response(response).await?;
+                let payload: RouteMatchResponse =
+                    control_client.match_route(&path, host.as_deref()).await?;
                 if table {
                     println!("{}", format_route_match_table(&payload));
                 } else {
@@ -456,8 +384,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             RoutesCommand::Export { id, out } => {
-                let routes: RoutesResponse =
-                    get_json(&client, &base_url, "/v1/routes", token.as_deref()).await?;
+                let routes: RoutesResponse = control_client.list_routes().await?;
                 if let Some(id) = id {
                     let route = routes
                         .routes
@@ -491,14 +418,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     dry_run: Some(dry_run),
                     allow_empty: Some(allow_empty),
                 };
-                let response: ApplyRoutesResponse = post_json(
-                    &client,
-                    &base_url,
-                    "/v1/routes/apply",
-                    &payload,
-                    token.as_deref(),
-                )
-                .await?;
+                let response: ApplyRoutesResponse = control_client.apply_routes(&payload).await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
             RoutesCommand::Update {
@@ -529,9 +449,9 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         enabled: Some(!disabled),
                     }
                 };
-                let endpoint = build_route_update_endpoint(&id, upsert);
-                let route: tunnelmux_core::RouteRule =
-                    put_json(&client, &base_url, &endpoint, &payload, token.as_deref()).await?;
+                let route: tunnelmux_core::RouteRule = control_client
+                    .update_route_with_options(&id, &payload, upsert)
+                    .await?;
                 println!("{}", serde_json::to_string_pretty(&route)?);
             }
         },
@@ -572,8 +492,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     .await?;
                 } else {
                     let response: UpstreamsHealthResponse =
-                        get_json(&client, &base_url, "/v1/upstreams/health", token.as_deref())
-                            .await?;
+                        control_client.upstreams_health().await?;
                     println!("{}", format_upstreams_health(&response, format)?);
                 }
             }
@@ -585,13 +504,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 path,
             } => {
                 if interval_ms.is_none() && timeout_ms.is_none() && path.is_none() {
-                    let response: HealthCheckSettingsResponse = get_json(
-                        &client,
-                        &base_url,
-                        "/v1/settings/health-check",
-                        token.as_deref(),
-                    )
-                    .await?;
+                    let response: HealthCheckSettingsResponse =
+                        control_client.get_health_check_settings().await?;
                     println!("{}", serde_json::to_string_pretty(&response)?);
                 } else {
                     let payload = UpdateHealthCheckSettingsRequest {
@@ -599,26 +513,14 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         timeout_ms,
                         path,
                     };
-                    let response: HealthCheckSettingsResponse = put_json(
-                        &client,
-                        &base_url,
-                        "/v1/settings/health-check",
-                        &payload,
-                        token.as_deref(),
-                    )
-                    .await?;
+                    let response: HealthCheckSettingsResponse = control_client
+                        .update_health_check_settings(&payload)
+                        .await?;
                     println!("{}", serde_json::to_string_pretty(&response)?);
                 }
             }
             SettingsCommand::Reload => {
-                let response: ReloadSettingsResponse = post_json(
-                    &client,
-                    &base_url,
-                    "/v1/settings/reload",
-                    &json!({}),
-                    token.as_deref(),
-                )
-                .await?;
+                let response: ReloadSettingsResponse = control_client.reload_settings().await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
         },
