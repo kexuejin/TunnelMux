@@ -132,7 +132,7 @@ Current GUI workspaces include:
 
 The diagnostics workspace uses lightweight polling today rather than SSE streams.
 
-Current native GUI installers are not code-signed or notarized yet, so first-launch trust prompts may still appear depending on platform policy.
+Current native GUI installers may still be unsigned, so first-launch trust prompts may still appear depending on platform policy. Maintainers can enable the signed macOS/Windows GUI release path described in `docs/RELEASING.md` once CI signing credentials are configured.
 
 Config files:
 

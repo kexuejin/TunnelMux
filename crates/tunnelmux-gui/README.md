@@ -30,4 +30,4 @@ GitHub Releases now publish native GUI installer assets in addition to raw archi
 - Windows: `.msi`
 - Linux: `.deb`
 
-These first-release installers are unsigned, so platform trust warnings may still appear.
+These first-release installers are unsigned by default, so platform trust warnings may still appear. Maintainers can opt into the signed macOS/Windows release path described in `docs/RELEASING.md`, but public installers may remain unsigned until those CI toggles are enabled.

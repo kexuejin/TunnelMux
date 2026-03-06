@@ -53,7 +53,7 @@ Current first-release native GUI installers include:
 - `.msi`
 - `.deb`
 
-These installers are currently **unsigned**. This iteration does **not** include macOS notarization, Windows code signing, or auto-update metadata.
+Unsigned mode remains the default release posture today. The repository now prepares an opt-in signed GUI release path for macOS and Windows, but public installers may still be unsigned until maintainers enable the signing toggles and provision credentials. Linux `.deb` remains unsigned in this iteration, and this work still does **not** include auto-update metadata.
 
 ## Linux GUI Build Dependencies
 
@@ -84,6 +84,37 @@ cargo tauri build --bundles dmg -c tauri.conf.json
 ```
 
 Adjust `--bundles` for your platform (`msi` on Windows, `deb` on Linux). On headless macOS shells, prefix `CI=true` to skip Finder prettification during DMG creation.
+
+## Signed GUI Release Mode
+
+The GUI release workflow now supports an explicit signed mode for macOS and Windows while keeping unsigned mode as the default.
+
+Repository variables:
+
+- `GUI_MACOS_SIGNING_REQUIRED`
+- `GUI_WINDOWS_SIGNING_REQUIRED`
+- `WINDOWS_TRUSTED_SIGNING_ENDPOINT`
+- `WINDOWS_TRUSTED_SIGNING_ACCOUNT`
+- `WINDOWS_TRUSTED_SIGNING_PROFILE`
+
+Repository secrets:
+
+- `APPLE_CERTIFICATE`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_API_ISSUER`
+- `APPLE_API_KEY`
+- `APPLE_API_PRIVATE_KEY`
+- `AZURE_CLIENT_ID`
+- `AZURE_CLIENT_SECRET`
+- `AZURE_TENANT_ID`
+
+macOS signed mode writes the App Store Connect private key secret to a temporary file and exports it as `APPLE_API_KEY_PATH` during the workflow run.
+
+Windows signed mode renders a temporary Tauri config overlay that uses `trusted-signing-cli` through `bundle.windows.signCommand`.
+
+If either signing toggle is left unset or set to anything other than `true`, the corresponding GUI bundle continues to build in unsigned mode.
+
 
 ## First-time GitHub publish
 
