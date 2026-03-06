@@ -11,20 +11,72 @@
       <header class="hero">
         <p class="eyebrow">TunnelMux GUI MVP</p>
         <h1>Desktop control console</h1>
-        <p id="app-status" class="subtle">Static shell ready. Command bridge comes next.</p>
+        <p id="app-status" class="subtle">Loading local settings and dashboard snapshot…</p>
       </header>
+
       <section class="panel-grid">
         <section class="panel">
-          <h2>Connection</h2>
-          <p>Daemon target: <code>http://127.0.0.1:4765</code></p>
-          <p>Next step: load and save local GUI settings through Tauri commands.</p>
+          <div class="panel-header">
+            <h2>Connection</h2>
+            <button id="refresh-dashboard" type="button">Refresh</button>
+          </div>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="settings-base-url" type="text" placeholder="http://127.0.0.1:4765" />
+          </label>
+          <label class="field">
+            <span>Bearer Token</span>
+            <input id="settings-token" type="password" placeholder="Optional" />
+          </label>
+          <div class="actions">
+            <button id="save-settings" type="button">Save Settings</button>
+          </div>
         </section>
+
         <section class="panel">
-          <h2>Operations Console</h2>
+          <h2>Tunnel Status</h2>
+          <dl class="stats-list">
+            <div><dt>Connected</dt><dd id="dashboard-connected">Unknown</dd></div>
+            <div><dt>State</dt><dd id="dashboard-state">—</dd></div>
+            <div><dt>Provider</dt><dd id="dashboard-provider">—</dd></div>
+            <div><dt>Public URL</dt><dd id="dashboard-public-url">—</dd></div>
+            <div><dt>Target URL</dt><dd id="dashboard-target-url">—</dd></div>
+          </dl>
+          <p id="dashboard-message" class="message muted">No dashboard data yet.</p>
+        </section>
+      </section>
+
+      <section class="panel-grid two-up">
+        <section class="panel">
+          <h2>Start Tunnel</h2>
+          <label class="field">
+            <span>Provider</span>
+            <select id="start-provider">
+              <option value="cloudflared">cloudflared</option>
+              <option value="ngrok">ngrok</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Target URL</span>
+            <input id="start-target-url" type="text" value="http://127.0.0.1:18080" />
+          </label>
+          <label class="checkbox-row">
+            <input id="start-auto-restart" type="checkbox" checked />
+            <span>Auto restart</span>
+          </label>
+          <div class="actions">
+            <button id="start-tunnel" type="button">Start Tunnel</button>
+            <button id="stop-tunnel" type="button" class="secondary">Stop Tunnel</button>
+          </div>
+        </section>
+
+        <section class="panel muted-panel">
+          <h2>Routes Workspace</h2>
+          <p>Route list and CRUD form land in the next task.</p>
           <ul>
-            <li>Dashboard snapshot</li>
-            <li>Tunnel start / stop</li>
-            <li>Route list / create / update / delete</li>
+            <li>List routes from daemon</li>
+            <li>Create and edit a route in one shared form</li>
+            <li>Delete route with confirmation</li>
           </ul>
         </section>
       </section>

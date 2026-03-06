@@ -31,3 +31,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "tunnelmux-gui"
 path = "src/main.rs"
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true

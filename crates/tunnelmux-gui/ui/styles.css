@@ -15,6 +15,31 @@ body {
   background: radial-gradient(circle at top, #172554 0%, #0b1020 55%, #050816 100%);
 }
 
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: none;
+  border-radius: 12px;
+  padding: 10px 16px;
+  background: #2563eb;
+  color: #eff6ff;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: rgba(59, 130, 246, 0.16);
+  color: #bfdbfe;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
 .app-shell {
   max-width: 1120px;
   margin: 0 auto;
@@ -40,13 +65,22 @@ h2 {
 
 .subtle {
   color: #cbd5e1;
-  max-width: 640px;
+  max-width: 760px;
+}
+
+.subtle.error {
+  color: #fecaca;
 }
 
 .panel-grid {
   display: grid;
   gap: 20px;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  margin-bottom: 20px;
+}
+
+.two-up {
+  align-items: start;
 }
 
 .panel {
@@ -57,12 +91,86 @@ h2 {
   box-shadow: 0 20px 60px rgba(15, 23, 42, 0.36);
 }
 
-code {
-  color: #bfdbfe;
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.field span,
+.checkbox-row {
+  color: #cbd5e1;
+  font-size: 0.95rem;
+}
+
+input,
+select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.72);
+  color: inherit;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.stats-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.stats-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  padding-bottom: 8px;
+}
+
+.stats-list dt {
+  color: #94a3b8;
+}
+
+.stats-list dd {
+  margin: 0;
+  text-align: right;
+}
+
+.message {
+  margin: 16px 0 0;
+  color: #e2e8f0;
+}
+
+.message.muted,
+.muted-panel {
+  color: #cbd5e1;
 }
 
 ul {
   margin: 0;
   padding-left: 20px;
-  color: #dbeafe;
+}
+
+code {
+  color: #bfdbfe;
 }

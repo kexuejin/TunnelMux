@@ -4390,10 +4390,12 @@ name = "tunnelmux-gui"
 version = "0.1.3"
 dependencies = [
  "anyhow",
+ "axum",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
  "tunnelmux-control-client",
  "tunnelmux-core",
 ]
