@@ -149,8 +149,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BUNDLE_DIR="target/${{ matrix.target }}/release/bundle"
           DIST_DIR="dist"
+          mkdir -p "$DIST_DIR"
+          CANDIDATES=(
+            "target/${{ matrix.target }}/release/bundle"
+            "target/release/bundle"
+          )
+          BUNDLE_DIR=""
+          for candidate in "${CANDIDATES[@]}"; do
+            if [[ -d "$candidate" ]] && find "$candidate" -type f -name "*.${{ matrix.bundle }}" -print -quit | grep -q .; then
+              BUNDLE_DIR="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$BUNDLE_DIR" ]]; then
+            echo "no GUI bundle directory contained .${{ matrix.bundle }} assets" >&2
+            printf 'checked candidates:\n%s\n' "${CANDIDATES[@]}" >&2
+            exit 1
+          fi
+          printf 'collecting GUI bundles from %s\n' "$BUNDLE_DIR"
           bash scripts/collect-gui-bundles.sh "$BUNDLE_DIR" "$DIST_DIR" "${{ matrix.bundle }}"
 
       - name: Upload GUI bundle artifacts
