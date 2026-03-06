@@ -86,6 +86,86 @@ pub(super) async fn monitor_upstream_health(state: Arc<AppState>) {
     }
 }
 
+pub(super) fn hash_declarative_config(config: &DeclarativeConfigFile) -> anyhow::Result<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let raw = serde_json::to_vec(config)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    raw.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
+async fn apply_declarative_config(
+    state: &Arc<AppState>,
+    config: DeclarativeConfigFile,
+    digest: u64,
+) -> anyhow::Result<()> {
+    let next_health_check = {
+        let current = state.health_check_settings.read().await;
+        resolve_initial_health_check_settings(current.clone(), config.health_check.clone())
+    };
+
+    {
+        let mut current = state.health_check_settings.write().await;
+        *current = next_health_check.clone();
+    }
+
+    {
+        let mut runtime = state.runtime.lock().await;
+        runtime.persisted.routes = config.routes;
+        runtime.persisted.health_check = Some(next_health_check);
+    }
+
+    {
+        let mut status = state.config_reload_status.lock().await;
+        status.last_digest = Some(digest);
+        status.last_config_reload_at = Some(now_iso());
+        status.last_config_reload_error = None;
+    }
+
+    persist_from_runtime(state)
+        .await
+        .map_err(|err| anyhow!(err.message))?;
+    Ok(())
+}
+
+pub(super) async fn reload_config_file(state: &Arc<AppState>, force: bool) -> anyhow::Result<bool> {
+    let config = match load_config_file(&state.config_file).await {
+        Ok(Some(config)) => config,
+        Ok(None) => return Ok(false),
+        Err(err) => {
+            let message = err.to_string();
+            let mut status = state.config_reload_status.lock().await;
+            status.last_config_reload_error = Some(message.clone());
+            return Err(anyhow!(message));
+        }
+    };
+
+    let digest = hash_declarative_config(&config)?;
+    {
+        let status = state.config_reload_status.lock().await;
+        if !force && status.last_digest == Some(digest) {
+            return Ok(false);
+        }
+    }
+
+    apply_declarative_config(state, config, digest).await?;
+    Ok(true)
+}
+
+pub(super) async fn monitor_config_file(state: Arc<AppState>) {
+    loop {
+        if let Err(err) = reload_config_file(&state, false).await {
+            warn!("config reload failed: {err}");
+        }
+        let interval_ms = {
+            let status = state.config_reload_status.lock().await;
+            status.interval_ms
+        };
+        sleep(Duration::from_millis(interval_ms)).await;
+    }
+}
+
 pub(super) async fn refresh_upstream_health(
     state: &Arc<AppState>,
     settings: &HealthCheckSettings,

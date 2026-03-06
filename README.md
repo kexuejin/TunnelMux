@@ -30,6 +30,7 @@ TunnelMux solves this by separating concerns:
 - Primary/fallback failover with active health checks
 - HTTP and WebSocket proxying (`ws` and `wss` upstream support)
 - Provider supervision with exponential backoff restart
+- Declarative `config.json` with automatic hot reload for routes and health checks
 - Optional token authentication for control-plane endpoints
 - Multi-platform GitHub Release binaries with `SHA256SUMS`
 
@@ -104,6 +105,13 @@ Operational helpers:
 tunnelmux diagnostics
 tunnelmux settings reload
 ```
+
+Config files:
+
+- `~/.tunnelmux/config.json` — declarative routes and health-check settings
+- `~/.tunnelmux/state.json` — daemon-owned runtime snapshot
+
+The daemon polls `config.json` and applies route / health-check changes without restarting the process.
 
 ## Architecture and Integration
 

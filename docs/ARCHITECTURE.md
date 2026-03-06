@@ -14,6 +14,7 @@ TunnelMux is intentionally product-agnostic.
 ## 1. `tunnelmuxd` (Rust daemon)
 
 Responsibilities:
+- load declarative config from `config.json` and hot-reload route/health settings
 - expose control-plane API (default: `127.0.0.1:4765`)
 - manage provider processes (`cloudflared`, `ngrok`)
 - store and serve runtime state and route configuration
@@ -48,5 +49,6 @@ It does not manage provider processes directly.
 - clear control-plane/data-plane separation
 - API-first integration surface
 - local-first security (loopback binding + optional bearer token)
+- explicit config/runtime separation (`config.json` desired state vs `state.json` runtime snapshot)
 - caller-independent design (no embedded business adapters)
 

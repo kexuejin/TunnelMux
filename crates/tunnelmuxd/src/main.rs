@@ -77,6 +77,12 @@ struct Args {
     #[arg(long)]
     data_file: Option<PathBuf>,
 
+    #[arg(long)]
+    config_file: Option<PathBuf>,
+
+    #[arg(long, default_value_t = 1_000)]
+    config_reload_interval_ms: u64,
+
     #[arg(long, default_value = "cloudflared")]
     cloudflared_bin: String,
 
@@ -205,12 +211,23 @@ struct RuntimeState {
     pending_restart: Option<PendingRestart>,
 }
 
+#[derive(Debug, Default)]
+struct ConfigReloadStatus {
+    enabled: bool,
+    interval_ms: u64,
+    last_digest: Option<u64>,
+    last_config_reload_at: Option<String>,
+    last_config_reload_error: Option<String>,
+}
+
 #[derive(Debug)]
 struct AppState {
     runtime: Mutex<RuntimeState>,
     upstream_health: Mutex<HashMap<UpstreamHealthKey, UpstreamHealth>>,
     health_check_settings: RwLock<HealthCheckSettings>,
     data_file: PathBuf,
+    config_file: PathBuf,
+    config_reload_status: Mutex<ConfigReloadStatus>,
     provider_log_file: PathBuf,
     api_token: Option<String>,
     cloudflared_bin: String,
@@ -285,11 +302,19 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("invalid --gateway-listen address: {}", args.gateway_listen))?;
 
     let data_file = args.data_file.unwrap_or_else(default_data_file);
+    let config_file = args.config_file.unwrap_or_else(default_config_file);
+    let config_reload_interval_ms =
+        normalize_config_reload_interval_ms(args.config_reload_interval_ms).with_context(|| {
+            format!(
+                "invalid --config-reload-interval-ms: {}",
+                args.config_reload_interval_ms
+            )
+        })?;
     let provider_log_file = args
         .provider_log_file
         .unwrap_or_else(default_provider_log_file);
     let api_token = resolve_api_token(args.api_token);
-    let health_check_settings = HealthCheckSettings {
+    let startup_health_check_settings = HealthCheckSettings {
         interval_ms: normalize_health_check_interval_ms(args.health_check_interval_ms)
             .with_context(|| {
                 format!(
@@ -309,10 +334,23 @@ async fn main() -> anyhow::Result<()> {
             .with_context(|| format!("invalid --health-check-path: {}", args.health_check_path))?,
     };
     let mut persisted = load_persisted_state(&data_file).await?;
-    let health_check_settings = resolve_initial_health_check_settings(
-        health_check_settings,
+    let mut health_check_settings = resolve_initial_health_check_settings(
+        startup_health_check_settings,
         persisted.health_check.clone(),
     );
+    let mut config_reload_status = ConfigReloadStatus {
+        enabled: true,
+        interval_ms: config_reload_interval_ms,
+        ..ConfigReloadStatus::default()
+    };
+    if let Some(config) = load_config_file(&config_file).await? {
+        persisted.routes = config.routes.clone();
+        if let Some(config_health_check) = config.health_check.clone() {
+            health_check_settings = config_health_check;
+        }
+        config_reload_status.last_digest = Some(hash_declarative_config(&config)?);
+        config_reload_status.last_config_reload_at = Some(now_iso());
+    }
     persisted.health_check = Some(health_check_settings.clone());
     let mut http_connector = HttpConnector::new();
     http_connector.enforce_http(false);
@@ -332,6 +370,8 @@ async fn main() -> anyhow::Result<()> {
         upstream_health: Mutex::new(HashMap::new()),
         health_check_settings: RwLock::new(health_check_settings),
         data_file,
+        config_file,
+        config_reload_status: Mutex::new(config_reload_status),
         provider_log_file,
         api_token,
         cloudflared_bin: args.cloudflared_bin,
@@ -344,6 +384,7 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn(monitor_runtime_state(shared.clone()));
     tokio::spawn(monitor_upstream_health(shared.clone()));
+    tokio::spawn(monitor_config_file(shared.clone()));
 
     let protected_control_app = Router::new()
         .route("/v1/tunnel/status", get(get_tunnel_status))
@@ -593,6 +634,16 @@ fn normalize_health_check_interval_ms(value: u64) -> anyhow::Result<u64> {
     Ok(value)
 }
 
+fn normalize_config_reload_interval_ms(value: u64) -> anyhow::Result<u64> {
+    if !(200..=60_000).contains(&value) {
+        return Err(anyhow!(
+            "config reload interval_ms out of range: expected 200..=60000, got {}",
+            value
+        ));
+    }
+    Ok(value)
+}
+
 fn normalize_health_check_timeout_ms(value: u64) -> anyhow::Result<u64> {
     if !(100..=30_000).contains(&value) {
         return Err(anyhow!(
@@ -816,6 +867,14 @@ mod tests {
             .enable_http1()
             .wrap_connector(http_connector);
 
+        let data_file = PathBuf::from(format!("/tmp/tunnelmux-test-state-{test_id}.json"));
+        let config_file = PathBuf::from(format!("/tmp/tunnelmux-test-config-{test_id}.json"));
+        let provider_log_file =
+            PathBuf::from(format!("/tmp/tunnelmux-test-provider-{test_id}.log"));
+        let _ = std::fs::remove_file(&data_file);
+        let _ = std::fs::remove_file(&config_file);
+        let _ = std::fs::remove_file(&provider_log_file);
+
         Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
@@ -836,8 +895,14 @@ mod tests {
                 timeout_ms: 2_000,
                 path: "/".to_string(),
             }),
-            data_file: PathBuf::from(format!("/tmp/tunnelmux-test-state-{test_id}.json")),
-            provider_log_file: PathBuf::from(format!("/tmp/tunnelmux-test-provider-{test_id}.log")),
+            data_file,
+            config_file,
+            config_reload_status: Mutex::new(ConfigReloadStatus {
+                enabled: true,
+                interval_ms: 1_000,
+                ..ConfigReloadStatus::default()
+            }),
+            provider_log_file,
             api_token: api_token.map(ToString::to_string),
             cloudflared_bin: "cloudflared".to_string(),
             ngrok_bin: "ngrok".to_string(),
@@ -996,6 +1061,14 @@ mod tests {
             .enable_http1()
             .wrap_connector(http_connector);
 
+        let data_file = PathBuf::from(format!("/tmp/tunnelmux-test-state-{test_id}.json"));
+        let config_file = PathBuf::from(format!("/tmp/tunnelmux-test-config-{test_id}.json"));
+        let provider_log_file =
+            PathBuf::from(format!("/tmp/tunnelmux-test-provider-{test_id}.log"));
+        let _ = std::fs::remove_file(&data_file);
+        let _ = std::fs::remove_file(&config_file);
+        let _ = std::fs::remove_file(&provider_log_file);
+
         let state = Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
@@ -1025,8 +1098,14 @@ mod tests {
                 timeout_ms: 2_000,
                 path: "/".to_string(),
             }),
-            data_file: PathBuf::from(format!("/tmp/tunnelmux-test-state-{test_id}.json")),
-            provider_log_file: PathBuf::from(format!("/tmp/tunnelmux-test-provider-{test_id}.log")),
+            data_file,
+            config_file,
+            config_reload_status: Mutex::new(ConfigReloadStatus {
+                enabled: true,
+                interval_ms: 1_000,
+                ..ConfigReloadStatus::default()
+            }),
+            provider_log_file,
             api_token: None,
             cloudflared_bin: "cloudflared".to_string(),
             ngrok_bin: "ngrok".to_string(),
@@ -1153,6 +1232,93 @@ mod tests {
             Some(updated.health_check.clone())
         );
         drop(runtime);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn settings_reload_endpoint_prefers_config_file_when_present() {
+        let state = test_state_with_routes(
+            vec![route("svc-a", Some("old.local"), Some("/"), None, true)],
+            None,
+        );
+
+        save_state_file(
+            &state.data_file,
+            &PersistedState {
+                tunnel: default_tunnel_status(TunnelState::Stopped),
+                routes: vec![route(
+                    "svc-state",
+                    Some("state.local"),
+                    Some("/state"),
+                    None,
+                    true,
+                )],
+                health_check: Some(HealthCheckSettings {
+                    interval_ms: 6_000,
+                    timeout_ms: 2_500,
+                    path: "/state".to_string(),
+                }),
+            },
+        )
+        .await
+        .expect("state fixture should persist");
+
+        save_config_file(
+            &state.config_file,
+            &DeclarativeConfigFile {
+                routes: vec![RouteRule {
+                    id: "svc-config".to_string(),
+                    match_host: Some("config.local".to_string()),
+                    match_path_prefix: Some("/config".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4100".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: Some("/readyz".to_string()),
+                    enabled: true,
+                }],
+                health_check: Some(HealthCheckSettings {
+                    interval_ms: 7_500,
+                    timeout_ms: 1_500,
+                    path: "/readyz".to_string(),
+                }),
+            },
+        )
+        .await
+        .expect("config fixture should persist");
+
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .post(format!("{base_url}/v1/settings/reload"))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .expect("reload request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let routes: RoutesResponse = client
+            .get(format!("{base_url}/v1/routes"))
+            .send()
+            .await
+            .expect("routes request should complete")
+            .json()
+            .await
+            .expect("routes response should decode");
+        assert_eq!(routes.routes.len(), 1);
+        assert_eq!(routes.routes[0].id, "svc-config");
+
+        let health: HealthCheckSettingsResponse = client
+            .get(format!("{base_url}/v1/settings/health-check"))
+            .send()
+            .await
+            .expect("health settings request should complete")
+            .json()
+            .await
+            .expect("health settings response should decode");
+        assert_eq!(health.health_check.interval_ms, 7_500);
+        assert_eq!(health.health_check.path, "/readyz");
 
         server_task.abort();
     }
@@ -2009,6 +2175,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_reload_poll_applies_changed_routes() {
+        let state = test_state_with_routes(
+            vec![route("svc-a", Some("old.local"), Some("/"), None, true)],
+            None,
+        );
+
+        save_config_file(
+            &state.config_file,
+            &DeclarativeConfigFile {
+                routes: vec![RouteRule {
+                    id: "svc-b".to_string(),
+                    match_host: Some("new.local".to_string()),
+                    match_path_prefix: Some("/new".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4200".to_string(),
+                    fallback_upstream_url: Some("http://127.0.0.1:4201".to_string()),
+                    health_check_path: Some("/healthz".to_string()),
+                    enabled: true,
+                }],
+                health_check: Some(HealthCheckSettings {
+                    interval_ms: 9_000,
+                    timeout_ms: 1_250,
+                    path: "/healthz".to_string(),
+                }),
+            },
+        )
+        .await
+        .expect("config fixture should persist");
+
+        let changed = reload_config_file(&state, false)
+            .await
+            .expect("reload should succeed");
+        assert!(changed);
+
+        let runtime = state.runtime.lock().await;
+        assert_eq!(runtime.persisted.routes.len(), 1);
+        assert_eq!(runtime.persisted.routes[0].id, "svc-b");
+        drop(runtime);
+
+        let settings = state.health_check_settings.read().await;
+        assert_eq!(settings.interval_ms, 9_000);
+        assert_eq!(settings.timeout_ms, 1_250);
+        assert_eq!(settings.path, "/healthz");
+        drop(settings);
+
+        let status = state.config_reload_status.lock().await;
+        assert!(status.last_config_reload_at.is_some());
+        assert_eq!(status.last_config_reload_error, None);
+    }
+
+    #[tokio::test]
+    async fn config_reload_poll_keeps_last_good_config_on_parse_error() {
+        let state = test_state_with_routes(
+            vec![route("svc-a", Some("old.local"), Some("/"), None, true)],
+            None,
+        );
+
+        save_config_file(
+            &state.config_file,
+            &DeclarativeConfigFile {
+                routes: vec![route(
+                    "svc-good",
+                    Some("good.local"),
+                    Some("/good"),
+                    None,
+                    true,
+                )],
+                health_check: Some(HealthCheckSettings {
+                    interval_ms: 8_000,
+                    timeout_ms: 2_000,
+                    path: "/good".to_string(),
+                }),
+            },
+        )
+        .await
+        .expect("good config should persist");
+        assert!(
+            reload_config_file(&state, true)
+                .await
+                .expect("initial reload should succeed")
+        );
+
+        fs::write(&state.config_file, "{ invalid json")
+            .await
+            .expect("invalid config should write");
+
+        let result = reload_config_file(&state, false).await;
+        assert!(result.is_err());
+
+        let runtime = state.runtime.lock().await;
+        assert_eq!(runtime.persisted.routes.len(), 1);
+        assert_eq!(runtime.persisted.routes[0].id, "svc-good");
+        drop(runtime);
+
+        let status = state.config_reload_status.lock().await;
+        assert!(status.last_config_reload_error.is_some());
+    }
+
+    #[tokio::test]
     async fn diagnostics_endpoint_returns_local_runtime_context() {
         let state = test_state_with_routes(
             vec![
@@ -2018,6 +2283,7 @@ mod tests {
             None,
         );
         let expected_data_file = state.data_file.display().to_string();
+        let expected_config_file = state.config_file.display().to_string();
         let expected_provider_log_file = state.provider_log_file.display().to_string();
         {
             let mut runtime = state.runtime.lock().await;
@@ -2054,6 +2320,11 @@ mod tests {
         assert_eq!(payload["enabled_route_count"], 1);
         assert_eq!(payload["tunnel_state"], "running");
         assert_eq!(payload["pending_restart"], true);
+        assert_eq!(payload["config_file"], expected_config_file);
+        assert_eq!(payload["config_reload_enabled"], true);
+        assert_eq!(payload["config_reload_interval_ms"], 1_000);
+        assert_eq!(payload["last_config_reload_at"], serde_json::Value::Null);
+        assert_eq!(payload["last_config_reload_error"], serde_json::Value::Null);
 
         server_task.abort();
     }

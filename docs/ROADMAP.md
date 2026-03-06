@@ -29,8 +29,8 @@
 
 - [x] generic third-party integration templates
 - [ ] GUI MVP (Tauri)
-- [ ] hot configuration reload
-- [ ] operational audit and diagnostics
+- [x] hot configuration reload
+- [x] operational audit and diagnostics
 
 ## Phase 4: Advanced Capabilities
 

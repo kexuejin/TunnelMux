@@ -175,11 +175,16 @@ pub struct MetricsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiagnosticsResponse {
     pub data_file: String,
+    pub config_file: String,
     pub provider_log_file: String,
     pub route_count: usize,
     pub enabled_route_count: usize,
     pub tunnel_state: TunnelState,
     pub pending_restart: bool,
+    pub config_reload_enabled: bool,
+    pub config_reload_interval_ms: u64,
+    pub last_config_reload_at: Option<String>,
+    pub last_config_reload_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

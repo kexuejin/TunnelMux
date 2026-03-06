@@ -159,6 +159,24 @@ pub(super) async fn update_health_check_settings(
 pub(super) async fn reload_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ReloadSettingsResponse>, ApiError> {
+    if state.config_file.exists() {
+        reload_config_file(&state, true)
+            .await
+            .map_err(|err| ApiError::internal(format!("failed to reload config file: {err}")))?;
+        let (route_count, tunnel_state) = {
+            let runtime = state.runtime.lock().await;
+            (
+                runtime.persisted.routes.len(),
+                runtime.persisted.tunnel.state.clone(),
+            )
+        };
+        return Ok(Json(ReloadSettingsResponse {
+            reloaded: true,
+            route_count,
+            tunnel_state,
+        }));
+    }
+
     let reloaded = load_persisted_state(&state.data_file)
         .await
         .map_err(|err| ApiError::internal(format!("failed to reload state file: {err}")))?;
@@ -657,14 +675,33 @@ pub(super) async fn build_diagnostics_snapshot(state: &Arc<AppState>) -> Diagnos
             runtime.pending_restart.is_some(),
         )
     };
+    let (
+        config_reload_enabled,
+        config_reload_interval_ms,
+        last_config_reload_at,
+        last_config_reload_error,
+    ) = {
+        let status = state.config_reload_status.lock().await;
+        (
+            status.enabled,
+            status.interval_ms,
+            status.last_config_reload_at.clone(),
+            status.last_config_reload_error.clone(),
+        )
+    };
 
     DiagnosticsResponse {
         data_file: state.data_file.display().to_string(),
+        config_file: state.config_file.display().to_string(),
         provider_log_file: state.provider_log_file.display().to_string(),
         route_count: routes.len(),
         enabled_route_count: routes.iter().filter(|route| route.enabled).count(),
         tunnel_state,
         pending_restart,
+        config_reload_enabled,
+        config_reload_interval_ms,
+        last_config_reload_at,
+        last_config_reload_error,
     }
 }
 
