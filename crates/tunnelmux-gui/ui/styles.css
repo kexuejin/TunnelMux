@@ -99,18 +99,14 @@ select:disabled {
 .home-grid {
   display: grid;
   gap: 20px;
-  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.9fr);
+  grid-template-columns: 1fr;
 }
 
 .hero-card {
-  min-height: 250px;
+  min-height: 290px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-}
-
-.compact-panel {
-  min-height: 250px;
 }
 
 .panel {
@@ -212,6 +208,35 @@ select {
 
 .hero-actions button:first-child {
   min-width: 180px;
+}
+
+.hero-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.hero-meta div {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(30, 41, 59, 0.46);
+  border: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+.hero-meta dt {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+
+.hero-meta dd {
+  margin: 0;
+  color: #e2e8f0;
+  font-weight: 700;
 }
 
 .inline-field {
@@ -495,6 +520,10 @@ select {
 }
 
 @media (max-width: 720px) {
+  .hero-meta {
+    grid-template-columns: 1fr;
+  }
+
   .app-shell {
     padding: 28px 18px 52px;
   }

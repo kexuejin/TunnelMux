@@ -450,6 +450,7 @@ function renderDashboard(snapshot) {
   elements.publicUrl.textContent = publicUrl || 'Not running';
   elements.dashboardConnected.textContent = connected ? 'Yes' : 'No';
   elements.dashboardProvider.textContent = tunnel?.provider ?? collectSettingsForm().default_provider ?? '—';
+  elements.servicesEnabledCount.textContent = `${elements.servicesEnabledCount.textContent.replace(/[^0-9]/g, '') || '0'} enabled`;
   elements.copyPublicUrl.disabled = !publicUrl;
   elements.openPublicUrl.disabled = !publicUrl;
   elements.stopTunnel.disabled = !publicUrl;
@@ -488,7 +489,7 @@ function renderRoutes(snapshot) {
   const configured = state.routeCache.length;
   const enabled = state.routeCache.filter((route) => route.enabled).length;
   elements.servicesCount.textContent = String(configured);
-  elements.servicesEnabledCount.textContent = String(enabled);
+  elements.servicesEnabledCount.textContent = `${enabled} enabled`;
   elements.newRoute.hidden = configured === 0;
 
   if (!state.routeCache.length) {
