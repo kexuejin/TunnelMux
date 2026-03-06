@@ -89,15 +89,94 @@ jobs:
           name: release-${{ matrix.target }}
           path: ${{ env.ASSET_PATH }}
 
+  gui_bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bundle: deb
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundle: dmg
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bundle: dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundle: msi
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux bundle dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            fakeroot
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build GUI bundle
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/tunnelmux-gui
+          args: --bundles ${{ matrix.bundle }} --target ${{ matrix.target }}
+
+      - name: Collect GUI bundle artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="target/${{ matrix.target }}/release/bundle"
+          DIST_DIR="dist"
+          bash scripts/collect-gui-bundles.sh "$BUNDLE_DIR" "$DIST_DIR" "${{ matrix.bundle }}"
+
+      - name: Upload GUI bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-bundle-${{ matrix.target }}
+          path: dist/*
+
   publish:
     runs-on: ubuntu-latest
-    needs: build
+    needs:
+      - build
+      - gui_bundle
     steps:
-      - name: Download artifacts
+      - name: Download raw archive artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           pattern: release-*
+          merge-multiple: true
+
+      - name: Download GUI bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: gui-bundle-*
           merge-multiple: true
 
       - name: Generate checksums
