@@ -227,7 +227,9 @@ jobs:
         run: |
           set -euo pipefail
           BUILD_ARGS="--bundles ${{ matrix.bundle }} --target ${{ matrix.target }}"
-          DAEMON_CONFIG="$RUNNER_TEMP/tauri.gui.daemon.bundle.conf.json"
+          CONFIG_DIR="crates/tunnelmux-gui/.ci"
+          mkdir -p "$CONFIG_DIR"
+          DAEMON_CONFIG="$CONFIG_DIR/tauri.gui.daemon.bundle.conf.json"
           cat > "$DAEMON_CONFIG" <<'JSON'
           {
             "bundle": {
@@ -296,7 +298,7 @@ jobs:
 
                 signing_config="$RUNNER_TEMP/tauri.windows.signing.conf.json"
                 bash scripts/write-gui-windows-signing-config.sh "$signing_config"
-                COMBINED_CONFIG="$RUNNER_TEMP/tauri.gui.combined.conf.json"
+                COMBINED_CONFIG="$CONFIG_DIR/tauri.gui.combined.conf.json"
                 jq -s 'reduce .[] as $item ({}; . * $item)' \
                   "$DAEMON_CONFIG" \
                   "$signing_config" > "$COMBINED_CONFIG"
