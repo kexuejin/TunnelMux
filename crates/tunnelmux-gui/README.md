@@ -22,3 +22,12 @@ cargo run -p tunnelmux-gui
 Start `tunnelmuxd` first, then point the GUI at the daemon URL if you changed the default.
 
 Diagnostics polling runs only while the diagnostics workspace is open. The first release uses polling rather than SSE streams.
+
+## Native Bundles
+
+GitHub Releases now publish native GUI installer assets in addition to raw archives:
+- macOS: `.dmg`
+- Windows: `.msi`
+- Linux: `.deb`
+
+These first-release installers are unsigned, so platform trust warnings may still appear.

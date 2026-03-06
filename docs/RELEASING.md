@@ -17,16 +17,22 @@ When you push a tag like `v0.2.0`, GitHub Actions will:
    - `x86_64-apple-darwin`
    - `aarch64-apple-darwin`
    - `x86_64-pc-windows-msvc`
-3. Package binaries and upload assets to GitHub Release
-4. Upload `SHA256SUMS` for integrity verification
+3. Package raw binaries and upload assets to GitHub Release
+4. Build native GUI installer assets for supported platforms
+5. Upload `SHA256SUMS` for integrity verification
 
-Each platform archive now contains:
+Each platform archive contains:
 - `tunnelmuxd`
 - `tunnelmux-cli`
 - `tunnelmux-gui`
 - `README.md`
 - `LICENSE`
 - `CHANGELOG.md`
+
+Native GUI installer assets are also published:
+- macOS: `.dmg`
+- Windows: `.msi`
+- Linux: `.deb`
 
 Asset naming:
 
@@ -38,15 +44,16 @@ Asset naming:
 
 ## GUI Build Notes
 
-`crates/tunnelmux-gui` is currently shipped as a raw desktop binary inside the platform package.
+`crates/tunnelmux-gui` is shipped in two ways:
+- as a raw desktop binary inside the platform archive package
+- as a native GUI installer asset where supported
 
-Current automation does **not** build native GUI installers such as:
-- `.app`
+Current first-release native GUI installers include:
 - `.dmg`
 - `.msi`
 - `.deb`
 
-That keeps the release pipeline simple while the GUI MVP stabilizes.
+These installers are currently **unsigned**. This iteration does **not** include macOS notarization, Windows code signing, or auto-update metadata.
 
 ## Linux GUI Build Dependencies
 
@@ -59,11 +66,24 @@ sudo apt-get update
 sudo apt-get install -y \
   libwebkit2gtk-4.1-dev \
   libgtk-3-dev \
+  libappindicator3-dev \
   librsvg2-dev \
-  patchelf
+  patchelf \
+  fakeroot
 ```
 
 If you build the GUI locally on Linux, install the equivalent packages first.
+
+## Local Native Bundle Smoke Check
+
+On a machine with Tauri bundling prerequisites installed, you can build a local native installer with:
+
+```bash
+cd crates/tunnelmux-gui
+cargo tauri build --bundles dmg -c tauri.conf.json
+```
+
+Adjust `--bundles` for your platform (`msi` on Windows, `deb` on Linux). On headless macOS shells, prefix `CI=true` to skip Finder prettification during DMG creation.
 
 ## First-time GitHub publish
 

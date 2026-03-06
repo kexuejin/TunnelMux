@@ -56,10 +56,17 @@ curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/ins
 
 ### 2) GitHub Releases
 
-Download the platform package from Releases and extract:
+Download either the platform archive or the native GUI installer from Releases.
+
+Platform archives still contain:
 - `tunnelmuxd`
 - `tunnelmux-cli`
 - `tunnelmux-gui`
+
+Native GUI installer assets now include:
+- macOS: `.dmg`
+- Windows: `.msi`
+- Linux: `.deb`
 
 ### 3) Install from source
 
@@ -124,6 +131,8 @@ Current GUI workspaces include:
 - diagnostics: runtime summary, upstream health, and recent provider logs
 
 The diagnostics workspace uses lightweight polling today rather than SSE streams.
+
+Current native GUI installers are not code-signed or notarized yet, so first-launch trust prompts may still appear depending on platform policy.
 
 Config files:
 
