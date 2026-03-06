@@ -125,12 +125,11 @@ cargo run -p tunnelmux-gui
 
 The GUI connects to an already-running `tunnelmuxd`; it does not launch or manage the daemon process itself.
 
-Current GUI workspaces include:
-- operations: connection settings, tunnel status, tunnel start/stop
-- routes: route list/create/update/delete
-- diagnostics: runtime summary, upstream health, and recent provider logs
-
-The diagnostics workspace uses lightweight polling today rather than SSE streams.
+Current GUI focuses on an easy-first flow:
+- `Home` highlights the current public URL and tunnel start/stop actions
+- `Services` manages exposed local services without surfacing raw route terminology first
+- `Settings` groups connection and tunnel defaults in one place
+- `Troubleshooting` is available on demand instead of being a primary daily-use workspace
 
 Current native GUI installers may still be unsigned, so first-launch trust prompts may still appear depending on platform policy. Maintainers can enable the signed macOS/Windows GUI release path described in `docs/RELEASING.md` once CI signing credentials are configured.
 

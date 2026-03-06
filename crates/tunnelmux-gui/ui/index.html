@@ -4,28 +4,180 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TunnelMux</title>
+    <link rel="icon" type="image/png" href="./assets/brand-icon.png" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="app-shell">
-      <header class="hero">
-        <p class="eyebrow">TunnelMux GUI MVP</p>
-        <h1>Desktop control console</h1>
-        <p id="app-status" class="subtle">Loading local settings and dashboard snapshot…</p>
+      <header class="app-header">
+        <div class="brand">
+          <img class="brand-icon" src="./assets/brand-icon.png" alt="TunnelMux icon" />
+          <div>
+            <p class="eyebrow">TunnelMux</p>
+            <h1>Expose local services instantly</h1>
+            <p id="app-status" class="subtle">Loading your current tunnel and services…</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="retry-connection" type="button" class="secondary">Retry</button>
+        </div>
       </header>
 
-      <nav class="workspace-nav" aria-label="Workspace navigation">
-        <button type="button" class="workspace-tab is-active" data-workspace-tab="operations">Operations</button>
-        <button type="button" class="workspace-tab" data-workspace-tab="routes">Routes</button>
-        <button type="button" class="workspace-tab" data-workspace-tab="diagnostics">Diagnostics</button>
+      <nav class="workspace-nav" aria-label="Primary navigation">
+        <button type="button" class="workspace-tab is-active" data-workspace-tab="home">Home</button>
+        <button type="button" class="workspace-tab" data-workspace-tab="services">Services</button>
+        <button type="button" class="workspace-tab" data-workspace-tab="settings">Settings</button>
       </nav>
 
-      <section id="workspace-operations" class="workspace is-active" data-workspace="operations">
+      <section id="workspace-home" class="workspace is-active" data-workspace="home">
+        <section class="home-grid">
+          <article class="panel hero-card">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow card-eyebrow">Public URL</p>
+                <h2 id="dashboard-public-url">Not running</h2>
+                <p id="home-public-url-meta" class="panel-subtle">
+                  Start TunnelMux to generate a shareable public address.
+                </p>
+              </div>
+              <span id="dashboard-state-badge" class="status-badge idle">Idle</span>
+            </div>
+            <div class="actions">
+              <button id="copy-public-url" type="button">Copy URL</button>
+              <button id="open-public-url" type="button" class="secondary">Open</button>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Tunnel Control</h2>
+                <p class="panel-subtle">One click to start or stop your current tunnel.</p>
+              </div>
+            </div>
+            <label class="field">
+              <span>Provider</span>
+              <select id="start-provider">
+                <option value="cloudflared">cloudflared</option>
+                <option value="ngrok">ngrok</option>
+              </select>
+            </label>
+            <div class="actions">
+              <button id="start-tunnel" type="button">Start Tunnel</button>
+              <button id="stop-tunnel" type="button" class="secondary">Stop Tunnel</button>
+            </div>
+            <p id="home-provider-hint" class="panel-subtle">
+              Uses tunnel settings for gateway target and restart behavior.
+            </p>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Services</h2>
+                <p class="panel-subtle">Manage what gets exposed through the current tunnel.</p>
+              </div>
+              <button id="manage-services" type="button" class="secondary">Manage Services</button>
+            </div>
+            <dl class="stats-list">
+              <div><dt>Connected</dt><dd id="dashboard-connected">Unknown</dd></div>
+              <div><dt>Provider</dt><dd id="dashboard-provider">—</dd></div>
+              <div><dt>Configured</dt><dd id="services-count">0</dd></div>
+              <div><dt>Enabled</dt><dd id="services-enabled-count">0</dd></div>
+            </dl>
+            <p id="dashboard-message" class="message muted">No service data yet.</p>
+          </article>
+        </section>
+      </section>
+
+      <section id="workspace-services" class="workspace" data-workspace="services" hidden>
+        <section class="panel services-shell">
+          <div class="panel-header">
+            <div>
+              <h2>Services</h2>
+              <p id="routes-message" class="panel-subtle">No services loaded yet.</p>
+            </div>
+            <button id="new-route" type="button">Add Service</button>
+          </div>
+          <div class="services-grid">
+            <section class="service-list-column">
+              <div id="routes-empty" class="empty-state">
+                No services yet. Add your first local service to expose it through the current tunnel.
+              </div>
+              <div id="routes-list" class="service-list"></div>
+            </section>
+
+            <section class="service-editor-column">
+              <div class="panel service-editor-card">
+                <div class="panel-header form-header">
+                  <div>
+                    <h3 id="route-form-title">Add Service</h3>
+                    <p class="panel-subtle">Keep the basics simple. Expand Advanced only when needed.</p>
+                  </div>
+                  <button id="cancel-route-edit" type="button" class="secondary">Reset</button>
+                </div>
+
+                <label class="field">
+                  <span>Service Name</span>
+                  <input id="route-id" type="text" placeholder="web-app" />
+                </label>
+                <label class="field">
+                  <span>Local Service URL</span>
+                  <input id="route-upstream-url" type="text" placeholder="http://127.0.0.1:3000" />
+                </label>
+                <label class="field">
+                  <span>Public Path</span>
+                  <input id="route-match-path-prefix" type="text" placeholder="/" value="/" />
+                </label>
+                <label class="checkbox-row">
+                  <input id="route-enabled" type="checkbox" checked />
+                  <span>Service enabled</span>
+                </label>
+
+                <details id="service-advanced" class="advanced-section">
+                  <summary>Advanced</summary>
+
+                  <label class="field">
+                    <span>Exposure</span>
+                    <select id="service-exposure-mode">
+                      <option value="path">Path</option>
+                      <option value="subdomain">Subdomain</option>
+                    </select>
+                  </label>
+
+                  <label id="service-host-field" class="field" hidden>
+                    <span>Public Host</span>
+                    <input id="route-match-host" type="text" placeholder="app.example.com" />
+                  </label>
+
+                  <label class="field">
+                    <span>Health Check Path</span>
+                    <input id="route-health-check-path" type="text" placeholder="/healthz" />
+                  </label>
+
+                  <label class="field">
+                    <span>Fallback Local URL</span>
+                    <input id="route-fallback-upstream-url" type="text" placeholder="http://127.0.0.1:3001" />
+                  </label>
+                </details>
+
+                <div class="actions">
+                  <button id="save-route" type="button">Save Service</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </section>
+
+      <section id="workspace-settings" class="workspace" data-workspace="settings" hidden>
         <section class="panel-grid">
           <section class="panel">
             <div class="panel-header">
-              <h2>Connection</h2>
-              <button id="refresh-dashboard" type="button">Refresh</button>
+              <div>
+                <h2>Connection Settings</h2>
+                <p class="panel-subtle">Only change these when your local TunnelMux daemon is not on the default address.</p>
+              </div>
             </div>
             <label class="field">
               <span>Base URL</span>
@@ -35,179 +187,115 @@
               <span>Bearer Token</span>
               <input id="settings-token" type="password" placeholder="Optional" />
             </label>
-            <div class="actions">
-              <button id="save-settings" type="button">Save Settings</button>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Tunnel Settings</h2>
+                <p class="panel-subtle">Provider defaults live here so Home stays lightweight.</p>
+              </div>
             </div>
-          </section>
-
-          <section class="panel">
-            <h2>Tunnel Status</h2>
-            <dl class="stats-list">
-              <div><dt>Connected</dt><dd id="dashboard-connected">Unknown</dd></div>
-              <div><dt>State</dt><dd id="dashboard-state">—</dd></div>
-              <div><dt>Provider</dt><dd id="dashboard-provider">—</dd></div>
-              <div><dt>Public URL</dt><dd id="dashboard-public-url">—</dd></div>
-              <div><dt>Target URL</dt><dd id="dashboard-target-url">—</dd></div>
-            </dl>
-            <p id="dashboard-message" class="message muted">No dashboard data yet.</p>
-          </section>
-        </section>
-
-        <section class="panel-grid">
-          <section class="panel">
-            <h2>Start Tunnel</h2>
             <label class="field">
-              <span>Provider</span>
-              <select id="start-provider">
+              <span>Default Provider</span>
+              <select id="settings-default-provider">
                 <option value="cloudflared">cloudflared</option>
                 <option value="ngrok">ngrok</option>
               </select>
             </label>
             <label class="field">
-              <span>Target URL</span>
-              <input id="start-target-url" type="text" value="http://127.0.0.1:18080" />
+              <span>Gateway Target URL</span>
+              <input id="settings-gateway-target-url" type="text" placeholder="http://127.0.0.1:18080" />
             </label>
             <label class="checkbox-row">
-              <input id="start-auto-restart" type="checkbox" checked />
-              <span>Auto restart</span>
+              <input id="settings-auto-restart" type="checkbox" checked />
+              <span>Auto restart tunnel</span>
+            </label>
+            <label class="field">
+              <span>ngrok Authtoken</span>
+              <input id="settings-ngrok-authtoken" type="password" placeholder="Optional" />
+            </label>
+            <label class="field">
+              <span>ngrok Reserved Domain</span>
+              <input id="settings-ngrok-domain" type="text" placeholder="Optional" />
             </label>
             <div class="actions">
-              <button id="start-tunnel" type="button">Start Tunnel</button>
-              <button id="stop-tunnel" type="button" class="secondary">Stop Tunnel</button>
+              <button id="save-settings" type="button">Save Settings</button>
             </div>
           </section>
         </section>
-      </section>
 
-      <section id="workspace-routes" class="workspace" data-workspace="routes" hidden>
-        <section class="panel routes-shell">
+        <section class="panel support-panel">
           <div class="panel-header">
             <div>
-              <h2>Routes Workspace</h2>
-              <p id="routes-message" class="panel-subtle">No routes loaded yet.</p>
+              <h2>Troubleshooting</h2>
+              <p id="diagnostics-overview" class="panel-subtle">
+                Hidden by default so the app stays focused on start, copy, and service management.
+              </p>
             </div>
-            <button id="new-route" type="button">New Route</button>
+            <button id="toggle-troubleshooting" type="button" class="secondary">View Details</button>
           </div>
-          <div class="routes-grid">
-            <section class="route-list-column">
-              <div id="routes-empty" class="empty-state">No routes configured.</div>
-              <div id="routes-list" class="route-list"></div>
-            </section>
-            <section class="route-editor-column">
-              <div class="panel route-editor-card">
-                <div class="panel-header form-header">
-                  <div>
-                    <h3 id="route-form-title">Create Route</h3>
-                    <p class="panel-subtle">Use one form for both create and update.</p>
-                  </div>
-                  <button id="cancel-route-edit" type="button" class="secondary">Reset</button>
-                </div>
-                <label class="field">
-                  <span>Route ID</span>
-                  <input id="route-id" type="text" placeholder="app-web" />
-                </label>
-                <label class="field">
-                  <span>Match Host</span>
-                  <input id="route-match-host" type="text" placeholder="demo.local" />
-                </label>
-                <label class="field">
-                  <span>Match Path Prefix</span>
-                  <input id="route-match-path-prefix" type="text" placeholder="/" />
-                </label>
-                <label class="field">
-                  <span>Strip Path Prefix</span>
-                  <input id="route-strip-path-prefix" type="text" placeholder="/api" />
-                </label>
-                <label class="field">
-                  <span>Upstream URL</span>
-                  <input id="route-upstream-url" type="text" placeholder="http://127.0.0.1:3000" />
-                </label>
-                <label class="field">
-                  <span>Fallback Upstream URL</span>
-                  <input id="route-fallback-upstream-url" type="text" placeholder="http://127.0.0.1:3001" />
-                </label>
-                <label class="field">
-                  <span>Health Check Path</span>
-                  <input id="route-health-check-path" type="text" placeholder="/healthz" />
-                </label>
-                <label class="checkbox-row">
-                  <input id="route-enabled" type="checkbox" checked />
-                  <span>Enabled</span>
-                </label>
-                <div class="actions">
-                  <button id="save-route" type="button">Save Route</button>
+
+          <div id="troubleshooting-panel" class="troubleshooting-shell" hidden>
+            <div class="actions">
+              <button id="refresh-diagnostics" type="button">Refresh Details</button>
+              <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
+              <button id="clear-logs" type="button" class="secondary">Clear Logs</button>
+            </div>
+
+            <section class="panel diagnostics-panel">
+              <div class="panel-header">
+                <div>
+                  <h3>Runtime Summary</h3>
+                  <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
                 </div>
               </div>
+              <dl class="stats-list diagnostics-stats">
+                <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
+                <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
+                <div><dt>Services</dt><dd id="diagnostics-route-count">—</dd></div>
+                <div><dt>Enabled Services</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
+                <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
+                <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
+                <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
+                <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
+                <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
+              </dl>
+            </section>
+
+            <section class="panel diagnostics-panel">
+              <div class="panel-header">
+                <div>
+                  <h3>Upstream Health</h3>
+                  <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
+                </div>
+              </div>
+              <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
+              <div id="upstreams-list" class="diagnostics-list"></div>
+            </section>
+
+            <section class="panel diagnostics-panel">
+              <div class="panel-header">
+                <div>
+                  <h3>Recent Logs</h3>
+                  <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
+                </div>
+                <label class="inline-field">
+                  <span>Tail Size</span>
+                  <select id="log-lines-select">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                  </select>
+                </label>
+              </div>
+              <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
             </section>
           </div>
-        </section>
-      </section>
-
-      <section id="workspace-diagnostics" class="workspace" data-workspace="diagnostics" hidden>
-        <section class="panel diagnostics-shell">
-          <div class="panel-header">
-            <div>
-              <h2>Diagnostics Workspace</h2>
-              <p id="diagnostics-overview" class="panel-subtle">Open this workspace to start automatic diagnostics polling.</p>
-            </div>
-            <button id="refresh-diagnostics" type="button">Refresh Diagnostics</button>
-          </div>
-        </section>
-
-        <section class="panel diagnostics-panel">
-          <div class="panel-header">
-            <div>
-              <h2>Runtime Summary</h2>
-              <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
-            </div>
-          </div>
-          <dl class="stats-list diagnostics-stats">
-            <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
-            <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
-            <div><dt>Routes</dt><dd id="diagnostics-route-count">—</dd></div>
-            <div><dt>Enabled Routes</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
-            <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
-            <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
-            <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
-            <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
-            <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
-          </dl>
-        </section>
-
-        <section class="panel diagnostics-panel">
-          <div class="panel-header">
-            <div>
-              <h2>Upstream Health</h2>
-              <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
-            </div>
-          </div>
-          <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
-          <div id="upstreams-list" class="diagnostics-list"></div>
-        </section>
-
-        <section class="panel diagnostics-panel">
-          <div class="panel-header diagnostics-header-wrap">
-            <div>
-              <h2>Recent Logs</h2>
-              <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
-            </div>
-            <div class="actions diagnostics-actions">
-              <label class="inline-field">
-                <span>Tail Size</span>
-                <select id="log-lines-select">
-                  <option value="50">50</option>
-                  <option value="100" selected>100</option>
-                  <option value="200">200</option>
-                </select>
-              </label>
-              <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
-              <button id="clear-logs" type="button" class="secondary">Clear Display</button>
-            </div>
-          </div>
-          <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
         </section>
       </section>
     </main>
+
     <script type="module" src="./app.js"></script>
   </body>
 </html>

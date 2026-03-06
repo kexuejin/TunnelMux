@@ -1,12 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tunnelmux_core::{DEFAULT_GATEWAY_TARGET_URL, TunnelProvider};
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:4765";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct GuiSettings {
     pub base_url: String,
     pub token: Option<String>,
+    pub default_provider: TunnelProvider,
+    pub gateway_target_url: String,
+    pub auto_restart: bool,
+    pub ngrok_authtoken: Option<String>,
+    pub ngrok_domain: Option<String>,
 }
 
 impl Default for GuiSettings {
@@ -14,6 +21,11 @@ impl Default for GuiSettings {
         Self {
             base_url: DEFAULT_BASE_URL.to_string(),
             token: None,
+            default_provider: TunnelProvider::Cloudflared,
+            gateway_target_url: DEFAULT_GATEWAY_TARGET_URL.to_string(),
+            auto_restart: true,
+            ngrok_authtoken: None,
+            ngrok_domain: None,
         }
     }
 }
@@ -38,7 +50,10 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
     })?;
 
     settings.base_url = normalize_base_url(&settings.base_url);
+    settings.gateway_target_url = normalize_base_url(&settings.gateway_target_url);
     settings.token = normalize_token(settings.token);
+    settings.ngrok_authtoken = normalize_token(settings.ngrok_authtoken);
+    settings.ngrok_domain = normalize_token(settings.ngrok_domain);
     Ok(settings)
 }
 
@@ -52,7 +67,10 @@ pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow
     let path = settings_path(config_dir);
     let mut normalized = settings.clone();
     normalized.base_url = normalize_base_url(&normalized.base_url);
+    normalized.gateway_target_url = normalize_base_url(&normalized.gateway_target_url);
     normalized.token = normalize_token(normalized.token);
+    normalized.ngrok_authtoken = normalize_token(normalized.ngrok_authtoken);
+    normalized.ngrok_domain = normalize_token(normalized.ngrok_domain);
 
     let raw = serde_json::to_string_pretty(&normalized)
         .map_err(|error| anyhow::anyhow!("failed to serialize settings: {error}"))?;
@@ -93,6 +111,11 @@ mod tests {
 
         assert_eq!(settings.base_url, DEFAULT_BASE_URL);
         assert_eq!(settings.token, None);
+        assert_eq!(settings.default_provider, TunnelProvider::Cloudflared);
+        assert_eq!(settings.gateway_target_url, DEFAULT_GATEWAY_TARGET_URL);
+        assert!(settings.auto_restart);
+        assert_eq!(settings.ngrok_authtoken, None);
+        assert_eq!(settings.ngrok_domain, None);
     }
 
     #[test]
@@ -101,12 +124,44 @@ mod tests {
         let expected = GuiSettings {
             base_url: "http://127.0.0.1:9999".to_string(),
             token: Some("dev-token".to_string()),
+            default_provider: TunnelProvider::Ngrok,
+            gateway_target_url: "127.0.0.1:28080".to_string(),
+            auto_restart: false,
+            ngrok_authtoken: Some("ngrok-token".to_string()),
+            ngrok_domain: Some("demo.ngrok.app".to_string()),
         };
 
         save_settings_to_dir(&temp_dir, &expected).expect("settings should save");
         let loaded = load_settings_from_dir(&temp_dir).expect("saved settings should reload");
 
-        assert_eq!(loaded, expected);
+        assert_eq!(
+            loaded,
+            GuiSettings {
+                gateway_target_url: "http://127.0.0.1:28080".to_string(),
+                ..expected
+            }
+        );
+    }
+
+    #[test]
+    fn load_settings_backfills_new_fields_from_old_schema() {
+        let temp_dir = prepare_temp_dir();
+        let path = settings_path(&temp_dir);
+        std::fs::write(
+            &path,
+            "{\n  \"base_url\": \"127.0.0.1:8765\",\n  \"token\": \"legacy-token\"\n}\n",
+        )
+        .expect("legacy settings should write");
+
+        let loaded = load_settings_from_dir(&temp_dir).expect("legacy settings should load");
+
+        assert_eq!(loaded.base_url, "http://127.0.0.1:8765");
+        assert_eq!(loaded.token.as_deref(), Some("legacy-token"));
+        assert_eq!(loaded.default_provider, TunnelProvider::Cloudflared);
+        assert_eq!(loaded.gateway_target_url, DEFAULT_GATEWAY_TARGET_URL);
+        assert!(loaded.auto_restart);
+        assert_eq!(loaded.ngrok_authtoken, None);
+        assert_eq!(loaded.ngrok_domain, None);
     }
 
     fn prepare_temp_dir() -> PathBuf {

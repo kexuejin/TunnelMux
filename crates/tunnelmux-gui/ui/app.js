@@ -11,7 +11,8 @@ const state = {
   busy: false,
   routeCache: [],
   editingOriginalId: null,
-  activeWorkspace: 'operations',
+  activeWorkspace: 'home',
+  troubleshootingOpen: false,
   diagnostics: {
     logLines: 100,
     summary: null,
@@ -20,10 +21,6 @@ const state = {
     summaryUpdatedAt: null,
     upstreamsUpdatedAt: null,
     logsUpdatedAt: null,
-    intervals: {
-      summary: null,
-      logs: null,
-    },
     inFlight: {
       summary: false,
       upstreams: false,
@@ -36,12 +33,17 @@ window.addEventListener('DOMContentLoaded', async () => {
   bindElements();
   bindEvents();
   resetRouteForm();
-  setActiveWorkspace('operations');
+  setActiveWorkspace('home');
 
   if (!isTauri) {
     renderStatus('Preview shell loaded outside Tauri. Open the desktop app to enable commands.', true);
-    renderRoutes({ routes: [], message: 'Routes preview unavailable outside Tauri.' });
-    renderDiagnosticsOverview('Diagnostics preview unavailable outside Tauri.', true);
+    renderDashboard({
+      connected: false,
+      tunnel: null,
+      message: 'Preview mode only.',
+    });
+    renderRoutes({ routes: [], message: 'Services preview unavailable outside Tauri.' });
+    renderDiagnosticsOverview('Troubleshooting preview unavailable outside Tauri.', true);
     renderDiagnosticsSummaryMeta('Preview mode only.', true);
     renderUpstreamsMeta('Preview mode only.', true);
     renderLogsMeta('Preview mode only.', true);
@@ -55,24 +57,25 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 function bindElements() {
   elements.status = document.getElementById('app-status');
+  elements.retryConnection = document.getElementById('retry-connection');
   elements.workspaceTabs = [...document.querySelectorAll('[data-workspace-tab]')];
   elements.workspaces = [...document.querySelectorAll('[data-workspace]')];
 
-  elements.message = document.getElementById('dashboard-message');
   elements.connected = document.getElementById('dashboard-connected');
-  elements.state = document.getElementById('dashboard-state');
   elements.provider = document.getElementById('dashboard-provider');
   elements.publicUrl = document.getElementById('dashboard-public-url');
-  elements.targetUrl = document.getElementById('dashboard-target-url');
-  elements.baseUrl = document.getElementById('settings-base-url');
-  elements.token = document.getElementById('settings-token');
-  elements.saveSettings = document.getElementById('save-settings');
-  elements.refreshDashboard = document.getElementById('refresh-dashboard');
+  elements.stateBadge = document.getElementById('dashboard-state-badge');
+  elements.homePublicUrlMeta = document.getElementById('home-public-url-meta');
+  elements.dashboardMessage = document.getElementById('dashboard-message');
+  elements.copyPublicUrl = document.getElementById('copy-public-url');
+  elements.openPublicUrl = document.getElementById('open-public-url');
   elements.startProvider = document.getElementById('start-provider');
-  elements.startTargetUrl = document.getElementById('start-target-url');
-  elements.startAutoRestart = document.getElementById('start-auto-restart');
   elements.startTunnel = document.getElementById('start-tunnel');
   elements.stopTunnel = document.getElementById('stop-tunnel');
+  elements.homeProviderHint = document.getElementById('home-provider-hint');
+  elements.manageServices = document.getElementById('manage-services');
+  elements.servicesCount = document.getElementById('services-count');
+  elements.servicesEnabledCount = document.getElementById('services-enabled-count');
 
   elements.routesMessage = document.getElementById('routes-message');
   elements.routesEmpty = document.getElementById('routes-empty');
@@ -81,15 +84,28 @@ function bindElements() {
   elements.cancelRouteEdit = document.getElementById('cancel-route-edit');
   elements.routeFormTitle = document.getElementById('route-form-title');
   elements.routeId = document.getElementById('route-id');
-  elements.routeMatchHost = document.getElementById('route-match-host');
   elements.routeMatchPathPrefix = document.getElementById('route-match-path-prefix');
-  elements.routeStripPathPrefix = document.getElementById('route-strip-path-prefix');
+  elements.routeMatchHost = document.getElementById('route-match-host');
   elements.routeUpstreamUrl = document.getElementById('route-upstream-url');
   elements.routeFallbackUpstreamUrl = document.getElementById('route-fallback-upstream-url');
   elements.routeHealthCheckPath = document.getElementById('route-health-check-path');
   elements.routeEnabled = document.getElementById('route-enabled');
   elements.saveRoute = document.getElementById('save-route');
+  elements.serviceAdvanced = document.getElementById('service-advanced');
+  elements.serviceExposureMode = document.getElementById('service-exposure-mode');
+  elements.serviceHostField = document.getElementById('service-host-field');
 
+  elements.baseUrl = document.getElementById('settings-base-url');
+  elements.token = document.getElementById('settings-token');
+  elements.settingsDefaultProvider = document.getElementById('settings-default-provider');
+  elements.settingsGatewayTargetUrl = document.getElementById('settings-gateway-target-url');
+  elements.settingsAutoRestart = document.getElementById('settings-auto-restart');
+  elements.settingsNgrokAuthtoken = document.getElementById('settings-ngrok-authtoken');
+  elements.settingsNgrokDomain = document.getElementById('settings-ngrok-domain');
+  elements.saveSettings = document.getElementById('save-settings');
+
+  elements.toggleTroubleshooting = document.getElementById('toggle-troubleshooting');
+  elements.troubleshootingPanel = document.getElementById('troubleshooting-panel');
   elements.refreshDiagnostics = document.getElementById('refresh-diagnostics');
   elements.diagnosticsOverview = document.getElementById('diagnostics-overview');
   elements.diagnosticsSummaryMeta = document.getElementById('diagnostics-summary-meta');
@@ -102,11 +118,9 @@ function bindElements() {
   elements.diagnosticsLastReloadAt = document.getElementById('diagnostics-last-reload-at');
   elements.diagnosticsProviderLogFile = document.getElementById('diagnostics-provider-log-file');
   elements.diagnosticsLastReloadError = document.getElementById('diagnostics-last-reload-error');
-
   elements.upstreamsMeta = document.getElementById('upstreams-meta');
   elements.upstreamsEmpty = document.getElementById('upstreams-empty');
   elements.upstreamsList = document.getElementById('upstreams-list');
-
   elements.logsMeta = document.getElementById('logs-meta');
   elements.logLinesSelect = document.getElementById('log-lines-select');
   elements.refreshLogs = document.getElementById('refresh-logs');
@@ -119,20 +133,30 @@ function bindEvents() {
     button.addEventListener('click', () => setActiveWorkspace(button.dataset.workspaceTab));
   });
 
-  elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
-  elements.refreshDashboard?.addEventListener('click', () => withBusy(refreshAll));
+  elements.retryConnection?.addEventListener('click', () => withBusy(refreshAll));
+  elements.copyPublicUrl?.addEventListener('click', () => withBusy(copyPublicUrl));
+  elements.openPublicUrl?.addEventListener('click', () => withBusy(openPublicUrl));
   elements.startTunnel?.addEventListener('click', () => withBusy(startTunnel));
   elements.stopTunnel?.addEventListener('click', () => withBusy(stopTunnel));
+  elements.manageServices?.addEventListener('click', () => setActiveWorkspace('services'));
+
   elements.newRoute?.addEventListener('click', () => resetRouteForm());
   elements.cancelRouteEdit?.addEventListener('click', () => resetRouteForm());
   elements.saveRoute?.addEventListener('click', () => withBusy(saveRoute));
+  elements.serviceExposureMode?.addEventListener('change', applyExposureMode);
 
+  elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
+  elements.settingsDefaultProvider?.addEventListener('change', syncProviderControls);
+
+  elements.toggleTroubleshooting?.addEventListener('click', () => withBusy(toggleTroubleshooting));
   elements.refreshDiagnostics?.addEventListener('click', () => withBusy(() => refreshDiagnosticsWorkspace({ manual: true })));
   elements.refreshLogs?.addEventListener('click', () => withBusy(() => refreshRecentLogs({ manual: true })));
   elements.clearLogs?.addEventListener('click', clearDisplayedLogs);
   elements.logLinesSelect?.addEventListener('change', () => {
     state.diagnostics.logLines = Number(elements.logLinesSelect.value) || 100;
-    void refreshRecentLogs({ manual: false });
+    if (state.troubleshootingOpen) {
+      void refreshRecentLogs({ manual: false });
+    }
   });
 }
 
@@ -151,21 +175,25 @@ async function withBusy(fn) {
 }
 
 function setBusyState(nextBusy) {
-  const staticControls = [
-    elements.saveSettings,
-    elements.refreshDashboard,
+  const controls = [
+    elements.retryConnection,
+    elements.copyPublicUrl,
+    elements.openPublicUrl,
     elements.startTunnel,
     elements.stopTunnel,
+    elements.manageServices,
     elements.newRoute,
     elements.cancelRouteEdit,
     elements.saveRoute,
+    elements.saveSettings,
+    elements.toggleTroubleshooting,
     elements.refreshDiagnostics,
     elements.refreshLogs,
     elements.clearLogs,
     elements.logLinesSelect,
   ];
 
-  staticControls.filter(Boolean).forEach((element) => {
+  controls.filter(Boolean).forEach((element) => {
     element.disabled = nextBusy;
   });
 
@@ -187,20 +215,45 @@ function setActiveWorkspace(name) {
     section.hidden = !isActive;
     section.classList.toggle('is-active', isActive);
   });
+}
 
-  if (name === 'diagnostics' && isTauri) {
-    renderDiagnosticsOverview('Diagnostics polling is active while this workspace is open.');
-    startDiagnosticsPolling();
-  } else {
-    stopDiagnosticsPolling();
+function collectSettingsForm() {
+  return {
+    base_url: elements.baseUrl.value,
+    token: elements.token.value || null,
+    default_provider: elements.settingsDefaultProvider.value,
+    gateway_target_url: elements.settingsGatewayTargetUrl.value,
+    auto_restart: elements.settingsAutoRestart.checked,
+    ngrok_authtoken: elements.settingsNgrokAuthtoken.value || null,
+    ngrok_domain: elements.settingsNgrokDomain.value || null,
+  };
+}
+
+function populateSettingsFields(settings) {
+  elements.baseUrl.value = settings.base_url ?? '';
+  elements.token.value = settings.token ?? '';
+  elements.settingsDefaultProvider.value = settings.default_provider ?? 'cloudflared';
+  elements.settingsGatewayTargetUrl.value = settings.gateway_target_url ?? 'http://127.0.0.1:18080';
+  elements.settingsAutoRestart.checked = Boolean(settings.auto_restart);
+  elements.settingsNgrokAuthtoken.value = settings.ngrok_authtoken ?? '';
+  elements.settingsNgrokDomain.value = settings.ngrok_domain ?? '';
+  syncProviderControls();
+}
+
+function syncProviderControls() {
+  if (elements.settingsDefaultProvider?.value) {
+    elements.startProvider.value = elements.settingsDefaultProvider.value;
   }
+  const provider = elements.startProvider.value || 'cloudflared';
+  const gatewayTarget = elements.settingsGatewayTargetUrl.value || 'http://127.0.0.1:18080';
+  const restartLabel = elements.settingsAutoRestart.checked ? 'enabled' : 'disabled';
+  elements.homeProviderHint.textContent = `${provider} will target ${gatewayTarget} • auto restart ${restartLabel}.`;
 }
 
 async function loadSettings() {
   try {
     const settings = await invoke('load_settings');
-    elements.baseUrl.value = settings.base_url ?? '';
-    elements.token.value = settings.token ?? '';
+    populateSettingsFields(settings);
   } catch (error) {
     renderStatus(`Failed to load settings: ${formatError(error)}`, true);
   }
@@ -209,16 +262,12 @@ async function loadSettings() {
 async function saveSettings() {
   try {
     const settings = await invoke('save_settings', {
-      settings: {
-        base_url: elements.baseUrl.value,
-        token: elements.token.value || null,
-      },
+      settings: collectSettingsForm(),
     });
-    elements.baseUrl.value = settings.base_url ?? '';
-    elements.token.value = settings.token ?? '';
-    renderStatus('Settings saved. Refreshing dashboard and routes…');
+    populateSettingsFields(settings);
+    renderStatus('Settings saved. Refreshing tunnel and service state…');
     await refreshAll();
-    if (state.activeWorkspace === 'diagnostics') {
+    if (state.troubleshootingOpen) {
       await refreshDiagnosticsWorkspace({ manual: false });
     }
   } catch (error) {
@@ -245,23 +294,24 @@ async function refreshRoutes() {
     const snapshot = await invoke('list_routes');
     renderRoutes(snapshot);
   } catch (error) {
-    renderRoutes({ routes: [], message: `Failed to load routes: ${formatError(error)}` });
+    renderRoutes({ routes: [], message: `Failed to load services: ${formatError(error)}` });
   }
 }
 
 async function startTunnel() {
   try {
+    const settings = collectSettingsForm();
     const snapshot = await invoke('start_tunnel', {
       input: {
         provider: elements.startProvider.value,
-        target_url: elements.startTargetUrl.value,
-        auto_restart: elements.startAutoRestart.checked,
+        target_url: settings.gateway_target_url,
+        auto_restart: settings.auto_restart,
       },
     });
     renderDashboard(snapshot);
     renderStatus('Tunnel started.');
-    if (state.activeWorkspace === 'diagnostics') {
-      void refreshDiagnosticsWorkspace({ manual: false });
+    if (state.troubleshootingOpen) {
+      await refreshDiagnosticsWorkspace({ manual: false });
     }
   } catch (error) {
     renderStatus(`Failed to start tunnel: ${formatError(error)}`, true);
@@ -273,8 +323,8 @@ async function stopTunnel() {
     const snapshot = await invoke('stop_tunnel');
     renderDashboard(snapshot);
     renderStatus('Tunnel stopped.');
-    if (state.activeWorkspace === 'diagnostics') {
-      void refreshDiagnosticsWorkspace({ manual: false });
+    if (state.troubleshootingOpen) {
+      await refreshDiagnosticsWorkspace({ manual: false });
     }
   } catch (error) {
     renderStatus(`Failed to stop tunnel: ${formatError(error)}`, true);
@@ -283,13 +333,14 @@ async function stopTunnel() {
 
 async function saveRoute() {
   try {
+    const exposureMode = elements.serviceExposureMode.value;
     const snapshot = await invoke('save_route', {
       form: {
         original_id: state.editingOriginalId,
         id: elements.routeId.value.trim(),
-        match_host: elements.routeMatchHost.value,
-        match_path_prefix: elements.routeMatchPathPrefix.value,
-        strip_path_prefix: elements.routeStripPathPrefix.value,
+        match_host: exposureMode === 'subdomain' ? elements.routeMatchHost.value : '',
+        match_path_prefix: ensurePath(elements.routeMatchPathPrefix.value),
+        strip_path_prefix: '',
         upstream_url: elements.routeUpstreamUrl.value,
         fallback_upstream_url: elements.routeFallbackUpstreamUrl.value,
         health_check_path: elements.routeHealthCheckPath.value,
@@ -297,62 +348,116 @@ async function saveRoute() {
       },
     });
     renderRoutes(snapshot);
-    renderStatus(snapshot.message ?? 'Route saved.');
+    renderStatus(snapshot.message ?? 'Service saved.');
     resetRouteForm();
-    if (state.activeWorkspace === 'diagnostics') {
-      void refreshDiagnosticsWorkspace({ manual: false });
+    setActiveWorkspace('services');
+    if (state.troubleshootingOpen) {
+      await refreshDiagnosticsWorkspace({ manual: false });
     }
   } catch (error) {
-    renderStatus(`Failed to save route: ${formatError(error)}`, true);
+    renderStatus(`Failed to save service: ${formatError(error)}`, true);
   }
 }
 
 async function deleteRoute(id) {
-  if (!window.confirm(`Delete route '${id}'?`)) {
+  if (!window.confirm(`Delete service '${id}'?`)) {
     return;
   }
 
   try {
     const snapshot = await invoke('delete_route', { id });
     renderRoutes(snapshot);
-    renderStatus(snapshot.message ?? 'Route deleted.');
+    renderStatus(snapshot.message ?? 'Service deleted.');
     if (state.editingOriginalId === id) {
       resetRouteForm();
     }
-    if (state.activeWorkspace === 'diagnostics') {
-      void refreshDiagnosticsWorkspace({ manual: false });
+    if (state.troubleshootingOpen) {
+      await refreshDiagnosticsWorkspace({ manual: false });
     }
   } catch (error) {
-    renderStatus(`Failed to delete route: ${formatError(error)}`, true);
+    renderStatus(`Failed to delete service: ${formatError(error)}`, true);
+  }
+}
+
+async function toggleRouteEnabled(id) {
+  const route = state.routeCache.find((item) => item.id === id);
+  if (!route) {
+    return;
+  }
+
+  try {
+    const snapshot = await invoke('save_route', {
+      form: {
+        original_id: route.id,
+        id: route.id,
+        match_host: route.match_host ?? '',
+        match_path_prefix: route.match_path_prefix ?? '/',
+        strip_path_prefix: '',
+        upstream_url: route.upstream_url,
+        fallback_upstream_url: route.fallback_upstream_url ?? '',
+        health_check_path: route.health_check_path ?? '',
+        enabled: !route.enabled,
+      },
+    });
+    renderRoutes(snapshot);
+    renderStatus(`Service ${route.enabled ? 'disabled' : 'enabled'}.`);
+  } catch (error) {
+    renderStatus(`Failed to update service: ${formatError(error)}`, true);
+  }
+}
+
+async function toggleTroubleshooting() {
+  state.troubleshootingOpen = !state.troubleshootingOpen;
+  elements.troubleshootingPanel.hidden = !state.troubleshootingOpen;
+  elements.toggleTroubleshooting.textContent = state.troubleshootingOpen ? 'Hide Details' : 'View Details';
+  if (state.troubleshootingOpen) {
+    await refreshDiagnosticsWorkspace({ manual: true });
   }
 }
 
 function renderDashboard(snapshot) {
-  if (!snapshot) {
+  const tunnel = snapshot?.tunnel ?? null;
+  const connected = Boolean(snapshot?.connected);
+  const publicUrl = tunnel?.public_base_url ?? '';
+  const tunnelState = tunnel?.state ?? (connected ? 'idle' : 'offline');
+  const provider = tunnel?.provider ?? elements.startProvider.value ?? '—';
+
+  elements.connected.textContent = connected ? 'Yes' : 'No';
+  elements.provider.textContent = provider ?? '—';
+  elements.publicUrl.textContent = publicUrl || 'Not running';
+  elements.openPublicUrl.disabled = !publicUrl;
+  elements.copyPublicUrl.disabled = !publicUrl;
+
+  elements.stateBadge.textContent = titleCase(tunnelState);
+  elements.stateBadge.className = `status-badge ${escapeClassName(tunnelState)}`;
+
+  if (!connected) {
+    elements.homePublicUrlMeta.textContent = 'TunnelMux daemon is not ready. Retry or check connection settings.';
+    elements.dashboardMessage.textContent = snapshot?.message ?? 'Unable to reach the local daemon.';
+    renderStatus(`Daemon unavailable: ${snapshot?.message ?? 'check connection settings'}`, true);
     return;
   }
 
-  const tunnel = snapshot.tunnel ?? {};
-  elements.connected.textContent = snapshot.connected ? 'Yes' : 'No';
-  elements.state.textContent = tunnel.state ?? 'unknown';
-  elements.provider.textContent = tunnel.provider ?? '—';
-  elements.publicUrl.textContent = tunnel.public_base_url ?? '—';
-  elements.targetUrl.textContent = tunnel.target_url ?? '—';
-  elements.message.textContent = snapshot.message ?? (snapshot.connected ? 'Daemon reachable.' : 'Daemon unavailable.');
-  elements.message.classList.toggle('muted', !snapshot.message);
-  renderStatus(
-    snapshot.connected ? 'Dashboard refreshed.' : `Dashboard updated: ${snapshot.message ?? 'daemon unavailable'}`,
-    !snapshot.connected,
-  );
+  if (publicUrl) {
+    elements.homePublicUrlMeta.textContent = 'Ready to share. Copy the URL or open it in your browser.';
+    elements.dashboardMessage.textContent = 'Tunnel is live.';
+    renderStatus('Dashboard refreshed.');
+    return;
+  }
+
+  elements.homePublicUrlMeta.textContent = 'TunnelMux is connected. Start the tunnel to generate a public URL.';
+  elements.dashboardMessage.textContent = snapshot?.message ?? 'Tunnel is connected but not running.';
+  renderStatus('Dashboard refreshed.');
 }
 
 function renderRoutes(snapshot) {
   state.routeCache = snapshot?.routes ?? [];
-  elements.routesMessage.textContent = snapshot?.message ?? 'Routes loaded from daemon.';
+  elements.routesMessage.textContent = snapshot?.message ?? 'Services loaded from the daemon.';
   elements.routesList.innerHTML = '';
 
   if (!state.routeCache.length) {
     elements.routesEmpty.hidden = false;
+    renderServiceSummary();
     return;
   }
 
@@ -360,29 +465,38 @@ function renderRoutes(snapshot) {
 
   for (const route of state.routeCache) {
     const item = document.createElement('article');
-    item.className = 'route-card';
+    item.className = 'service-card';
     item.innerHTML = `
-      <div class="route-card-header">
+      <div class="service-card-header">
         <div>
           <h3>${escapeHtml(route.id)}</h3>
-          <p class="route-match">${escapeHtml(route.display_match ?? '*/')}</p>
+          <p class="service-exposure">${escapeHtml(describeRouteExposure(route))}</p>
         </div>
-        <span class="route-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'enabled' : 'disabled'}</span>
+        <span class="service-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'Live' : 'Paused'}</span>
       </div>
       <dl class="route-meta">
-        <div><dt>Upstream</dt><dd>${escapeHtml(route.upstream_url)}</dd></div>
+        <div><dt>Local URL</dt><dd>${escapeHtml(route.upstream_url)}</dd></div>
         <div><dt>Fallback</dt><dd>${escapeHtml(route.fallback_upstream_url ?? '—')}</dd></div>
-        <div><dt>Health</dt><dd>${escapeHtml(route.health_check_path ?? '—')}</dd></div>
+        <div><dt>Health Check</dt><dd>${escapeHtml(route.health_check_path ?? '—')}</dd></div>
       </dl>
       <div class="actions compact-actions">
         <button type="button" class="secondary" data-route-action="edit" data-route-id="${escapeAttribute(route.id)}">Edit</button>
+        <button type="button" class="secondary" data-route-action="toggle" data-route-id="${escapeAttribute(route.id)}">${route.enabled ? 'Disable' : 'Enable'}</button>
         <button type="button" data-route-action="delete" data-route-id="${escapeAttribute(route.id)}">Delete</button>
       </div>
     `;
     elements.routesList.appendChild(item);
   }
 
+  renderServiceSummary();
   bindRouteActionButtons();
+}
+
+function renderServiceSummary() {
+  const configured = state.routeCache.length;
+  const enabled = state.routeCache.filter((route) => route.enabled).length;
+  elements.servicesCount.textContent = String(configured);
+  elements.servicesEnabledCount.textContent = String(enabled);
 }
 
 async function refreshDiagnosticsWorkspace({ manual = false } = {}) {
@@ -395,32 +509,9 @@ async function refreshDiagnosticsWorkspace({ manual = false } = {}) {
   if (manual) {
     const failed = results.some((result) => result === false);
     renderStatus(
-      failed ? 'Diagnostics refreshed with some panel errors.' : 'Diagnostics refreshed.',
+      failed ? 'Troubleshooting details refreshed with some panel errors.' : 'Troubleshooting details refreshed.',
       failed,
     );
-  }
-}
-
-function startDiagnosticsPolling() {
-  stopDiagnosticsPolling();
-  void refreshDiagnosticsWorkspace({ manual: false });
-  state.diagnostics.intervals.summary = window.setInterval(() => {
-    void refreshDiagnosticsSummary();
-    void refreshUpstreamsHealth();
-  }, 5000);
-  state.diagnostics.intervals.logs = window.setInterval(() => {
-    void refreshRecentLogs({ manual: false });
-  }, 3000);
-}
-
-function stopDiagnosticsPolling() {
-  if (state.diagnostics.intervals.summary) {
-    window.clearInterval(state.diagnostics.intervals.summary);
-    state.diagnostics.intervals.summary = null;
-  }
-  if (state.diagnostics.intervals.logs) {
-    window.clearInterval(state.diagnostics.intervals.logs);
-    state.diagnostics.intervals.logs = null;
   }
 }
 
@@ -435,11 +526,11 @@ async function refreshDiagnosticsSummary() {
     state.diagnostics.summary = summary;
     state.diagnostics.summaryUpdatedAt = new Date().toISOString();
     renderDiagnosticsSummary(summary);
-    renderDiagnosticsOverview('Diagnostics polling is active while this workspace is open.');
+    renderDiagnosticsOverview('Use troubleshooting only when something looks wrong or you need more context.');
     return true;
   } catch (error) {
     renderDiagnosticsSummaryMeta(`Failed to load runtime summary: ${formatError(error)}`, true);
-    renderDiagnosticsOverview('Diagnostics is partially unavailable. Check panel errors for details.', true);
+    renderDiagnosticsOverview('Troubleshooting is partially unavailable. Check the panel errors for details.', true);
     return false;
   } finally {
     state.diagnostics.inFlight.summary = false;
@@ -499,13 +590,10 @@ function clearDisplayedLogs() {
     lines: [],
   };
   renderRecentLogs(state.diagnostics.logTail);
-  renderLogsMeta('Local log display cleared. Auto-refresh will repopulate on the next poll.');
+  renderLogsMeta('Local log display cleared. Refresh again if you need a fresh snapshot.');
 }
 
 function renderDiagnosticsOverview(message, isError = false) {
-  if (!elements.diagnosticsOverview) {
-    return;
-  }
   elements.diagnosticsOverview.textContent = message;
   elements.diagnosticsOverview.classList.toggle('error', isError);
 }
@@ -547,7 +635,7 @@ function renderUpstreamsHealth(upstreams) {
       <div class="diagnostics-card-header">
         <div>
           <h3>${escapeHtml(upstream.upstream_url ?? 'unknown upstream')}</h3>
-          <p class="route-match">${escapeHtml(upstream.health_check_path ?? '/')}</p>
+          <p class="service-exposure">${escapeHtml(upstream.health_check_path ?? '/')}</p>
         </div>
         <span class="health-badge ${escapeAttribute(upstream.health_label ?? 'unknown')}">${escapeHtml(upstream.health_label ?? 'unknown')}</span>
       </div>
@@ -599,9 +687,13 @@ function bindRouteActionButtons() {
       const route = state.routeCache.find((item) => item.id === button.dataset.routeId);
       if (route) {
         populateRouteForm(route);
-        setActiveWorkspace('routes');
+        setActiveWorkspace('services');
       }
     });
+  });
+
+  document.querySelectorAll('[data-route-action="toggle"]').forEach((button) => {
+    button.addEventListener('click', () => withBusy(() => toggleRouteEnabled(button.dataset.routeId)));
   });
 
   document.querySelectorAll('[data-route-action="delete"]').forEach((button) => {
@@ -611,38 +703,91 @@ function bindRouteActionButtons() {
 
 function populateRouteForm(route) {
   state.editingOriginalId = route.id;
-  elements.routeFormTitle.textContent = `Edit Route: ${route.id}`;
+  elements.routeFormTitle.textContent = `Edit Service: ${route.id}`;
   elements.routeId.value = route.id;
   elements.routeId.disabled = true;
+  elements.routeMatchPathPrefix.value = route.match_path_prefix ?? '/';
   elements.routeMatchHost.value = route.match_host ?? '';
-  elements.routeMatchPathPrefix.value = route.match_path_prefix ?? '';
-  elements.routeStripPathPrefix.value = route.strip_path_prefix ?? '';
   elements.routeUpstreamUrl.value = route.upstream_url ?? '';
   elements.routeFallbackUpstreamUrl.value = route.fallback_upstream_url ?? '';
   elements.routeHealthCheckPath.value = route.health_check_path ?? '';
   elements.routeEnabled.checked = Boolean(route.enabled);
-  elements.saveRoute.textContent = 'Update Route';
+  elements.serviceExposureMode.value = route.match_host ? 'subdomain' : 'path';
+  elements.serviceAdvanced.open = Boolean(
+    route.match_host || route.fallback_upstream_url || route.health_check_path,
+  );
+  applyExposureMode();
+  elements.saveRoute.textContent = 'Update Service';
 }
 
 function resetRouteForm() {
   state.editingOriginalId = null;
-  elements.routeFormTitle.textContent = 'Create Route';
+  elements.routeFormTitle.textContent = 'Add Service';
   elements.routeId.disabled = false;
   elements.routeId.value = '';
-  elements.routeMatchHost.value = '';
   elements.routeMatchPathPrefix.value = '/';
-  elements.routeStripPathPrefix.value = '';
+  elements.routeMatchHost.value = '';
   elements.routeUpstreamUrl.value = '';
   elements.routeFallbackUpstreamUrl.value = '';
   elements.routeHealthCheckPath.value = '';
   elements.routeEnabled.checked = true;
-  elements.saveRoute.textContent = 'Save Route';
+  elements.serviceExposureMode.value = 'path';
+  elements.serviceAdvanced.open = false;
+  elements.saveRoute.textContent = 'Save Service';
+  applyExposureMode();
+}
+
+function applyExposureMode() {
+  const isSubdomain = elements.serviceExposureMode.value === 'subdomain';
+  elements.serviceHostField.hidden = !isSubdomain;
+}
+
+async function copyPublicUrl() {
+  const url = elements.publicUrl.textContent.trim();
+  if (!url || url === 'Not running') {
+    renderStatus('No public URL is available yet.', true);
+    return;
+  }
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+      renderStatus('Public URL copied.');
+      return;
+    }
+    throw new Error('clipboard API unavailable');
+  } catch (error) {
+    renderStatus(`Failed to copy URL: ${formatError(error)}`, true);
+  }
+}
+
+async function openPublicUrl() {
+  const url = elements.publicUrl.textContent.trim();
+  if (!url || url === 'Not running') {
+    renderStatus('No public URL is available yet.', true);
+    return;
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function describeRouteExposure(route) {
+  const host = route.match_host?.trim();
+  const path = ensurePath(route.match_path_prefix ?? '/');
+  if (host) {
+    return path === '/' ? host : `${host}${path}`;
+  }
+  return path;
+}
+
+function ensurePath(value) {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) {
+    return '/';
+  }
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
 function renderStatus(message, isError = false) {
-  if (!elements.status) {
-    return;
-  }
   elements.status.textContent = message;
   elements.status.classList.toggle('error', isError);
 }
@@ -677,6 +822,12 @@ function formatError(error) {
   return error?.message ?? String(error);
 }
 
+function titleCase(value) {
+  return String(value)
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -688,4 +839,8 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value);
+}
+
+function escapeClassName(value) {
+  return String(value).replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
 }

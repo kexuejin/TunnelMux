@@ -5,6 +5,7 @@ use crate::view_models::{
 };
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 use tunnelmux_control_client::{ControlClientConfig, TunnelmuxControlClient};
@@ -203,7 +204,7 @@ pub async fn start_tunnel_from_settings_dir(
             provider: input.provider,
             target_url: input.target_url,
             auto_restart: Some(input.auto_restart),
-            metadata: None,
+            metadata: build_tunnel_metadata(&settings),
         })
         .await
         .map_err(command_error)?;
@@ -338,6 +339,19 @@ fn command_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+fn build_tunnel_metadata(settings: &GuiSettings) -> Option<HashMap<String, String>> {
+    let mut metadata = HashMap::new();
+
+    if let Some(value) = settings.ngrok_authtoken.as_deref() {
+        metadata.insert("ngrokAuthtoken".to_string(), value.to_string());
+    }
+    if let Some(value) = settings.ngrok_domain.as_deref() {
+        metadata.insert("ngrokDomain".to_string(), value.to_string());
+    }
+
+    (!metadata.is_empty()).then_some(metadata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,7 +361,7 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
     use tokio::net::TcpListener;
-    use tunnelmux_core::{TunnelStatus, TunnelStatusResponse};
+    use tunnelmux_core::{TunnelStartRequest, TunnelStatus, TunnelStatusResponse};
 
     #[tokio::test]
     async fn refresh_dashboard_returns_tunnel_snapshot_for_connected_daemon() {
@@ -363,6 +377,7 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: Some("dev-token".to_string()),
+                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -394,6 +409,7 @@ mod tests {
             &GuiSettings {
                 base_url: "http://127.0.0.1:9".to_string(),
                 token: None,
+                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -412,6 +428,74 @@ mod tests {
         assert!(
             error.contains("request failed") || error.contains("error sending request"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_tunnel_uses_saved_ngrok_tunnel_settings() {
+        let temp_dir = prepare_temp_dir();
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<TunnelStartRequest>));
+        let base_url = spawn_test_server(
+            Router::new().route(
+                "/v1/tunnel/start",
+                axum::routing::post({
+                    let captured = captured.clone();
+                    move |payload| start_tunnel_handler(captured.clone(), payload)
+                }),
+            ),
+        )
+        .await;
+
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                default_provider: TunnelProvider::Ngrok,
+                gateway_target_url: "http://127.0.0.1:28080".to_string(),
+                auto_restart: false,
+                ngrok_authtoken: Some("ngrok-token".to_string()),
+                ngrok_domain: Some("demo.ngrok.app".to_string()),
+            },
+        )
+        .expect("settings should save");
+
+        let snapshot = start_tunnel_from_settings_dir(
+            &temp_dir,
+            StartTunnelInput {
+                provider: TunnelProvider::Ngrok,
+                target_url: "http://127.0.0.1:28080".to_string(),
+                auto_restart: false,
+            },
+        )
+        .await
+        .expect("start tunnel should succeed");
+
+        assert!(snapshot.connected);
+
+        let payload = captured
+            .lock()
+            .await
+            .clone()
+            .expect("start request should be captured");
+        assert_eq!(payload.provider, TunnelProvider::Ngrok);
+        assert_eq!(payload.target_url, "http://127.0.0.1:28080");
+        assert_eq!(payload.auto_restart, Some(false));
+        assert_eq!(
+            payload
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("ngrokAuthtoken"))
+                .map(String::as_str),
+            Some("ngrok-token")
+        );
+        assert_eq!(
+            payload
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("ngrokDomain"))
+                .map(String::as_str),
+            Some("demo.ngrok.app")
         );
     }
 
@@ -452,6 +536,7 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
+                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -510,6 +595,7 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
+                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -534,6 +620,7 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
+                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -560,6 +647,7 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
+                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -585,6 +673,7 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
+                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -608,6 +697,7 @@ mod tests {
             &GuiSettings {
                 base_url: "http://127.0.0.1:9".to_string(),
                 token: None,
+                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -669,6 +759,27 @@ mod tests {
     async fn recent_logs_handler() -> Json<tunnelmux_core::TunnelLogsResponse> {
         Json(tunnelmux_core::TunnelLogsResponse {
             lines: vec!["first log line".to_string(), "second log line".to_string()],
+        })
+    }
+
+    async fn start_tunnel_handler(
+        captured: std::sync::Arc<tokio::sync::Mutex<Option<TunnelStartRequest>>>,
+        Json(request): Json<TunnelStartRequest>,
+    ) -> Json<TunnelStatusResponse> {
+        *captured.lock().await = Some(request.clone());
+        Json(TunnelStatusResponse {
+            tunnel: TunnelStatus {
+                state: tunnelmux_core::TunnelState::Running,
+                provider: Some(request.provider),
+                target_url: Some(request.target_url),
+                public_base_url: Some("https://demo.ngrok.app".to_string()),
+                started_at: Some("2026-03-06T00:00:00Z".to_string()),
+                updated_at: "2026-03-06T00:00:01Z".to_string(),
+                process_id: Some(12345),
+                auto_restart: request.auto_restart.unwrap_or(true),
+                restart_count: 0,
+                last_error: None,
+            },
         })
     }
 
