@@ -52,13 +52,13 @@ Responsibilities:
 - present a local operations console for operators
 - store only local GUI connection settings (daemon `base_url` and optional token)
 - call Tauri commands that delegate to the shared control client
-- surface dashboard, tunnel controls, and route CRUD without owning daemon lifecycle
+- surface dashboard, tunnel controls, route CRUD, and diagnostics without owning daemon lifecycle
 
 The current GUI MVP intentionally does **not** include:
 - daemon auto-launch,
 - tray/background integrations,
 - real-time log streaming,
-- diagnostics/upstream-health pages.
+- daemon auto-launched diagnostics subscriptions.
 
 ## Design Principles
 

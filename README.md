@@ -25,7 +25,7 @@ TunnelMux solves this by separating concerns:
 ## Key Capabilities
 
 - Independent daemon (`tunnelmuxd`) and CLI (`tunnelmux-cli`)
-- Desktop GUI MVP (`tunnelmux-gui`) for local operations control
+- Desktop GUI (`tunnelmux-gui`) for local operations control and diagnostics
 - Shared Rust control client for CLI and GUI surfaces
 - Tunnel lifecycle API: start, stop, status, logs, streams
 - Host/path routing to multiple local upstream services
@@ -117,6 +117,13 @@ cargo run -p tunnelmux-gui
 ```
 
 The GUI connects to an already-running `tunnelmuxd`; it does not launch or manage the daemon process itself.
+
+Current GUI workspaces include:
+- operations: connection settings, tunnel status, tunnel start/stop
+- routes: route list/create/update/delete
+- diagnostics: runtime summary, upstream health, and recent provider logs
+
+The diagnostics workspace uses lightweight polling today rather than SSE streams.
 
 Config files:
 

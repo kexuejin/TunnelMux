@@ -29,6 +29,7 @@
 
 - [x] generic third-party integration templates
 - [x] GUI MVP (Tauri)
+- [x] GUI diagnostics workspace
 - [x] hot configuration reload
 - [x] operational audit and diagnostics
 
