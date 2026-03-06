@@ -4,6 +4,30 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Expected project version to rehearse, e.g. 0.1.3"
+        required: true
+        type: string
+      macos_signing_required:
+        description: "Override macOS signing mode for this rehearsal run"
+        required: true
+        default: inherit
+        type: choice
+        options:
+          - inherit
+          - "true"
+          - "false"
+      windows_signing_required:
+        description: "Override Windows signing mode for this rehearsal run"
+        required: true
+        default: inherit
+        type: choice
+        options:
+          - inherit
+          - "true"
+          - "false"
 
 permissions:
   contents: write
@@ -32,6 +56,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL_VERSION="$(python -c "import tomllib, pathlib; data = tomllib.loads(pathlib.Path('Cargo.toml').read_text()); print(data['workspace']['package']['version'])")"
+          INPUT_VERSION="$(python -c "import json, os, pathlib; payload = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text()); print((payload.get('inputs') or {}).get('version', ''))")"
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ -z "$INPUT_VERSION" ]]; then
+              echo "workflow_dispatch requires a version input" >&2
+              exit 1
+            fi
+            if [[ "$INPUT_VERSION" != "$ACTUAL_VERSION" ]]; then
+              printf 'workflow_dispatch version %s does not match checked-out project version %s\n' "$INPUT_VERSION" "$ACTUAL_VERSION" >&2
+              exit 1
+            fi
+          else
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "$TAG_VERSION" != "$ACTUAL_VERSION" ]]; then
+              printf 'tag version %s does not match checked-out project version %s\n' "$TAG_VERSION" "$ACTUAL_VERSION" >&2
+              exit 1
+            fi
+          fi
+
+          echo "RELEASE_VERSION=$ACTUAL_VERSION" >> "$GITHUB_ENV"
+
       - name: Install Linux GUI dependencies
         if: runner.os == 'Linux'
         run: |
@@ -57,7 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_VERSION}"
           TARGET="${{ matrix.target }}"
           DIST_DIR="dist"
           PKG_DIR="${DIST_DIR}/tunnelmux-${VERSION}-${TARGET}"
@@ -112,6 +162,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve rehearsal signing overrides
+        id: signing_overrides
+        shell: bash
+        env:
+          REPO_GUI_MACOS_SIGNING_REQUIRED: ${{ vars.GUI_MACOS_SIGNING_REQUIRED }}
+          REPO_GUI_WINDOWS_SIGNING_REQUIRED: ${{ vars.GUI_WINDOWS_SIGNING_REQUIRED }}
+        run: |
+          set -euo pipefail
+          python -c "import json, os, pathlib; payload = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text()); inputs = payload.get('inputs') or {}; repo_macos = os.environ.get('REPO_GUI_MACOS_SIGNING_REQUIRED', ''); repo_windows = os.environ.get('REPO_GUI_WINDOWS_SIGNING_REQUIRED', ''); input_macos = inputs.get('macos_signing_required', ''); input_windows = inputs.get('windows_signing_required', ''); macos = repo_macos if input_macos in ('', 'inherit') else input_macos; windows = repo_windows if input_windows in ('', 'inherit') else input_windows; open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8').write(f'macos_signing_required={macos}\nwindows_signing_required={windows}\n'); open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8').write(f'EFFECTIVE_MACOS_SIGNING_REQUIRED={macos}\nEFFECTIVE_WINDOWS_SIGNING_REQUIRED={windows}\n')"
+
       - name: Install Linux bundle dependencies
         if: runner.os == 'Linux'
         run: |
@@ -138,15 +198,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install Windows signing CLI
-        if: runner.os == 'Windows' && vars.GUI_WINDOWS_SIGNING_REQUIRED == 'true'
+        if: runner.os == 'Windows' && steps.signing_overrides.outputs.windows_signing_required == 'true'
         shell: bash
         run: cargo install trusted-signing-cli --locked
 
       - name: Prepare GUI signing
         shell: bash
         env:
-          GUI_MACOS_SIGNING_REQUIRED: ${{ vars.GUI_MACOS_SIGNING_REQUIRED }}
-          GUI_WINDOWS_SIGNING_REQUIRED: ${{ vars.GUI_WINDOWS_SIGNING_REQUIRED }}
           WINDOWS_TRUSTED_SIGNING_ENDPOINT: ${{ vars.WINDOWS_TRUSTED_SIGNING_ENDPOINT }}
           WINDOWS_TRUSTED_SIGNING_ACCOUNT: ${{ vars.WINDOWS_TRUSTED_SIGNING_ACCOUNT }}
           WINDOWS_TRUSTED_SIGNING_PROFILE: ${{ vars.WINDOWS_TRUSTED_SIGNING_PROFILE }}
@@ -163,9 +221,12 @@ jobs:
           set -euo pipefail
           BUILD_ARGS="--bundles ${{ matrix.bundle }} --target ${{ matrix.target }}"
 
+          macos_required="${EFFECTIVE_MACOS_SIGNING_REQUIRED:-}"
+          windows_required="${EFFECTIVE_WINDOWS_SIGNING_REQUIRED:-}"
+
           case "${{ runner.os }}" in
             macOS)
-              if [[ "${GUI_MACOS_SIGNING_REQUIRED:-}" == "true" ]]; then
+              if [[ "$macos_required" == "true" ]]; then
                 required=(
                   APPLE_CERTIFICATE
                   APPLE_CERTIFICATE_PASSWORD
@@ -197,7 +258,7 @@ jobs:
               fi
               ;;
             Windows)
-              if [[ "${GUI_WINDOWS_SIGNING_REQUIRED:-}" == "true" ]]; then
+              if [[ "$windows_required" == "true" ]]; then
                 required=(
                   AZURE_CLIENT_ID
                   AZURE_CLIENT_SECRET
@@ -310,7 +371,15 @@ jobs:
           cd dist
           sha256sum * > SHA256SUMS
 
+      - name: Upload rehearsal artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-dist
+          path: dist/*
+
       - name: Publish GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
