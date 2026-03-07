@@ -124,6 +124,23 @@ impl LogTailVm {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderStatusVm {
+    pub level: String,
+    pub title: String,
+    pub message: String,
+}
+
+impl ProviderStatusVm {
+    pub fn new(level: &str, title: &str, message: &str) -> Self {
+        Self {
+            level: level.to_string(),
+            title: title.to_string(),
+            message: message.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteFormData {
     pub original_id: Option<String>,
     pub id: String,

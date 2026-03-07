@@ -45,6 +45,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       message: 'Preview mode only.',
     });
     renderRoutes({ routes: [], message: 'Services preview unavailable outside Tauri.' });
+    renderProviderStatusSummary(null);
     renderDiagnosticsOverview('Troubleshooting preview unavailable outside Tauri.', true);
     renderDiagnosticsSummaryMeta('Preview mode only.', true);
     renderUpstreamsMeta('Preview mode only.', true);
@@ -70,6 +71,10 @@ function bindElements() {
   elements.servicesEnabledCount = document.getElementById('services-enabled-count');
   elements.dashboardMessage = document.getElementById('dashboard-message');
   elements.homeProviderHint = document.getElementById('home-provider-hint');
+  elements.providerStatusCard = document.getElementById('provider-status-card');
+  elements.providerStatusTitle = document.getElementById('provider-status-title');
+  elements.providerStatusMessage = document.getElementById('provider-status-message');
+  elements.providerStatusBadge = document.getElementById('provider-status-badge');
 
   elements.startTunnel = document.getElementById('start-tunnel');
   elements.stopTunnel = document.getElementById('stop-tunnel');
@@ -350,6 +355,16 @@ async function ensureLocalDaemonAndRefresh() {
 async function refreshAll() {
   await refreshDashboard();
   await refreshRoutes();
+  await refreshProviderStatusSummary();
+}
+
+async function refreshProviderStatusSummary() {
+  try {
+    const summary = await invoke('load_provider_status_summary');
+    renderProviderStatusSummary(summary);
+  } catch {
+    renderProviderStatusSummary(null);
+  }
 }
 
 function renderDaemonStatus(snapshot) {
@@ -554,6 +569,19 @@ function renderDashboard(snapshot) {
   elements.homePublicUrlMeta.textContent = 'TunnelMux is connected. Start the tunnel to get a public URL.';
   elements.dashboardMessage.textContent = snapshot?.message ?? 'Connected, but not live yet.';
   renderStatus('Dashboard refreshed.');
+}
+
+function renderProviderStatusSummary(summary) {
+  if (!summary) {
+    elements.providerStatusCard.hidden = true;
+    return;
+  }
+
+  elements.providerStatusCard.hidden = false;
+  elements.providerStatusTitle.textContent = summary.title ?? 'Provider Status';
+  elements.providerStatusMessage.textContent = summary.message ?? '';
+  elements.providerStatusBadge.textContent = titleCase(summary.level ?? 'info');
+  elements.providerStatusBadge.className = `status-pill ${escapeClassName(summary.level ?? 'idle')}`;
 }
 
 function renderRoutes(snapshot) {
