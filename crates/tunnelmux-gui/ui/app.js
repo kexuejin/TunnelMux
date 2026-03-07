@@ -16,6 +16,7 @@ const state = {
   editingOriginalId: null,
   settingsDrawerOpen: false,
   serviceDrawerOpen: false,
+  providerStatusAction: null,
   diagnostics: {
     logLines: 100,
     summary: null,
@@ -75,6 +76,7 @@ function bindElements() {
   elements.providerStatusTitle = document.getElementById('provider-status-title');
   elements.providerStatusMessage = document.getElementById('provider-status-message');
   elements.providerStatusBadge = document.getElementById('provider-status-badge');
+  elements.providerStatusAction = document.getElementById('provider-status-action');
 
   elements.startTunnel = document.getElementById('start-tunnel');
   elements.stopTunnel = document.getElementById('stop-tunnel');
@@ -178,6 +180,7 @@ function bindEvents() {
   elements.settingsDefaultProvider?.addEventListener('change', syncProviderHints);
   elements.openCloudflareDashboard?.addEventListener('click', openCloudflareDashboard);
   elements.openCloudflareDocs?.addEventListener('click', openCloudflareDocs);
+  elements.providerStatusAction?.addEventListener('click', handleProviderStatusAction);
 
   elements.refreshDiagnostics?.addEventListener('click', () => withBusy(() => refreshDiagnosticsWorkspace({ manual: true })));
   elements.refreshLogs?.addEventListener('click', () => withBusy(() => refreshRecentLogs({ manual: true })));
@@ -574,6 +577,7 @@ function renderDashboard(snapshot) {
 function renderProviderStatusSummary(summary) {
   if (!summary) {
     elements.providerStatusCard.hidden = true;
+    state.providerStatusAction = null;
     return;
   }
 
@@ -582,6 +586,9 @@ function renderProviderStatusSummary(summary) {
   elements.providerStatusMessage.textContent = summary.message ?? '';
   elements.providerStatusBadge.textContent = titleCase(summary.level ?? 'info');
   elements.providerStatusBadge.className = `status-pill ${escapeClassName(summary.level ?? 'idle')}`;
+  state.providerStatusAction = summary.action_kind ?? null;
+  elements.providerStatusAction.textContent = summary.action_label ?? 'Review';
+  elements.providerStatusAction.hidden = !summary.action_kind;
 }
 
 function renderRoutes(snapshot) {
@@ -910,6 +917,22 @@ function openCloudflareDashboard() {
 
 function openCloudflareDocs() {
   window.open(CLOUDFLARE_TUNNEL_DOCS_URL, '_blank', 'noopener,noreferrer');
+}
+
+function handleProviderStatusAction() {
+  switch (state.providerStatusAction) {
+    case 'open_cloudflare':
+      openCloudflareDashboard();
+      break;
+    case 'open_settings':
+      openSettingsDrawer();
+      break;
+    case 'review_services':
+      elements.servicesShell?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      break;
+    default:
+      break;
+  }
 }
 
 function describeRouteExposure(route) {

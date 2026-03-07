@@ -128,6 +128,8 @@ pub struct ProviderStatusVm {
     pub level: String,
     pub title: String,
     pub message: String,
+    pub action_kind: Option<String>,
+    pub action_label: Option<String>,
 }
 
 impl ProviderStatusVm {
@@ -136,7 +138,15 @@ impl ProviderStatusVm {
             level: level.to_string(),
             title: title.to_string(),
             message: message.to_string(),
+            action_kind: None,
+            action_label: None,
         }
+    }
+
+    pub fn with_action(mut self, action_kind: &str, action_label: &str) -> Self {
+        self.action_kind = Some(action_kind.to_string());
+        self.action_label = Some(action_label.to_string());
+        self
     }
 }
 

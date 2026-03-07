@@ -422,7 +422,8 @@ fn derive_provider_status_summary(
             "warning",
             "Cloudflare Setup",
             "Named tunnel connected. Configure hostname and Access in Cloudflare.",
-        ));
+        )
+        .with_action("open_cloudflare", "Open Cloudflare"));
     }
 
     for line in log_lines.iter().rev() {
@@ -456,7 +457,8 @@ fn classify_provider_log_line(
             "warning",
             "Local Service Unreachable",
             "Tunnel is up, but the local service did not respond. Check the target URL and make sure your app is running.",
-        ));
+        )
+        .with_action("review_services", "Review Services"));
     }
 
     if *provider == TunnelProvider::Ngrok {
@@ -468,7 +470,8 @@ fn classify_provider_log_line(
                 "error",
                 "ngrok Error",
                 &format!("{code}. Check your authtoken, domain, or ngrok account settings."),
-            ));
+            )
+            .with_action("open_settings", "Open Settings"));
         }
     }
 
@@ -1080,6 +1083,8 @@ mod tests {
 
         assert_eq!(summary.level, "warning");
         assert_eq!(summary.title, "Cloudflare Setup");
+        assert_eq!(summary.action_kind.as_deref(), Some("open_cloudflare"));
+        assert_eq!(summary.action_label.as_deref(), Some("Open Cloudflare"));
     }
 
     #[test]
@@ -1109,6 +1114,8 @@ mod tests {
 
         assert_eq!(summary.level, "error");
         assert!(summary.message.contains("ERR_NGROK_4018"));
+        assert_eq!(summary.action_kind.as_deref(), Some("open_settings"));
+        assert_eq!(summary.action_label.as_deref(), Some("Open Settings"));
     }
 
     #[test]
@@ -1135,6 +1142,8 @@ mod tests {
 
         assert_eq!(summary.level, "warning");
         assert_eq!(summary.title, "Local Service Unreachable");
+        assert_eq!(summary.action_kind.as_deref(), Some("review_services"));
+        assert_eq!(summary.action_label.as_deref(), Some("Review Services"));
     }
 
     #[tokio::test]
