@@ -167,7 +167,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 health_check_path,
                 enabled: Some(!disabled),
             };
-            let routes: RoutesResponse = control_client.list_routes().await?;
+            let routes: RoutesResponse = control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
             let existing_route = routes.routes.iter().find(|item| item.id == id).cloned();
             let route_action = infer_expose_route_action(existing_route.as_ref(), &route_payload);
             let mut tunnel: TunnelStatusResponse =
@@ -278,7 +278,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             ignore_missing,
             dry_run,
         } => {
-            let routes: RoutesResponse = control_client.list_routes().await?;
+            let routes: RoutesResponse = control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
             let route_exists = routes.routes.iter().any(|item| item.id == id);
             if !route_exists && !ignore_missing {
                 return Err(anyhow!("route '{}' not found", id));
@@ -302,7 +302,9 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     }))?
                 );
             } else {
-                let remove = control_client.delete_route(&id, ignore_missing).await?;
+                let remove = control_client
+                    .delete_route(&id, PRIMARY_TUNNEL_ID, ignore_missing)
+                    .await?;
                 if tunnel_stopped {
                     tunnel = control_client.stop_tunnel(PRIMARY_TUNNEL_ID).await?;
                 }
@@ -345,7 +347,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 } else if watch {
                     watch_routes(&client, &base_url, token.as_deref(), interval_ms, format).await?;
                 } else {
-                    let routes: RoutesResponse = control_client.list_routes().await?;
+                    let routes: RoutesResponse =
+                        control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
                     println!("{}", format_routes(&routes, format)?);
                 }
             }
@@ -364,6 +367,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     load_route_request_from_file(Path::new(&path))?
                 } else {
                     CreateRouteRequest {
+                        tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
                         id: id.ok_or_else(|| anyhow!("missing --id"))?,
                         match_host: host,
                         match_path_prefix: path_prefix,
@@ -380,13 +384,17 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&route)?);
             }
             RoutesCommand::Remove { id } => {
-                let response: DeleteRouteResponse = control_client.delete_route(&id, false).await?;
+                let response: DeleteRouteResponse = control_client
+                    .delete_route(&id, PRIMARY_TUNNEL_ID, false)
+                    .await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
             RoutesCommand::Match { path, host, table } => {
                 let path = normalize_match_route_path(path)?;
                 let payload: RouteMatchResponse =
-                    control_client.match_route(&path, host.as_deref()).await?;
+                    control_client
+                        .match_route(PRIMARY_TUNNEL_ID, &path, host.as_deref())
+                        .await?;
                 if table {
                     println!("{}", format_route_match_table(&payload));
                 } else {
@@ -394,7 +402,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             RoutesCommand::Export { id, out } => {
-                let routes: RoutesResponse = control_client.list_routes().await?;
+                let routes: RoutesResponse = control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
                 if let Some(id) = id {
                     let route = routes
                         .routes
