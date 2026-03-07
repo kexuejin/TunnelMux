@@ -452,6 +452,15 @@ select {
   padding: 14px 16px;
 }
 
+#settings-advanced {
+  margin-top: 8px;
+}
+
+#settings-advanced summary,
+#troubleshooting-details summary {
+  font-size: 0.92rem;
+}
+
 .advanced-section[open] {
   padding-bottom: 18px;
 }

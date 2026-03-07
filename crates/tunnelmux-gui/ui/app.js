@@ -102,6 +102,7 @@ function bindElements() {
   elements.baseUrl = document.getElementById('settings-base-url');
   elements.token = document.getElementById('settings-token');
   elements.settingsDefaultProvider = document.getElementById('settings-default-provider');
+  elements.settingsAdvanced = document.getElementById('settings-advanced');
   elements.settingsGatewayTargetUrl = document.getElementById('settings-gateway-target-url');
   elements.settingsAutoRestart = document.getElementById('settings-auto-restart');
   elements.settingsNgrokAuthtoken = document.getElementById('settings-ngrok-authtoken');
@@ -252,6 +253,13 @@ function populateSettingsFields(settings) {
   elements.settingsAutoRestart.checked = Boolean(settings.auto_restart);
   elements.settingsNgrokAuthtoken.value = settings.ngrok_authtoken ?? '';
   elements.settingsNgrokDomain.value = settings.ngrok_domain ?? '';
+  const shouldOpenAdvanced =
+    elements.settingsDefaultProvider.value === 'ngrok' ||
+    Boolean(elements.settingsNgrokAuthtoken.value) ||
+    Boolean(elements.settingsNgrokDomain.value);
+  if (elements.settingsAdvanced) {
+    elements.settingsAdvanced.open = shouldOpenAdvanced;
+  }
   syncProviderHints();
 }
 

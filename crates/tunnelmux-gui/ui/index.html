@@ -158,10 +158,6 @@
               <span>Bearer Token</span>
               <input id="settings-token" type="password" placeholder="Optional" />
             </label>
-          </section>
-
-          <section class="drawer-section">
-            <h3>Tunnel</h3>
             <label class="field">
               <span>Default Provider</span>
               <select id="settings-default-provider">
@@ -169,6 +165,10 @@
                 <option value="ngrok">ngrok</option>
               </select>
             </label>
+          </section>
+
+          <details id="settings-advanced" class="advanced-section">
+            <summary>Advanced tunnel settings</summary>
             <label class="field">
               <span>Gateway Target URL</span>
               <input id="settings-gateway-target-url" type="text" placeholder="http://127.0.0.1:18080" />
@@ -185,7 +185,7 @@
               <span>ngrok Reserved Domain</span>
               <input id="settings-ngrok-domain" type="text" placeholder="Optional" />
             </label>
-          </section>
+          </details>
 
           <details id="troubleshooting-details" class="advanced-section">
             <summary>View details</summary>
