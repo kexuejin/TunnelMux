@@ -50,10 +50,14 @@
               <p id="current-tunnel-url" class="panel-subtle" hidden>Public URL not active.</p>
             </div>
             <div class="actions">
-              <label id="tunnel-switcher-shell" class="field tunnel-switcher-shell" hidden>
-                <span>Tunnel</span>
-                <select id="tunnel-switcher"></select>
-              </label>
+              <div id="tunnel-picker-shell" class="tunnel-picker-shell" hidden>
+                <button id="tunnel-picker-trigger" type="button" class="secondary picker-trigger" aria-expanded="false">
+                  Switch Tunnel
+                </button>
+                <div id="tunnel-picker-popover" class="tunnel-picker-popover" hidden>
+                  <div id="tunnel-picker-list" class="tunnel-picker-list"></div>
+                </div>
+              </div>
               <button id="new-tunnel" type="button" class="secondary">New Tunnel</button>
               <button id="edit-tunnel" type="button" class="secondary">Edit Tunnel</button>
             </div>
