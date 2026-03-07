@@ -1,30 +1,30 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="144" y1="112" x2="880" y2="928" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bg" x1="132" y1="108" x2="892" y2="932" gradientUnits="userSpaceOnUse">
       <stop stop-color="#111827"/>
-      <stop offset="1" stop-color="#090D16"/>
+      <stop offset="1" stop-color="#090C14"/>
     </linearGradient>
-    <radialGradient id="halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 324) rotate(90) scale(520)">
-      <stop stop-color="#38BDF8" stop-opacity="0.32"/>
-      <stop offset="0.5" stop-color="#3B82F6" stop-opacity="0.12"/>
-      <stop offset="1" stop-color="#0B1120" stop-opacity="0"/>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 300) rotate(90) scale(560)">
+      <stop stop-color="#38BDF8" stop-opacity="0.28"/>
+      <stop offset="0.55" stop-color="#2563EB" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#0B1220" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="ring" x1="270" y1="238" x2="754" y2="792" gradientUnits="userSpaceOnUse">
+    <linearGradient id="portal" x1="362" y1="292" x2="692" y2="760" gradientUnits="userSpaceOnUse">
       <stop stop-color="#67E8F9"/>
       <stop offset="0.52" stop-color="#3B82F6"/>
-      <stop offset="1" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#2563EB"/>
     </linearGradient>
-    <linearGradient id="mark" x1="360" y1="352" x2="666" y2="712" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#E0F2FE"/>
-      <stop offset="1" stop-color="#C4B5FD"/>
+    <linearGradient id="lane" x1="520" y1="356" x2="520" y2="744" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#BFDBFE"/>
     </linearGradient>
-    <filter id="soft" x="150" y="150" width="724" height="724" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <filter id="soft" x="210" y="178" width="604" height="670" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
       <feFlood flood-opacity="0" result="BackgroundImageFix"/>
       <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
       <feOffset dy="18"/>
-      <feGaussianBlur stdDeviation="22"/>
+      <feGaussianBlur stdDeviation="24"/>
       <feComposite in2="hardAlpha" operator="out"/>
-      <feColorMatrix type="matrix" values="0 0 0 0 0.12549 0 0 0 0 0.290196 0 0 0 0 0.988235 0 0 0 0.24 0"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.145098 0 0 0 0 0.313726 0 0 0 0 0.988235 0 0 0 0.22 0"/>
       <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_0_1"/>
       <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_0_1" result="shape"/>
     </filter>
@@ -34,11 +34,8 @@
   <rect x="64" y="64" width="896" height="896" rx="232" fill="url(#halo)"/>
 
   <g filter="url(#soft)">
-    <rect x="256" y="256" width="512" height="512" rx="150" transform="rotate(45 256 256)" fill="url(#ring)"/>
-    <rect x="328" y="328" width="368" height="368" rx="108" transform="rotate(45 328 328)" fill="#0B1120"/>
-
-    <path d="M372 388L512 528L652 388" stroke="url(#mark)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M512 528V700" stroke="url(#mark)" stroke-width="72" stroke-linecap="round"/>
-    <circle cx="512" cy="528" r="38" fill="#F8FAFC"/>
+    <path d="M352 724V438C352 354 420 286 504 286H520C604 286 672 354 672 438V724" stroke="url(#portal)" stroke-width="92" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M520 438V724" stroke="url(#lane)" stroke-width="74" stroke-linecap="round"/>
+    <path d="M456 382L520 438L584 382" stroke="url(#lane)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 </svg>
