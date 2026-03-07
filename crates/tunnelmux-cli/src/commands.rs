@@ -392,10 +392,9 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             RoutesCommand::Match { path, host, table } => {
                 let path = normalize_match_route_path(path)?;
-                let payload: RouteMatchResponse =
-                    control_client
-                        .match_route(PRIMARY_TUNNEL_ID, &path, host.as_deref())
-                        .await?;
+                let payload: RouteMatchResponse = control_client
+                    .match_route(PRIMARY_TUNNEL_ID, &path, host.as_deref())
+                    .await?;
                 if table {
                     println!("{}", format_route_match_table(&payload));
                 } else {

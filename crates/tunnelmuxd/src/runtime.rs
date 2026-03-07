@@ -845,7 +845,9 @@ pub(super) async fn wait_for_provider_startup(
             Ok(None) => {
                 return if require_public_url {
                     let _ = terminate_child(child).await;
-                    Err(anyhow!("provider log stream closed before URL was discovered"))
+                    Err(anyhow!(
+                        "provider log stream closed before URL was discovered"
+                    ))
                 } else {
                     Ok(discovered_url)
                 };

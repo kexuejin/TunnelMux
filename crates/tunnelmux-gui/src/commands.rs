@@ -353,7 +353,10 @@ pub async fn stop_tunnel_from_settings_dir(
         .current_tunnel()
         .map(|tunnel| tunnel.id.clone())
         .ok_or_else(|| "no tunnel selected".to_string())?;
-    let response = client.stop_tunnel(&tunnel_id).await.map_err(command_error)?;
+    let response = client
+        .stop_tunnel(&tunnel_id)
+        .await
+        .map_err(command_error)?;
 
     Ok(DashboardSnapshot {
         connected: true,
@@ -589,7 +592,11 @@ pub fn save_tunnel_profile_to_settings_dir(
         ngrok_domain: profile.ngrok_domain,
     };
 
-    if let Some(index) = settings.tunnels.iter().position(|item| item.id == tunnel_id) {
+    if let Some(index) = settings
+        .tunnels
+        .iter()
+        .position(|item| item.id == tunnel_id)
+    {
         settings.tunnels[index] = next_profile;
     } else {
         settings.tunnels.push(next_profile);
@@ -673,9 +680,7 @@ fn load_tunnel_workspace_from_settings_dir_without_daemon(
     })
 }
 
-fn next_tunnel_profile_id(
-    profiles: &[crate::settings::TunnelProfileSettings],
-) -> String {
+fn next_tunnel_profile_id(profiles: &[crate::settings::TunnelProfileSettings]) -> String {
     let mut index = 1;
     loop {
         let candidate = format!("tunnel-{index}");
@@ -706,12 +711,14 @@ fn derive_provider_status_summary(
             .and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_ref())
             .is_some()
     {
-        return Some(ProviderStatusVm::new(
-            "warning",
-            "Cloudflare Setup",
-            "Named tunnel connected. Configure hostname and Access in Cloudflare.",
-        )
-        .with_action("open_cloudflare", "Open Cloudflare"));
+        return Some(
+            ProviderStatusVm::new(
+                "warning",
+                "Cloudflare Setup",
+                "Named tunnel connected. Configure hostname and Access in Cloudflare.",
+            )
+            .with_action("open_cloudflare", "Open Cloudflare"),
+        );
     }
 
     for line in log_lines.iter().rev() {
@@ -731,10 +738,7 @@ fn derive_provider_status_summary(
     None
 }
 
-fn classify_provider_log_line(
-    provider: &TunnelProvider,
-    line: &str,
-) -> Option<ProviderStatusVm> {
+fn classify_provider_log_line(provider: &TunnelProvider, line: &str) -> Option<ProviderStatusVm> {
     let lower = line.to_ascii_lowercase();
 
     if lower.contains("unable to reach the origin service")
@@ -754,12 +758,14 @@ fn classify_provider_log_line(
             .split(|value: char| !value.is_ascii_alphanumeric() && value != '_')
             .find(|token| token.starts_with("ERR_NGROK_"))
         {
-            return Some(ProviderStatusVm::new(
-                "error",
-                "ngrok Error",
-                &format!("{code}. Check your authtoken, domain, or ngrok account settings."),
-            )
-            .with_action("open_settings", "Open Settings"));
+            return Some(
+                ProviderStatusVm::new(
+                    "error",
+                    "ngrok Error",
+                    &format!("{code}. Check your authtoken, domain, or ngrok account settings."),
+                )
+                .with_action("open_settings", "Open Settings"),
+            );
         }
     }
 
@@ -809,7 +815,9 @@ fn build_tunnel_metadata(
 
     match provider {
         TunnelProvider::Cloudflared => {
-            if let Some(value) = tunnel.and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_deref()) {
+            if let Some(value) =
+                tunnel.and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_deref())
+            {
                 metadata.insert("cloudflaredTunnelToken".to_string(), value.to_string());
             }
         }
@@ -909,15 +917,13 @@ mod tests {
     async fn start_tunnel_uses_saved_ngrok_tunnel_settings() {
         let temp_dir = prepare_temp_dir();
         let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<TunnelStartRequest>));
-        let base_url = spawn_test_server(
-            Router::new().route(
-                "/v1/tunnel/start",
-                axum::routing::post({
-                    let captured = captured.clone();
-                    move |payload| start_tunnel_handler(captured.clone(), payload)
-                }),
-            ),
-        )
+        let base_url = spawn_test_server(Router::new().route(
+            "/v1/tunnel/start",
+            axum::routing::post({
+                let captured = captured.clone();
+                move |payload| start_tunnel_handler(captured.clone(), payload)
+            }),
+        ))
         .await;
 
         save_settings_to_dir(
@@ -983,15 +989,13 @@ mod tests {
     async fn start_tunnel_uses_saved_cloudflared_tunnel_token() {
         let temp_dir = prepare_temp_dir();
         let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<TunnelStartRequest>));
-        let base_url = spawn_test_server(
-            Router::new().route(
-                "/v1/tunnel/start",
-                axum::routing::post({
-                    let captured = captured.clone();
-                    move |payload| start_tunnel_handler(captured.clone(), payload)
-                }),
-            ),
-        )
+        let base_url = spawn_test_server(Router::new().route(
+            "/v1/tunnel/start",
+            axum::routing::post({
+                let captured = captured.clone();
+                move |payload| start_tunnel_handler(captured.clone(), payload)
+            }),
+        ))
         .await;
 
         save_settings_to_dir(
@@ -1079,7 +1083,10 @@ mod tests {
         let base_url = spawn_test_server(
             Router::new()
                 .route("/v1/health", get(health_handler))
-                .route("/v1/tunnel/status", get(running_named_tunnel_status_handler)),
+                .route(
+                    "/v1/tunnel/status",
+                    get(running_named_tunnel_status_handler),
+                ),
         )
         .await;
         save_settings_to_dir(
@@ -1138,7 +1145,9 @@ mod tests {
         assert!(snapshot.routes.is_empty());
         assert_eq!(
             snapshot.message.as_deref(),
-            Some("No services yet. Add your first local service to replace the default welcome page.")
+            Some(
+                "No services yet. Add your first local service to replace the default welcome page."
+            )
         );
     }
 
@@ -1181,7 +1190,9 @@ mod tests {
                 process_id: None,
                 auto_restart: true,
                 restart_count: 0,
-                last_error: Some("daemon restarted; previous tunnel process was detached".to_string()),
+                last_error: Some(
+                    "daemon restarted; previous tunnel process was detached".to_string(),
+                ),
             },
         })
     }
@@ -1332,10 +1343,7 @@ mod tests {
         assert_eq!(summary.enabled_route_count, 1);
         assert_eq!(summary.tunnel_state, "running");
         assert!(summary.pending_restart);
-        assert_eq!(
-            captured_query.lock().await.as_deref(),
-            Some("tunnel-2")
-        );
+        assert_eq!(captured_query.lock().await.as_deref(), Some("tunnel-2"));
     }
 
     #[tokio::test]
@@ -1379,10 +1387,7 @@ mod tests {
         assert_eq!(upstreams[0].health_label, "healthy");
         assert_eq!(upstreams[1].health_label, "unhealthy");
         assert_eq!(upstreams[2].health_label, "unknown");
-        assert_eq!(
-            captured_query.lock().await.as_deref(),
-            Some("tunnel-2")
-        );
+        assert_eq!(captured_query.lock().await.as_deref(), Some("tunnel-2"));
     }
 
     #[tokio::test]
@@ -1427,10 +1432,7 @@ mod tests {
             log_tail.lines,
             vec!["first log line".to_string(), "second log line".to_string()]
         );
-        assert_eq!(
-            captured_query.lock().await.as_deref(),
-            Some("tunnel-2")
-        );
+        assert_eq!(captured_query.lock().await.as_deref(), Some("tunnel-2"));
     }
 
     #[tokio::test]
@@ -1713,7 +1715,9 @@ mod tests {
                 ..GuiSettings::default()
             },
             Some(&tunnel),
-            &[String::from("t=2026-03-07 lvl=eror msg=\"failed\" err=\"ERR_NGROK_4018\"")],
+            &[String::from(
+                "t=2026-03-07 lvl=eror msg=\"failed\" err=\"ERR_NGROK_4018\"",
+            )],
         )
         .expect("summary should be derived");
 
@@ -1924,7 +1928,9 @@ mod tests {
                 axum::routing::post({
                     let deleted_tunnels = deleted_tunnels.clone();
                     let routes = routes.clone();
-                    move |payload| delete_tunnel_handler(deleted_tunnels.clone(), routes.clone(), payload)
+                    move |payload| {
+                        delete_tunnel_handler(deleted_tunnels.clone(), routes.clone(), payload)
+                    }
                 }),
             )
             .with_state(routes);

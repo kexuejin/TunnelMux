@@ -198,13 +198,13 @@ pub fn daemon_status_snapshot(
         Some(BOOTSTRAPPING_MESSAGE.to_string())
     } else {
         match connection.ownership {
-        DaemonOwnership::Managed => {
-            Some("Connected to a GUI-managed local TunnelMux daemon.".to_string())
-        }
-        DaemonOwnership::External => {
-            Some("Using an existing local TunnelMux daemon.".to_string())
-        }
-        DaemonOwnership::Unavailable => connection.last_error.clone(),
+            DaemonOwnership::Managed => {
+                Some("Connected to a GUI-managed local TunnelMux daemon.".to_string())
+            }
+            DaemonOwnership::External => {
+                Some("Using an existing local TunnelMux daemon.".to_string())
+            }
+            DaemonOwnership::Unavailable => connection.last_error.clone(),
         }
     };
 
@@ -350,19 +350,19 @@ pub async fn ensure_local_daemon<R: Runtime>(
 
     let bundled_binary = resolve_bundled_daemon_binary(app);
     let path_binary = find_binary_on_path("tunnelmuxd");
-    let resolved = match resolve_daemon_binary_paths(bundled_binary.as_deref(), path_binary.as_deref())
-    {
-        Ok(binary) => binary,
-        Err(error) => {
-            let mut runtime = runtime_state
-                .lock()
-                .expect("daemon runtime state should lock");
-            runtime.managed = None;
-            runtime.connection = mark_unavailable_daemon(Some(error.to_string()));
-            runtime.bootstrapping = false;
-            return Err(error);
-        }
-    };
+    let resolved =
+        match resolve_daemon_binary_paths(bundled_binary.as_deref(), path_binary.as_deref()) {
+            Ok(binary) => binary,
+            Err(error) => {
+                let mut runtime = runtime_state
+                    .lock()
+                    .expect("daemon runtime state should lock");
+                runtime.managed = None;
+                runtime.connection = mark_unavailable_daemon(Some(error.to_string()));
+                runtime.bootstrapping = false;
+                return Err(error);
+            }
+        };
     let mut managed = match spawn_managed_daemon(&resolved, settings) {
         Ok(process) => process,
         Err(error) => {
@@ -433,7 +433,12 @@ pub fn resolve_bundled_daemon_binary<R: Runtime>(app: &AppHandle<R>) -> Option<P
 pub fn find_binary_on_path(binary_name: &str) -> Option<PathBuf> {
     let path_var = env::var_os("PATH")?;
     env::split_paths(&path_var)
-        .flat_map(|path| [path.join(binary_name), path.join(format!("{binary_name}.exe"))])
+        .flat_map(|path| {
+            [
+                path.join(binary_name),
+                path.join(format!("{binary_name}.exe")),
+            ]
+        })
         .find(|candidate| candidate.exists())
 }
 
@@ -447,7 +452,12 @@ fn resolve_binary_in_dirs(
 ) -> Option<PathBuf> {
     search_dirs
         .into_iter()
-        .flat_map(|path| [path.join(binary_name), path.join(format!("{binary_name}.exe"))])
+        .flat_map(|path| {
+            [
+                path.join(binary_name),
+                path.join(format!("{binary_name}.exe")),
+            ]
+        })
         .find(|candidate| candidate.exists())
 }
 
@@ -698,10 +708,14 @@ mod tests {
             .map(|value| value.to_string_lossy().to_string())
             .collect();
 
-        assert!(args.windows(2).any(|items| {
-            items == ["--cloudflared-bin", "/opt/homebrew/bin/cloudflared"]
-        }));
-        assert!(args.windows(2).any(|items| items == ["--ngrok-bin", "/opt/homebrew/bin/ngrok"]));
+        assert!(
+            args.windows(2)
+                .any(|items| { items == ["--cloudflared-bin", "/opt/homebrew/bin/cloudflared"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|items| items == ["--ngrok-bin", "/opt/homebrew/bin/ngrok"])
+        );
     }
 
     #[test]
@@ -782,8 +796,8 @@ mod tests {
             },
         });
 
-        let connection =
-            sync_connected_daemon_state(&mut managed).expect("connected daemon state should update");
+        let connection = sync_connected_daemon_state(&mut managed)
+            .expect("connected daemon state should update");
 
         assert_eq!(connection.ownership, DaemonOwnership::Managed);
         assert_eq!(connection.managed_pid, Some(4242));

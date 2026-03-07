@@ -182,7 +182,10 @@ pub(super) async fn reload_settings(
             .map_err(|err| ApiError::internal(format!("failed to reload config file: {err}")))?;
         let (route_count, tunnel_state) = {
             let runtime = state.runtime.lock().await;
-            (runtime.persisted.routes.len(), runtime.persisted.current_tunnel_status().state)
+            (
+                runtime.persisted.routes.len(),
+                runtime.persisted.current_tunnel_status().state,
+            )
         };
         return Ok(Json(ReloadSettingsResponse {
             reloaded: true,
@@ -208,7 +211,10 @@ pub(super) async fn reload_settings(
         let mut runtime = state.runtime.lock().await;
         runtime.persisted.routes = reloaded.routes;
         runtime.persisted.health_check = Some(updated_health_check.clone());
-        (runtime.persisted.routes.len(), runtime.persisted.current_tunnel_status().state)
+        (
+            runtime.persisted.routes.len(),
+            runtime.persisted.current_tunnel_status().state,
+        )
     };
 
     Ok(Json(ReloadSettingsResponse {
@@ -253,7 +259,9 @@ pub(super) async fn stream_tunnel_logs(
         let mut last_offset = 0usize;
         if let Ok(source) = fs::read_to_string(&log_file).await {
             last_offset = source.len();
-            for line in filter_log_lines_for_tunnel(tail_lines(&source, lines), tunnel_id.as_deref()) {
+            for line in
+                filter_log_lines_for_tunnel(tail_lines(&source, lines), tunnel_id.as_deref())
+            {
                 if tx
                     .send(Ok(Event::default().event("line").data(line)))
                     .await
@@ -423,7 +431,9 @@ pub(super) async fn stop_tunnel(
             .tunnel_status(&request.tunnel_id)
             .cloned()
             .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle));
-        let tunnel = runtime.persisted.ensure_tunnel_status_mut(&request.tunnel_id);
+        let tunnel = runtime
+            .persisted
+            .ensure_tunnel_status_mut(&request.tunnel_id);
         *tunnel = default_tunnel_status(TunnelState::Stopped);
         tunnel.provider = previous.provider;
         tunnel.target_url = previous.target_url;
@@ -977,7 +987,10 @@ pub(super) async fn build_tunnel_workspace_snapshot(
                     .tunnel_status(&tunnel_id)
                     .cloned()
                     .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle));
-                let route_count = routes.iter().filter(|route| route.tunnel_id == tunnel_id).count();
+                let route_count = routes
+                    .iter()
+                    .filter(|route| route.tunnel_id == tunnel_id)
+                    .count();
                 let enabled_route_count = routes
                     .iter()
                     .filter(|route| route.tunnel_id == tunnel_id && route.enabled)

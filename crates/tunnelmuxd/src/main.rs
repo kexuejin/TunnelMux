@@ -209,7 +209,11 @@ impl PersistedState {
     }
 
     fn ensure_tunnel_status_mut(&mut self, tunnel_id: &str) -> &mut TunnelStatus {
-        if let Some(index) = self.tunnels.iter().position(|tunnel| tunnel.id == tunnel_id) {
+        if let Some(index) = self
+            .tunnels
+            .iter()
+            .position(|tunnel| tunnel.id == tunnel_id)
+        {
             return &mut self.tunnels[index].status;
         }
 
@@ -549,10 +553,9 @@ async fn ensure_tunnel_gateway_listener(
                 return Ok(listen_addr);
             }
         }
-        if bindings
-            .iter()
-            .any(|(other_tunnel_id, binding)| other_tunnel_id != tunnel_id && binding.listen_addr == listen_addr)
-        {
+        if bindings.iter().any(|(other_tunnel_id, binding)| {
+            other_tunnel_id != tunnel_id && binding.listen_addr == listen_addr
+        }) {
             return Err(anyhow!(
                 "gateway address {} is already in use by another tunnel",
                 listen_addr
@@ -599,23 +602,27 @@ async fn release_tunnel_gateway_listener(state: &Arc<AppState>, tunnel_id: &str)
 fn gateway_socket_addr_from_target_url(target_url: &str) -> anyhow::Result<SocketAddr> {
     let parsed = Url::parse(target_url.trim())
         .with_context(|| format!("invalid gateway target URL: {}", target_url.trim()))?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| anyhow!("gateway target URL is missing a host: {}", target_url.trim()))?;
-    let port = parsed
-        .port_or_known_default()
-        .ok_or_else(|| anyhow!("gateway target URL is missing a port: {}", target_url.trim()))?;
+    let host = parsed.host_str().ok_or_else(|| {
+        anyhow!(
+            "gateway target URL is missing a host: {}",
+            target_url.trim()
+        )
+    })?;
+    let port = parsed.port_or_known_default().ok_or_else(|| {
+        anyhow!(
+            "gateway target URL is missing a port: {}",
+            target_url.trim()
+        )
+    })?;
     let candidate = format!("{host}:{port}");
-    candidate
-        .parse::<SocketAddr>()
-        .or_else(|_| {
-            use std::net::ToSocketAddrs;
-            candidate
-                .to_socket_addrs()
-                .with_context(|| format!("failed to resolve gateway target URL: {candidate}"))?
-                .next()
-                .ok_or_else(|| anyhow!("gateway target URL resolved to no addresses: {candidate}"))
-        })
+    candidate.parse::<SocketAddr>().or_else(|_| {
+        use std::net::ToSocketAddrs;
+        candidate
+            .to_socket_addrs()
+            .with_context(|| format!("failed to resolve gateway target URL: {candidate}"))?
+            .next()
+            .ok_or_else(|| anyhow!("gateway target URL resolved to no addresses: {candidate}"))
+    })
 }
 
 fn normalize_route_request(request: CreateRouteRequest) -> Result<RouteRule, ApiError> {
@@ -719,8 +726,7 @@ fn ensure_unique_route_ids(routes: &[RouteRule]) -> Result<(), ApiError> {
         if !ids.insert((route.tunnel_id.as_str(), route.id.as_str())) {
             return Err(ApiError::bad_request(format!(
                 "duplicate route id in payload: {} ({})",
-                route.id,
-                route.tunnel_id
+                route.id, route.tunnel_id
             )));
         }
     }
@@ -2595,8 +2601,22 @@ mod tests {
     async fn tunnel_status_endpoint_returns_requested_tunnel_status() {
         let state = test_state_with_routes(
             vec![
-                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
-                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+                route_for_tunnel(
+                    "primary",
+                    "svc-a",
+                    Some("demo.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
+                route_for_tunnel(
+                    "tunnel-2",
+                    "svc-b",
+                    Some("api.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
             ],
             None,
         );
@@ -2685,7 +2705,10 @@ mod tests {
         assert_eq!(workspace.tunnels[0].id, "primary");
         assert_eq!(workspace.tunnels[0].route_count, 1);
         assert_eq!(workspace.tunnels[0].enabled_route_count, 1);
-        assert_eq!(workspace.tunnels[0].provider, Some(TunnelProvider::Cloudflared));
+        assert_eq!(
+            workspace.tunnels[0].provider,
+            Some(TunnelProvider::Cloudflared)
+        );
 
         server_task.abort();
     }
@@ -2694,9 +2717,30 @@ mod tests {
     async fn tunnel_workspace_endpoint_returns_all_tunnels() {
         let state = test_state_with_routes(
             vec![
-                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
-                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
-                route_for_tunnel("tunnel-2", "svc-c", Some("api.local"), Some("/admin"), None, false),
+                route_for_tunnel(
+                    "primary",
+                    "svc-a",
+                    Some("demo.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
+                route_for_tunnel(
+                    "tunnel-2",
+                    "svc-b",
+                    Some("api.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
+                route_for_tunnel(
+                    "tunnel-2",
+                    "svc-c",
+                    Some("api.local"),
+                    Some("/admin"),
+                    None,
+                    false,
+                ),
             ],
             None,
         );
@@ -2749,8 +2793,22 @@ mod tests {
     async fn stop_tunnel_endpoint_does_not_stop_other_tunnels() {
         let state = test_state_with_routes(
             vec![
-                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
-                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+                route_for_tunnel(
+                    "primary",
+                    "svc-a",
+                    Some("demo.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
+                route_for_tunnel(
+                    "tunnel-2",
+                    "svc-b",
+                    Some("api.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
             ],
             None,
         );
@@ -2845,16 +2903,32 @@ mod tests {
     async fn delete_tunnel_endpoint_removes_tunnel_state_routes_and_binding() {
         let state = test_state_with_routes(
             vec![
-                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
-                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+                route_for_tunnel(
+                    "primary",
+                    "svc-a",
+                    Some("demo.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
+                route_for_tunnel(
+                    "tunnel-2",
+                    "svc-b",
+                    Some("api.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
             ],
             None,
         );
         {
             let mut runtime = state.runtime.lock().await;
             runtime.persisted.current_tunnel_id = Some("tunnel-2".to_string());
-            *runtime.persisted.ensure_tunnel_status_mut("primary") = default_tunnel_status(TunnelState::Running);
-            *runtime.persisted.ensure_tunnel_status_mut("tunnel-2") = default_tunnel_status(TunnelState::Stopped);
+            *runtime.persisted.ensure_tunnel_status_mut("primary") =
+                default_tunnel_status(TunnelState::Running);
+            *runtime.persisted.ensure_tunnel_status_mut("tunnel-2") =
+                default_tunnel_status(TunnelState::Stopped);
         }
         let tunnel_2_target = "http://127.0.0.1:58992".to_string();
         let tunnel_2_listen = ensure_tunnel_gateway_listener(&state, "tunnel-2", &tunnel_2_target)
@@ -2904,11 +2978,13 @@ mod tests {
         {
             let runtime = state.runtime.lock().await;
             assert!(runtime.persisted.tunnel_status("tunnel-2").is_none());
-            assert!(runtime
-                .persisted
-                .routes
-                .iter()
-                .all(|route| route.tunnel_id != "tunnel-2"));
+            assert!(
+                runtime
+                    .persisted
+                    .routes
+                    .iter()
+                    .all(|route| route.tunnel_id != "tunnel-2")
+            );
         }
         {
             let bindings = state.gateway_bindings.lock().await;
@@ -2973,8 +3049,22 @@ mod tests {
     async fn dashboard_stream_endpoint_filters_by_tunnel_id() {
         let state = test_state_with_routes(
             vec![
-                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
-                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+                route_for_tunnel(
+                    "primary",
+                    "svc-a",
+                    Some("demo.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
+                route_for_tunnel(
+                    "tunnel-2",
+                    "svc-b",
+                    Some("api.local"),
+                    Some("/"),
+                    None,
+                    true,
+                ),
             ],
             None,
         );
@@ -3353,16 +3443,19 @@ mod tests {
             let mut runtime = state.runtime.lock().await;
             *runtime.persisted.ensure_tunnel_status_mut("primary") =
                 default_tunnel_status(TunnelState::Running);
-            runtime.pending_restarts.insert("primary".to_string(), PendingRestart {
-                provider: TunnelProvider::Cloudflared,
-                target_url: DEFAULT_GATEWAY_TARGET_URL.to_string(),
-                metadata: None,
-                auto_restart: true,
-                restart_count: 2,
-                started_at: "2026-03-05T00:00:00Z".to_string(),
-                next_attempt_at: Instant::now() + Duration::from_secs(5),
-                reason: "provider exited".to_string(),
-            });
+            runtime.pending_restarts.insert(
+                "primary".to_string(),
+                PendingRestart {
+                    provider: TunnelProvider::Cloudflared,
+                    target_url: DEFAULT_GATEWAY_TARGET_URL.to_string(),
+                    metadata: None,
+                    auto_restart: true,
+                    restart_count: 2,
+                    started_at: "2026-03-05T00:00:00Z".to_string(),
+                    next_attempt_at: Instant::now() + Duration::from_secs(5),
+                    reason: "provider exited".to_string(),
+                },
+            );
         }
 
         let (base_url, server_task) = spawn_control_test_server(state).await;
