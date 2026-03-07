@@ -1,4 +1,5 @@
 import {
+  classifyRoutesPanel,
   formatCurrentTunnelMeta,
   formatCurrentTunnelUrl,
   formatTunnelOptionLabel,
@@ -134,6 +135,7 @@ function bindElements() {
   elements.manageProvider = document.getElementById('manage-provider');
 
   elements.routesMessage = document.getElementById('routes-message');
+  elements.servicesNotice = document.getElementById('services-notice');
   elements.routesEmpty = document.getElementById('routes-empty');
   elements.routesEmptyTitle = document.getElementById('routes-empty-title');
   elements.routesEmptyCopy = document.getElementById('routes-empty-copy');
@@ -862,7 +864,7 @@ function renderDashboard(snapshot) {
 
   const dashboardStatus = resolveDashboardStatus(snapshot);
   if (!connected) {
-    elements.homePublicUrlMeta.textContent = 'TunnelMux is not ready yet. Retry or open Settings.';
+    elements.homePublicUrlMeta.textContent = 'TunnelMux is not ready yet. Open Settings or view error details.';
     elements.dashboardMessage.textContent = snapshot?.message ?? 'Unable to reach the local daemon.';
     if (dashboardStatus) {
       renderStatus(dashboardStatus.message, dashboardStatus.isError);
@@ -914,24 +916,36 @@ function renderProviderStatusSummary(summary) {
 }
 
 function renderRoutes(snapshot) {
-  state.routeCache = snapshot?.routes ?? [];
+  const nextRoutes = Array.isArray(snapshot?.routes) ? snapshot.routes : [];
+  const viewState = classifyRoutesPanel(snapshot, state.routeCache.length);
+  if (viewState.mode !== 'stale') {
+    state.routeCache = nextRoutes;
+  }
+
   elements.routesMessage.textContent = state.routeCache.length
     ? 'Services exposed through your current tunnel.'
     : 'Add a local service to route traffic somewhere useful.';
   elements.routesList.innerHTML = '';
 
-  const configured = state.routeCache.length;
   const enabled = state.routeCache.filter((route) => route.enabled).length;
   elements.servicesEnabledCount.textContent = `${enabled} enabled`;
   elements.newRoute.hidden = false;
+  elements.servicesNotice.hidden = !viewState.notice;
+  if (viewState.notice) {
+    elements.servicesNotice.textContent = viewState.notice;
+  }
+
+  if (viewState.mode === 'error') {
+    elements.routesEmpty.hidden = true;
+    elements.dashboardMessage.hidden = true;
+    return;
+  }
 
   if (!state.routeCache.length) {
-    const isLoadError = typeof snapshot?.message === 'string' && snapshot.message.startsWith('Failed to load services:');
-    elements.routesEmptyTitle.textContent = isLoadError ? 'Could not load services.' : 'No services yet.';
-    elements.routesEmptyCopy.textContent = isLoadError
-      ? snapshot.message
-      : (snapshot?.message ?? 'Add your first local service to replace the default welcome page.');
-    elements.routesEmptyCopy.classList.toggle('error', isLoadError);
+    elements.routesEmptyTitle.textContent = 'No services yet.';
+    elements.routesEmptyCopy.textContent =
+      snapshot?.message ?? 'Add one local URL to replace the default welcome page.';
+    elements.routesEmptyCopy.classList.remove('error');
     elements.routesEmpty.hidden = false;
     elements.dashboardMessage.hidden = true;
     return;

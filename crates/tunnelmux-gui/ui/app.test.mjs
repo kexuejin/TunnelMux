@@ -5,6 +5,7 @@ import {
   formatCurrentTunnelMeta,
   formatCurrentTunnelUrl,
   formatTunnelOptionLabel,
+  classifyRoutesPanel,
   resolveDashboardStatus,
   shouldShowErrorDetailsAction,
   summarizeStatusMessage,
@@ -93,4 +94,21 @@ test('summarizeStatusMessage compresses protocol mismatch errors', () => {
   );
 
   assert.equal(text, 'Daemon response format mismatch. Restart the latest tunnelmuxd.');
+});
+
+test('classifyRoutesPanel distinguishes empty from request failure', () => {
+  assert.deepEqual(
+    classifyRoutesPanel({ routes: [], message: 'No services yet.' }, 0),
+    { mode: 'empty', notice: '' },
+  );
+
+  assert.deepEqual(
+    classifyRoutesPanel({ routes: [], message: 'Failed to load services: request failed' }, 0),
+    { mode: 'error', notice: 'Could not load services right now.' },
+  );
+
+  assert.deepEqual(
+    classifyRoutesPanel({ routes: [], message: 'Failed to load services: request failed' }, 2),
+    { mode: 'stale', notice: 'Could not refresh services. Showing the last known list.' },
+  );
 });

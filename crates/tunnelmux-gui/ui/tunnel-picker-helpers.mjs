@@ -73,3 +73,30 @@ export function summarizeStatusMessage(message, isError) {
 
   return text;
 }
+
+export function classifyRoutesPanel(snapshot, previousRoutesCount = 0) {
+  const message = typeof snapshot?.message === 'string' ? snapshot.message : '';
+  const routes = Array.isArray(snapshot?.routes) ? snapshot.routes : [];
+  const isLoadError = message.startsWith('Failed to load services:');
+
+  if (isLoadError) {
+    return {
+      mode: previousRoutesCount > 0 ? 'stale' : 'error',
+      notice: previousRoutesCount > 0
+        ? 'Could not refresh services. Showing the last known list.'
+        : 'Could not load services right now.',
+    };
+  }
+
+  if (routes.length === 0) {
+    return {
+      mode: 'empty',
+      notice: '',
+    };
+  }
+
+  return {
+    mode: 'list',
+    notice: '',
+  };
+}

@@ -525,6 +525,14 @@ select {
   gap: 18px;
 }
 
+.services-notice {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(248, 113, 113, 0.16);
+  background: rgba(127, 29, 29, 0.08);
+  color: #fca5a5;
+}
+
 .service-list,
 .diagnostics-list {
   display: grid;
