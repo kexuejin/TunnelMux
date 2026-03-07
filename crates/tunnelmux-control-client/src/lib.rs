@@ -54,8 +54,15 @@ impl TunnelmuxControlClient {
         self.get("/v1/health").await
     }
 
-    pub async fn tunnel_status(&self) -> anyhow::Result<TunnelStatusResponse> {
-        self.get("/v1/tunnel/status").await
+    pub async fn tunnel_status(&self, tunnel_id: &str) -> anyhow::Result<TunnelStatusResponse> {
+        let url = self.url("/v1/tunnel/status");
+        let response = self
+            .request_with_token(self.client.get(&url))
+            .query(&[("tunnel_id", tunnel_id)])
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
     }
 
     pub async fn start_tunnel(
@@ -65,8 +72,14 @@ impl TunnelmuxControlClient {
         self.post("/v1/tunnel/start", payload).await
     }
 
-    pub async fn stop_tunnel(&self) -> anyhow::Result<TunnelStatusResponse> {
-        self.post("/v1/tunnel/stop", &serde_json::json!({})).await
+    pub async fn stop_tunnel(&self, tunnel_id: &str) -> anyhow::Result<TunnelStatusResponse> {
+        self.post(
+            "/v1/tunnel/stop",
+            &tunnelmux_core::TunnelStopRequest {
+                tunnel_id: tunnel_id.to_string(),
+            },
+        )
+        .await
     }
 
     pub async fn diagnostics(&self) -> anyhow::Result<DiagnosticsResponse> {
@@ -322,7 +335,7 @@ mod tests {
         ));
 
         let response = client
-            .tunnel_status()
+            .tunnel_status("primary")
             .await
             .expect("status request should succeed");
 
@@ -401,6 +414,7 @@ mod tests {
 
         let err = client
             .create_route(&CreateRouteRequest {
+                tunnel_id: "primary".to_string(),
                 id: "app-web".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/".to_string()),
@@ -431,6 +445,7 @@ mod tests {
         );
 
         Json(TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: tunnelmux_core::TunnelStatus {
                 state: TunnelState::Running,
                 provider: Some(TunnelProvider::Cloudflared),

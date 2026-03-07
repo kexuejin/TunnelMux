@@ -1,5 +1,7 @@
 use super::*;
 
+const PRIMARY_TUNNEL_ID: &str = "primary";
+
 pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
     let control_client = build_control_client(&cli);
     let base_url = control_client.base_url().to_string();
@@ -28,7 +30,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 watch_status(&client, &base_url, token.as_deref(), interval_ms).await?;
             } else {
                 let health: HealthResponse = control_client.health().await?;
-                let tunnel: TunnelStatusResponse = control_client.tunnel_status().await?;
+                let tunnel: TunnelStatusResponse =
+                    control_client.tunnel_status(PRIMARY_TUNNEL_ID).await?;
                 println!("{}", format_status_output(&health, &tunnel)?);
             }
         }
@@ -91,6 +94,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 auto_restart,
             } => {
                 let payload = TunnelStartRequest {
+                    tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
                     provider: provider.into(),
                     target_url,
                     auto_restart: Some(auto_restart),
@@ -129,7 +133,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             TunnelCommand::Stop => {
-                let status: TunnelStatusResponse = control_client.stop_tunnel().await?;
+                let status: TunnelStatusResponse =
+                    control_client.stop_tunnel(PRIMARY_TUNNEL_ID).await?;
                 println!("{}", serde_json::to_string_pretty(&status)?);
             }
         },
@@ -165,7 +170,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             let routes: RoutesResponse = control_client.list_routes().await?;
             let existing_route = routes.routes.iter().find(|item| item.id == id).cloned();
             let route_action = infer_expose_route_action(existing_route.as_ref(), &route_payload);
-            let mut tunnel: TunnelStatusResponse = control_client.tunnel_status().await?;
+            let mut tunnel: TunnelStatusResponse =
+                control_client.tunnel_status(PRIMARY_TUNNEL_ID).await?;
             let tunnel_action = resolve_expose_tunnel_action(
                 &tunnel,
                 &provider,
@@ -215,6 +221,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     ExposeTunnelAction::Noop => {}
                     ExposeTunnelAction::Start => {
                         let start_request = TunnelStartRequest {
+                            tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
                             provider: provider.clone(),
                             target_url: target_url.clone(),
                             auto_restart: Some(auto_restart),
@@ -224,8 +231,10 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         tunnel_started = true;
                     }
                     ExposeTunnelAction::Restart => {
-                        let _stopped: TunnelStatusResponse = control_client.stop_tunnel().await?;
+                        let _stopped: TunnelStatusResponse =
+                            control_client.stop_tunnel(PRIMARY_TUNNEL_ID).await?;
                         let start_request = TunnelStartRequest {
+                            tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
                             provider: provider.clone(),
                             target_url: target_url.clone(),
                             auto_restart: Some(auto_restart),
@@ -274,7 +283,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             if !route_exists && !ignore_missing {
                 return Err(anyhow!("route '{}' not found", id));
             }
-            let mut tunnel: TunnelStatusResponse = control_client.tunnel_status().await?;
+            let mut tunnel: TunnelStatusResponse =
+                control_client.tunnel_status(PRIMARY_TUNNEL_ID).await?;
             let remaining_routes =
                 project_remaining_routes_after_unexpose(routes.routes.len(), route_exists);
             let tunnel_stopped =
@@ -294,7 +304,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             } else {
                 let remove = control_client.delete_route(&id, ignore_missing).await?;
                 if tunnel_stopped {
-                    tunnel = control_client.stop_tunnel().await?;
+                    tunnel = control_client.stop_tunnel(PRIMARY_TUNNEL_ID).await?;
                 }
                 println!(
                     "{}",
