@@ -160,18 +160,6 @@ function bindElements() {
   elements.closeSettings = document.getElementById('close-settings');
   elements.baseUrl = document.getElementById('settings-base-url');
   elements.token = document.getElementById('settings-token');
-  elements.settingsDefaultProvider = document.getElementById('settings-default-provider');
-  elements.settingsAdvanced = document.getElementById('settings-advanced');
-  elements.settingsGatewayTargetUrl = document.getElementById('settings-gateway-target-url');
-  elements.settingsAutoRestart = document.getElementById('settings-auto-restart');
-  elements.settingsCloudflaredFields = document.getElementById('settings-cloudflared-fields');
-  elements.settingsCloudflaredTunnelToken = document.getElementById('settings-cloudflared-tunnel-token');
-  elements.settingsCloudflaredNote = document.getElementById('settings-cloudflared-note');
-  elements.openCloudflareDashboard = document.getElementById('open-cloudflare-dashboard');
-  elements.openCloudflareDocs = document.getElementById('open-cloudflare-docs');
-  elements.settingsNgrokFields = document.getElementById('settings-ngrok-fields');
-  elements.settingsNgrokAuthtoken = document.getElementById('settings-ngrok-authtoken');
-  elements.settingsNgrokDomain = document.getElementById('settings-ngrok-domain');
   elements.saveSettings = document.getElementById('save-settings');
 
   elements.troubleshootingDetails = document.getElementById('troubleshooting-details');
@@ -231,9 +219,6 @@ function bindEvents() {
   elements.serviceExposureMode?.addEventListener('change', applyExposureMode);
 
   elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
-  elements.settingsDefaultProvider?.addEventListener('change', syncProviderHints);
-  elements.openCloudflareDashboard?.addEventListener('click', openCloudflareDashboard);
-  elements.openCloudflareDocs?.addEventListener('click', openCloudflareDocs);
   elements.providerStatusAction?.addEventListener('click', handleProviderStatusAction);
 
   elements.refreshDiagnostics?.addEventListener('click', () => withBusy(() => refreshDiagnosticsWorkspace({ manual: true })));

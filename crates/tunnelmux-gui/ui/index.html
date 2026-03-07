@@ -242,9 +242,9 @@
       <aside id="settings-drawer" class="drawer settings-drawer" hidden aria-label="Settings">
         <div class="drawer-header">
           <div>
-            <p class="eyebrow">Settings</p>
-            <h2>Settings</h2>
-            <p class="panel-subtle">Only open this when you need to change connection or tunnel defaults.</p>
+            <p class="eyebrow">App Settings</p>
+            <h2>App Settings</h2>
+            <p class="panel-subtle">Only open this when you need to change how the desktop app connects to the local daemon.</p>
           </div>
           <button id="close-settings" type="button" class="secondary">Close</button>
         </div>
@@ -260,49 +260,7 @@
               <span>Bearer Token</span>
               <input id="settings-token" type="password" placeholder="Optional" />
             </label>
-            <label class="field">
-              <span>Default Provider</span>
-              <select id="settings-default-provider">
-                <option value="cloudflared">cloudflared</option>
-                <option value="ngrok">ngrok</option>
-              </select>
-            </label>
           </section>
-
-          <details id="settings-advanced" class="advanced-section">
-            <summary>Advanced tunnel settings</summary>
-            <label class="field">
-              <span>Gateway Target URL</span>
-              <input id="settings-gateway-target-url" type="text" placeholder="http://127.0.0.1:48080" />
-            </label>
-            <label class="checkbox-row">
-              <input id="settings-auto-restart" type="checkbox" checked />
-              <span>Auto restart tunnel</span>
-            </label>
-            <div id="settings-cloudflared-fields">
-              <label class="field">
-                <span>Cloudflare Tunnel Token</span>
-                <input id="settings-cloudflared-tunnel-token" type="password" placeholder="Optional" />
-              </label>
-              <p id="settings-cloudflared-note" class="panel-subtle">
-                Leave this empty for a quick tunnel. Add a tunnel token to run a stable named tunnel. Hostname and Access are still managed in Cloudflare.
-              </p>
-              <div class="actions compact-actions provider-actions">
-                <button id="open-cloudflare-dashboard" type="button" class="secondary">Cloudflare Dashboard</button>
-                <button id="open-cloudflare-docs" type="button" class="secondary">Tunnel Docs</button>
-              </div>
-            </div>
-            <div id="settings-ngrok-fields" hidden>
-              <label class="field">
-                <span>ngrok Authtoken</span>
-                <input id="settings-ngrok-authtoken" type="password" placeholder="Optional" />
-              </label>
-              <label class="field">
-                <span>ngrok Reserved Domain</span>
-                <input id="settings-ngrok-domain" type="text" placeholder="Optional" />
-              </label>
-            </div>
-          </details>
         </div>
 
         <div class="drawer-footer">
