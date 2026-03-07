@@ -82,14 +82,26 @@ impl TunnelmuxControlClient {
         .await
     }
 
-    pub async fn diagnostics(&self) -> anyhow::Result<DiagnosticsResponse> {
-        self.get("/v1/diagnostics").await
+    pub async fn diagnostics(&self, tunnel_id: &str) -> anyhow::Result<DiagnosticsResponse> {
+        let url = self.url("/v1/diagnostics");
+        let response = self
+            .request_with_token(self.client.get(&url))
+            .query(&[("tunnel_id", tunnel_id)])
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
     }
 
-    pub async fn tunnel_logs(&self, lines: usize) -> anyhow::Result<TunnelLogsResponse> {
+    pub async fn tunnel_logs(
+        &self,
+        tunnel_id: &str,
+        lines: usize,
+    ) -> anyhow::Result<TunnelLogsResponse> {
         let url = self.url("/v1/tunnel/logs");
         let response = self
             .request_with_token(self.client.get(&url))
+            .query(&[("tunnel_id", tunnel_id)])
             .query(&[("lines", lines)])
             .send()
             .await
@@ -331,6 +343,7 @@ mod tests {
     struct TestState {
         auth_headers: Mutex<Vec<Option<String>>>,
         log_line_queries: Mutex<Vec<Option<String>>>,
+        tunnel_queries: Mutex<Vec<Option<String>>>,
     }
 
     #[tokio::test]
@@ -377,7 +390,7 @@ mod tests {
         ));
 
         let response = client
-            .tunnel_logs(50)
+            .tunnel_logs("primary", 50)
             .await
             .expect("logs request should succeed");
 
@@ -398,6 +411,10 @@ mod tests {
 
         let log_line_queries = state.log_line_queries.lock().await;
         assert_eq!(log_line_queries.as_slice(), &[Some("50".to_string())]);
+        drop(log_line_queries);
+
+        let tunnel_queries = state.tunnel_queries.lock().await;
+        assert_eq!(tunnel_queries.as_slice(), &[Some("primary".to_string())]);
     }
 
     #[tokio::test]
@@ -407,7 +424,7 @@ mod tests {
         let client = TunnelmuxControlClient::new(ControlClientConfig::new(base_url, None));
 
         let err = client
-            .tunnel_logs(100)
+            .tunnel_logs("primary", 100)
             .await
             .expect_err("logs request should fail");
 
@@ -415,6 +432,26 @@ mod tests {
             err.to_string().contains("provider log unavailable"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_includes_tunnel_id_query() {
+        let state = Arc::new(TestState::default());
+        let app = Router::new()
+            .route("/v1/diagnostics", get(diagnostics_handler))
+            .with_state(state.clone());
+        let base_url = spawn_test_server(app).await;
+        let client = TunnelmuxControlClient::new(ControlClientConfig::new(base_url, None));
+
+        let response = client
+            .diagnostics("tunnel-2")
+            .await
+            .expect("diagnostics request should succeed");
+
+        assert_eq!(response.route_count, 2);
+
+        let tunnel_queries = state.tunnel_queries.lock().await;
+        assert_eq!(tunnel_queries.as_slice(), &[Some("tunnel-2".to_string())]);
     }
 
     #[tokio::test]
@@ -488,12 +525,42 @@ mod tests {
             .lock()
             .await
             .push(query.get("lines").cloned());
+        state
+            .tunnel_queries
+            .lock()
+            .await
+            .push(query.get("tunnel_id").cloned());
 
         Json(TunnelLogsResponse {
             lines: vec![
                 "provider booted".to_string(),
                 "tunnel connected".to_string(),
             ],
+        })
+    }
+
+    async fn diagnostics_handler(
+        State(state): State<Arc<TestState>>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<DiagnosticsResponse> {
+        state
+            .tunnel_queries
+            .lock()
+            .await
+            .push(query.get("tunnel_id").cloned());
+
+        Json(DiagnosticsResponse {
+            data_file: "/tmp/state.json".to_string(),
+            config_file: "/tmp/config.json".to_string(),
+            provider_log_file: "/tmp/provider.log".to_string(),
+            route_count: 2,
+            enabled_route_count: 1,
+            tunnel_state: TunnelState::Running,
+            pending_restart: false,
+            config_reload_enabled: true,
+            config_reload_interval_ms: 1_000,
+            last_config_reload_at: None,
+            last_config_reload_error: None,
         })
     }
 

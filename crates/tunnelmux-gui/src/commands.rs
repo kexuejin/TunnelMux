@@ -439,8 +439,15 @@ pub async fn delete_route_from_settings_dir(
 pub async fn load_diagnostics_summary_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<DiagnosticsSummaryVm, String> {
-    let (_, client) = load_client(settings_dir)?;
-    let response = client.diagnostics().await.map_err(command_error)?;
+    let (settings, client) = load_client(settings_dir)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .unwrap_or("primary");
+    let response = client
+        .diagnostics(tunnel_id)
+        .await
+        .map_err(command_error)?;
     Ok(DiagnosticsSummaryVm::from(response))
 }
 
@@ -464,8 +471,15 @@ pub async fn load_recent_logs_from_settings_dir(
         return Err("lines must be greater than zero".to_string());
     }
 
-    let (_, client) = load_client(settings_dir)?;
-    let response = client.tunnel_logs(lines).await.map_err(command_error)?;
+    let (settings, client) = load_client(settings_dir)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .unwrap_or("primary");
+    let response = client
+        .tunnel_logs(tunnel_id, lines)
+        .await
+        .map_err(command_error)?;
     Ok(LogTailVm::from_response(lines, response))
 }
 
@@ -483,7 +497,7 @@ pub async fn load_provider_status_summary_from_settings_dir(
         .ok()
         .map(|response| response.tunnel);
     let log_lines = client
-        .tunnel_logs(40)
+        .tunnel_logs(&tunnel_id, 40)
         .await
         .map(|response| response.lines)
         .unwrap_or_default();
@@ -739,7 +753,7 @@ fn build_tunnel_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, routing::get};
+    use axum::{Json, Router, extract::Query, routing::get};
     use std::{
         net::SocketAddr,
         sync::atomic::{AtomicU64, Ordering},
@@ -1204,14 +1218,31 @@ mod tests {
     #[tokio::test]
     async fn load_diagnostics_summary_returns_connected_snapshot() {
         let temp_dir = prepare_temp_dir();
-        let base_url =
-            spawn_test_server(Router::new().route("/v1/diagnostics", get(diagnostics_handler)))
-                .await;
+        let captured_query = std::sync::Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let base_url = spawn_test_server(Router::new().route(
+            "/v1/diagnostics",
+            get({
+                let captured_query = captured_query.clone();
+                move |query| diagnostics_handler(captured_query.clone(), query)
+            }),
+        ))
+        .await;
         save_settings_to_dir(
             &temp_dir,
             &GuiSettings {
                 base_url,
                 token: None,
+                current_tunnel_id: Some("tunnel-2".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "tunnel-2".to_string(),
+                    name: "API Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    gateway_target_url: "http://127.0.0.1:58080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: None,
+                    ngrok_domain: None,
+                }],
                 ..GuiSettings::default()
             },
         )
@@ -1225,6 +1256,10 @@ mod tests {
         assert_eq!(summary.enabled_route_count, 1);
         assert_eq!(summary.tunnel_state, "running");
         assert!(summary.pending_restart);
+        assert_eq!(
+            captured_query.lock().await.as_deref(),
+            Some("tunnel-2")
+        );
     }
 
     #[tokio::test]
@@ -1257,14 +1292,31 @@ mod tests {
     #[tokio::test]
     async fn load_recent_logs_returns_requested_tail_lines() {
         let temp_dir = prepare_temp_dir();
-        let base_url =
-            spawn_test_server(Router::new().route("/v1/tunnel/logs", get(recent_logs_handler)))
-                .await;
+        let captured_query = std::sync::Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let base_url = spawn_test_server(Router::new().route(
+            "/v1/tunnel/logs",
+            get({
+                let captured_query = captured_query.clone();
+                move |query| recent_logs_handler(captured_query.clone(), query)
+            }),
+        ))
+        .await;
         save_settings_to_dir(
             &temp_dir,
             &GuiSettings {
                 base_url,
                 token: None,
+                current_tunnel_id: Some("tunnel-2".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "tunnel-2".to_string(),
+                    name: "API Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    gateway_target_url: "http://127.0.0.1:58080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: None,
+                    ngrok_domain: None,
+                }],
                 ..GuiSettings::default()
             },
         )
@@ -1278,6 +1330,10 @@ mod tests {
         assert_eq!(
             log_tail.lines,
             vec!["first log line".to_string(), "second log line".to_string()]
+        );
+        assert_eq!(
+            captured_query.lock().await.as_deref(),
+            Some("tunnel-2")
         );
     }
 
@@ -1532,7 +1588,11 @@ mod tests {
         );
     }
 
-    async fn diagnostics_handler() -> Json<tunnelmux_core::DiagnosticsResponse> {
+    async fn diagnostics_handler(
+        captured_query: std::sync::Arc<tokio::sync::Mutex<Option<String>>>,
+        Query(query): Query<std::collections::HashMap<String, String>>,
+    ) -> Json<tunnelmux_core::DiagnosticsResponse> {
+        *captured_query.lock().await = query.get("tunnel_id").cloned();
         Json(tunnelmux_core::DiagnosticsResponse {
             data_file: "/tmp/state.json".to_string(),
             config_file: "/tmp/config.json".to_string(),
@@ -1576,7 +1636,11 @@ mod tests {
         })
     }
 
-    async fn recent_logs_handler() -> Json<tunnelmux_core::TunnelLogsResponse> {
+    async fn recent_logs_handler(
+        captured_query: std::sync::Arc<tokio::sync::Mutex<Option<String>>>,
+        Query(query): Query<std::collections::HashMap<String, String>>,
+    ) -> Json<tunnelmux_core::TunnelLogsResponse> {
+        *captured_query.lock().await = query.get("tunnel_id").cloned();
         Json(tunnelmux_core::TunnelLogsResponse {
             lines: vec!["first log line".to_string(), "second log line".to_string()],
         })
