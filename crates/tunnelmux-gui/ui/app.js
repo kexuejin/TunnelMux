@@ -90,6 +90,7 @@ function bindElements() {
   elements.currentTunnelName = document.getElementById('current-tunnel-name');
   elements.currentTunnelBadge = document.getElementById('current-tunnel-badge');
   elements.currentTunnelMeta = document.getElementById('current-tunnel-meta');
+  elements.currentTunnelUrl = document.getElementById('current-tunnel-url');
   elements.tunnelSwitcherShell = document.getElementById('tunnel-switcher-shell');
   elements.tunnelSwitcher = document.getElementById('tunnel-switcher');
   elements.newTunnel = document.getElementById('new-tunnel');
@@ -399,6 +400,7 @@ function renderTunnelWorkspace(workspace) {
   const tunnelState = currentTunnel.state ?? 'idle';
   const routeCount = Number(currentTunnel.route_count ?? 0);
   const enabledRouteCount = Number(currentTunnel.enabled_route_count ?? 0);
+  const publicBaseUrl = currentTunnel.public_base_url ?? '';
   elements.currentTunnelBadge.textContent = titleCase(tunnelState);
   elements.currentTunnelBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
   elements.currentTunnelMeta.textContent = [
@@ -406,6 +408,10 @@ function renderTunnelWorkspace(workspace) {
     titleCase(tunnelState),
     `${enabledRouteCount}/${routeCount} services live`,
   ].join(' • ');
+  elements.currentTunnelUrl.hidden = !publicBaseUrl;
+  if (publicBaseUrl) {
+    elements.currentTunnelUrl.textContent = publicBaseUrl;
+  }
   elements.tunnelSwitcherShell.hidden = tunnels.length <= 1;
   if (elements.tunnelSwitcher) {
     elements.tunnelSwitcher.innerHTML = '';
