@@ -22,6 +22,7 @@ const state = {
   settingsDrawerOpen: false,
   serviceDrawerOpen: false,
   tunnelDrawerOpen: false,
+  tunnelEditorMode: 'create',
   providerStatusAction: null,
   diagnostics: {
     logLines: 100,
@@ -196,6 +197,7 @@ function bindEvents() {
   elements.closeTunnel?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelBackdrop?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelProvider?.addEventListener('change', syncTunnelProviderFields);
+  elements.tunnelSwitcher?.addEventListener('change', () => withBusy(switchTunnel));
   elements.saveTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: false })));
   elements.saveAndStartTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: true })));
 
@@ -250,11 +252,12 @@ function closeSettingsDrawer() {
 }
 
 function openTunnelDrawer({ mode }) {
+  state.tunnelEditorMode = mode;
   state.tunnelDrawerOpen = true;
   elements.tunnelBackdrop.hidden = false;
   elements.tunnelDrawer.hidden = false;
   elements.tunnelFormTitle.textContent = mode === 'edit' ? 'Edit Tunnel' : 'Create Tunnel';
-  populateTunnelFields(mode === 'edit' ? state.settings : null);
+  populateTunnelFields(mode === 'edit' ? getCurrentTunnelSettings() : null);
 }
 
 function closeTunnelDrawer() {
@@ -322,13 +325,8 @@ function collectSettingsForm() {
   return {
     base_url: elements.baseUrl.value,
     token: elements.token.value || null,
-    tunnel_name: state.settings?.tunnel_name ?? null,
-    default_provider: state.settings?.default_provider ?? 'cloudflared',
-    gateway_target_url: state.settings?.gateway_target_url ?? 'http://127.0.0.1:48080',
-    auto_restart: state.settings?.auto_restart ?? true,
-    cloudflared_tunnel_token: state.settings?.cloudflared_tunnel_token ?? null,
-    ngrok_authtoken: state.settings?.ngrok_authtoken ?? null,
-    ngrok_domain: state.settings?.ngrok_domain ?? null,
+    current_tunnel_id: state.settings?.current_tunnel_id ?? null,
+    tunnels: state.settings?.tunnels ?? [],
   };
 }
 
@@ -340,10 +338,11 @@ function populateSettingsFields(settings) {
 }
 
 function syncProviderHints() {
-  const provider = state.settings?.default_provider ?? 'cloudflared';
-  const gatewayTarget = state.settings?.gateway_target_url ?? 'http://127.0.0.1:48080';
-  const restartLabel = state.settings?.auto_restart ? 'enabled' : 'disabled';
-  const cloudflaredMode = state.settings?.cloudflared_tunnel_token ? 'named tunnel' : 'quick tunnel';
+  const tunnel = getCurrentTunnelSettings();
+  const provider = tunnel?.provider ?? 'cloudflared';
+  const gatewayTarget = tunnel?.gateway_target_url ?? 'http://127.0.0.1:48080';
+  const restartLabel = tunnel?.auto_restart ? 'enabled' : 'disabled';
+  const cloudflaredMode = tunnel?.cloudflared_tunnel_token ? 'named tunnel' : 'quick tunnel';
   if (provider === 'cloudflared') {
     elements.homeProviderHint.textContent = `${provider} ${cloudflaredMode} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
     return;
@@ -364,8 +363,8 @@ async function refreshTunnelWorkspace() {
 
 function renderTunnelWorkspace(workspace) {
   const tunnels = workspace?.tunnels ?? [];
-  const hasCurrentTunnel = tunnels.length > 0;
-  const currentTunnel = hasCurrentTunnel ? tunnels[0] : null;
+  const currentTunnel = tunnels.find((tunnel) => tunnel.id === workspace?.current_tunnel_id) ?? tunnels[0] ?? null;
+  const hasCurrentTunnel = Boolean(currentTunnel);
 
   elements.tunnelEmptyState.hidden = hasCurrentTunnel;
   elements.tunnelContextBar.hidden = !hasCurrentTunnel;
@@ -392,14 +391,14 @@ function renderTunnelWorkspace(workspace) {
   }
 }
 
-function populateTunnelFields(settings) {
-  elements.tunnelName.value = settings?.tunnel_name ?? '';
-  elements.tunnelProvider.value = settings?.default_provider ?? 'cloudflared';
-  elements.tunnelGatewayTargetUrl.value = settings?.gateway_target_url ?? 'http://127.0.0.1:48080';
-  elements.tunnelAutoRestart.checked = Boolean(settings?.auto_restart ?? true);
-  elements.tunnelCloudflaredTunnelToken.value = settings?.cloudflared_tunnel_token ?? '';
-  elements.tunnelNgrokAuthtoken.value = settings?.ngrok_authtoken ?? '';
-  elements.tunnelNgrokDomain.value = settings?.ngrok_domain ?? '';
+function populateTunnelFields(tunnel) {
+  elements.tunnelName.value = tunnel?.name ?? '';
+  elements.tunnelProvider.value = tunnel?.provider ?? 'cloudflared';
+  elements.tunnelGatewayTargetUrl.value = tunnel?.gateway_target_url ?? 'http://127.0.0.1:48080';
+  elements.tunnelAutoRestart.checked = Boolean(tunnel?.auto_restart ?? true);
+  elements.tunnelCloudflaredTunnelToken.value = tunnel?.cloudflared_tunnel_token ?? '';
+  elements.tunnelNgrokAuthtoken.value = tunnel?.ngrok_authtoken ?? '';
+  elements.tunnelNgrokDomain.value = tunnel?.ngrok_domain ?? '';
   const shouldOpenAdvanced =
     Boolean(elements.tunnelCloudflaredTunnelToken.value) ||
     elements.tunnelProvider.value === 'ngrok' ||
@@ -415,11 +414,30 @@ function syncTunnelProviderFields() {
   elements.tunnelNgrokFields.hidden = provider !== 'ngrok';
 }
 
-function collectTunnelForm() {
+function getCurrentTunnelSettings() {
+  const settings = state.settings;
+  if (!settings) {
+    return null;
+  }
+  return settings.tunnels.find((tunnel) => tunnel.id === settings.current_tunnel_id) ?? settings.tunnels[0] ?? null;
+}
+
+function nextTunnelId() {
+  const existing = new Set((state.settings?.tunnels ?? []).map((tunnel) => tunnel.id));
+  let index = 1;
+  while (existing.has(`tunnel-${index}`)) {
+    index += 1;
+  }
+  return `tunnel-${index}`;
+}
+
+function collectTunnelProfile() {
+  const current = getCurrentTunnelSettings();
+  const id = state.tunnelEditorMode === 'edit' && current ? current.id : nextTunnelId();
   return {
-    ...collectSettingsForm(),
-    tunnel_name: elements.tunnelName.value.trim() || null,
-    default_provider: elements.tunnelProvider.value,
+    id,
+    name: elements.tunnelName.value.trim() || 'Untitled Tunnel',
+    provider: elements.tunnelProvider.value,
     gateway_target_url: elements.tunnelGatewayTargetUrl.value,
     auto_restart: elements.tunnelAutoRestart.checked,
     cloudflared_tunnel_token: elements.tunnelCloudflaredTunnelToken.value || null,
@@ -430,7 +448,17 @@ function collectTunnelForm() {
 
 async function saveTunnel({ startNow }) {
   try {
-    const settings = await invoke('save_settings', { settings: collectTunnelForm() });
+    const profile = collectTunnelProfile();
+    const nextSettings = structuredClone(collectSettingsForm());
+    const existingIndex = nextSettings.tunnels.findIndex((tunnel) => tunnel.id === profile.id);
+    if (existingIndex >= 0) {
+      nextSettings.tunnels.splice(existingIndex, 1, profile);
+    } else {
+      nextSettings.tunnels.push(profile);
+    }
+    nextSettings.current_tunnel_id = profile.id;
+
+    const settings = await invoke('save_settings', { settings: nextSettings });
     populateSettingsFields(settings);
     await refreshTunnelWorkspace();
     closeTunnelDrawer();
@@ -443,6 +471,15 @@ async function saveTunnel({ startNow }) {
   } catch (error) {
     renderStatus(`Failed to save tunnel: ${formatError(error)}`, true);
   }
+}
+
+async function switchTunnel() {
+  const settings = structuredClone(collectSettingsForm());
+  settings.current_tunnel_id = elements.tunnelSwitcher.value || null;
+  const next = await invoke('save_settings', { settings });
+  populateSettingsFields(next);
+  await refreshTunnelWorkspace();
+  await ensureLocalDaemonAndRefresh();
 }
 
 async function loadSettings() {
@@ -533,12 +570,16 @@ async function refreshRoutes() {
 
 async function startTunnel() {
   try {
-    const settings = collectSettingsForm();
+    const tunnel = getCurrentTunnelSettings();
+    if (!tunnel) {
+      renderStatus('Create a tunnel before starting it.', true);
+      return;
+    }
     const snapshot = await invoke('start_tunnel', {
       input: {
-        provider: settings.default_provider,
-        target_url: settings.gateway_target_url,
-        auto_restart: settings.auto_restart,
+        provider: tunnel.provider,
+        target_url: tunnel.gateway_target_url,
+        auto_restart: tunnel.auto_restart,
       },
     });
     renderDashboard(snapshot);

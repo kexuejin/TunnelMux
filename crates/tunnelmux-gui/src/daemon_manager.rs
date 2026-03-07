@@ -502,7 +502,11 @@ fn build_managed_daemon_command(
     ngrok_binary: Option<PathBuf>,
 ) -> anyhow::Result<Command> {
     let listen = control_listen_arg(&settings.base_url)?;
-    let gateway = gateway_listen_arg(&settings.gateway_target_url)?;
+    let gateway_target_url = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.gateway_target_url.as_str())
+        .unwrap_or(crate::settings::DEFAULT_GUI_GATEWAY_TARGET_URL);
+    let gateway = gateway_listen_arg(gateway_target_url)?;
 
     let mut command = Command::new(&binary.path);
     command
@@ -586,7 +590,10 @@ pub async fn wait_for_managed_daemon_ready<H: ManagedDaemonHandle>(
             return Err(anyhow!(
                 "local TunnelMux daemon exited before becoming ready; check whether {} or {} is already in use",
                 settings.base_url,
-                settings.gateway_target_url
+                settings
+                    .current_tunnel()
+                    .map(|tunnel| tunnel.gateway_target_url.as_str())
+                    .unwrap_or(crate::settings::DEFAULT_GUI_GATEWAY_TARGET_URL)
             ));
         }
 
@@ -799,7 +806,13 @@ mod tests {
     async fn wait_for_managed_daemon_ready_reports_early_exit() {
         let settings = GuiSettings {
             base_url: "http://127.0.0.1:9".to_string(),
-            gateway_target_url: "http://127.0.0.1:48080".to_string(),
+            current_tunnel_id: Some("primary".to_string()),
+            tunnels: vec![crate::settings::TunnelProfileSettings {
+                id: "primary".to_string(),
+                name: "Main Tunnel".to_string(),
+                gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                ..crate::settings::TunnelProfileSettings::default()
+            }],
             ..GuiSettings::default()
         };
         let binary = ResolvedDaemonBinary {
