@@ -2,7 +2,8 @@ use crate::daemon_manager::{self, DaemonStatusSnapshot};
 use crate::settings::{GuiSettings, load_settings_from_dir, save_settings_to_dir};
 use crate::state::GuiAppState;
 use crate::view_models::{
-    DiagnosticsSummaryVm, LogTailVm, RouteFormData, RouteWorkspaceSnapshot, UpstreamHealthVm,
+    DiagnosticsSummaryVm, LogTailVm, ProviderStatusVm, RouteFormData, RouteWorkspaceSnapshot,
+    UpstreamHealthVm,
 };
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -179,6 +180,15 @@ pub async fn load_recent_logs(
 ) -> Result<LogTailVm, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     load_recent_logs_from_settings_dir(&settings_dir, lines).await
+}
+
+#[tauri::command]
+pub async fn load_provider_status_summary(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<Option<ProviderStatusVm>, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    load_provider_status_summary_from_settings_dir(&settings_dir).await
 }
 
 pub async fn probe_connection_from_settings_dir(
@@ -373,6 +383,104 @@ pub async fn load_recent_logs_from_settings_dir(
     let (_, client) = load_client(settings_dir)?;
     let response = client.tunnel_logs(lines).await.map_err(command_error)?;
     Ok(LogTailVm::from_response(lines, response))
+}
+
+pub async fn load_provider_status_summary_from_settings_dir(
+    settings_dir: &Path,
+) -> Result<Option<ProviderStatusVm>, String> {
+    let (settings, client) = load_client(settings_dir)?;
+    let tunnel = client.tunnel_status().await.ok().map(|response| response.tunnel);
+    let log_lines = client
+        .tunnel_logs(40)
+        .await
+        .map(|response| response.lines)
+        .unwrap_or_default();
+    Ok(derive_provider_status_summary(
+        &settings,
+        tunnel.as_ref(),
+        &log_lines,
+    ))
+}
+
+fn derive_provider_status_summary(
+    settings: &GuiSettings,
+    tunnel: Option<&TunnelStatus>,
+    log_lines: &[String],
+) -> Option<ProviderStatusVm> {
+    let tunnel = tunnel?;
+    let provider = tunnel
+        .provider
+        .clone()
+        .unwrap_or(settings.default_provider.clone());
+
+    if provider == TunnelProvider::Cloudflared
+        && tunnel.state == tunnelmux_core::TunnelState::Running
+        && tunnel.public_base_url.is_none()
+        && settings.cloudflared_tunnel_token.is_some()
+    {
+        return Some(ProviderStatusVm::new(
+            "warning",
+            "Cloudflare Setup",
+            "Named tunnel connected. Configure hostname and Access in Cloudflare.",
+        ));
+    }
+
+    for line in log_lines.iter().rev() {
+        if let Some(summary) = classify_provider_log_line(&provider, line) {
+            return Some(summary);
+        }
+    }
+
+    if tunnel.state == tunnelmux_core::TunnelState::Running {
+        return Some(ProviderStatusVm::new(
+            "success",
+            "Provider Ready",
+            "Tunnel provider is connected and ready.",
+        ));
+    }
+
+    None
+}
+
+fn classify_provider_log_line(
+    provider: &TunnelProvider,
+    line: &str,
+) -> Option<ProviderStatusVm> {
+    let lower = line.to_ascii_lowercase();
+
+    if lower.contains("unable to reach the origin service")
+        || lower.contains("connection refused")
+        || lower.contains("upstream request failed")
+    {
+        return Some(ProviderStatusVm::new(
+            "warning",
+            "Local Service Unreachable",
+            "Tunnel is up, but the local service did not respond. Check the target URL and make sure your app is running.",
+        ));
+    }
+
+    if *provider == TunnelProvider::Ngrok {
+        if let Some(code) = line
+            .split(|value: char| !value.is_ascii_alphanumeric() && value != '_')
+            .find(|token| token.starts_with("ERR_NGROK_"))
+        {
+            return Some(ProviderStatusVm::new(
+                "error",
+                "ngrok Error",
+                &format!("{code}. Check your authtoken, domain, or ngrok account settings."),
+            ));
+        }
+    }
+
+    if *provider == TunnelProvider::Cloudflared && line.contains("trycloudflare.com") {
+        return Some(ProviderStatusVm::new(
+            "success",
+            "Quick Tunnel Active",
+            "Cloudflare quick tunnel published a public URL.",
+        ));
+    }
+
+    None
 }
 
 fn load_client(settings_dir: &Path) -> Result<(GuiSettings, TunnelmuxControlClient), String> {
@@ -946,6 +1054,87 @@ mod tests {
             log_tail.lines,
             vec!["first log line".to_string(), "second log line".to_string()]
         );
+    }
+
+    #[test]
+    fn provider_status_summary_identifies_named_cloudflared_setup() {
+        let settings = GuiSettings {
+            cloudflared_tunnel_token: Some("cf-token".to_string()),
+            ..GuiSettings::default()
+        };
+        let tunnel = TunnelStatus {
+            state: tunnelmux_core::TunnelState::Running,
+            provider: Some(TunnelProvider::Cloudflared),
+            target_url: Some("http://127.0.0.1:48080".to_string()),
+            public_base_url: None,
+            started_at: Some("2026-03-07T00:00:00Z".to_string()),
+            updated_at: "2026-03-07T00:00:01Z".to_string(),
+            process_id: Some(12345),
+            auto_restart: true,
+            restart_count: 0,
+            last_error: None,
+        };
+
+        let summary = derive_provider_status_summary(&settings, Some(&tunnel), &[])
+            .expect("summary should be derived");
+
+        assert_eq!(summary.level, "warning");
+        assert_eq!(summary.title, "Cloudflare Setup");
+    }
+
+    #[test]
+    fn provider_status_summary_identifies_ngrok_error_code() {
+        let tunnel = TunnelStatus {
+            state: tunnelmux_core::TunnelState::Starting,
+            provider: Some(TunnelProvider::Ngrok),
+            target_url: Some("http://127.0.0.1:48080".to_string()),
+            public_base_url: None,
+            started_at: None,
+            updated_at: "2026-03-07T00:00:01Z".to_string(),
+            process_id: None,
+            auto_restart: true,
+            restart_count: 0,
+            last_error: None,
+        };
+
+        let summary = derive_provider_status_summary(
+            &GuiSettings {
+                default_provider: TunnelProvider::Ngrok,
+                ..GuiSettings::default()
+            },
+            Some(&tunnel),
+            &[String::from("t=2026-03-07 lvl=eror msg=\"failed\" err=\"ERR_NGROK_4018\"")],
+        )
+        .expect("summary should be derived");
+
+        assert_eq!(summary.level, "error");
+        assert!(summary.message.contains("ERR_NGROK_4018"));
+    }
+
+    #[test]
+    fn provider_status_summary_identifies_unreachable_origin() {
+        let tunnel = TunnelStatus {
+            state: tunnelmux_core::TunnelState::Running,
+            provider: Some(TunnelProvider::Cloudflared),
+            target_url: Some("http://127.0.0.1:48080".to_string()),
+            public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+            started_at: Some("2026-03-07T00:00:00Z".to_string()),
+            updated_at: "2026-03-07T00:00:01Z".to_string(),
+            process_id: Some(12345),
+            auto_restart: true,
+            restart_count: 0,
+            last_error: None,
+        };
+
+        let summary = derive_provider_status_summary(
+            &GuiSettings::default(),
+            Some(&tunnel),
+            &[String::from("Unable to reach the origin service. The service may be down or it may not be responding to traffic from cloudflared")],
+        )
+        .expect("summary should be derived");
+
+        assert_eq!(summary.level, "warning");
+        assert_eq!(summary.title, "Local Service Unreachable");
     }
 
     #[tokio::test]

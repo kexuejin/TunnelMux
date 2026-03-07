@@ -29,6 +29,7 @@ pub fn run() {
             commands::load_diagnostics_summary,
             commands::load_upstreams_health,
             commands::load_recent_logs,
+            commands::load_provider_status_summary,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build TunnelMux GUI")
