@@ -1,4 +1,5 @@
 use super::*;
+use tunnelmux_core::{TunnelProfileSummary, TunnelWorkspaceResponse};
 
 pub(super) async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
@@ -67,6 +68,12 @@ pub(super) async fn get_tunnel_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<TunnelStatusResponse>, ApiError> {
     Ok(Json(build_tunnel_status_snapshot(&state).await?))
+}
+
+pub(super) async fn get_tunnel_workspace(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<TunnelWorkspaceResponse>, ApiError> {
+    Ok(Json(build_tunnel_workspace_snapshot(&state).await?))
 }
 
 pub(super) async fn stream_tunnel_status(
@@ -775,6 +782,45 @@ pub(super) async fn build_tunnel_status_snapshot(
         runtime.persisted.tunnel.clone()
     };
     Ok(TunnelStatusResponse { tunnel: snapshot })
+}
+
+pub(super) async fn build_tunnel_workspace_snapshot(
+    state: &Arc<AppState>,
+) -> Result<TunnelWorkspaceResponse, ApiError> {
+    reconcile_runtime_and_maybe_restart(state).await?;
+
+    let (tunnel, routes) = {
+        let runtime = state.runtime.lock().await;
+        (
+            runtime.persisted.tunnel.clone(),
+            runtime.persisted.routes.clone(),
+        )
+    };
+
+    if tunnel.provider.is_none() && routes.is_empty() {
+        return Ok(TunnelWorkspaceResponse {
+            tunnels: Vec::new(),
+            current_tunnel_id: None,
+        });
+    }
+
+    let route_count = routes.len();
+    let enabled_route_count = routes.iter().filter(|route| route.enabled).count();
+    let summary = TunnelProfileSummary {
+        id: "primary".to_string(),
+        name: None,
+        provider: tunnel.provider,
+        state: tunnel.state,
+        target_url: tunnel.target_url,
+        public_base_url: tunnel.public_base_url,
+        route_count,
+        enabled_route_count,
+    };
+
+    Ok(TunnelWorkspaceResponse {
+        tunnels: vec![summary],
+        current_tunnel_id: Some("primary".to_string()),
+    })
 }
 
 pub(super) async fn build_metrics_snapshot(state: &Arc<AppState>) -> MetricsResponse {

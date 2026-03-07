@@ -27,7 +27,36 @@
       </header>
 
       <section class="layout-stack">
-        <section class="home-grid">
+        <section id="tunnel-empty-state" class="panel empty-state tunnel-empty-state" hidden>
+          <p class="eyebrow card-eyebrow">Get Started</p>
+          <h2>No tunnel yet</h2>
+          <p class="panel-subtle">
+            Create your first tunnel, choose a provider, and then start attaching local services to it.
+          </p>
+          <div class="actions">
+            <button id="create-tunnel-empty" type="button">Create Tunnel</button>
+          </div>
+        </section>
+
+        <section id="tunnel-context-bar" class="panel tunnel-context-bar" hidden>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow card-eyebrow">Current Tunnel</p>
+              <h2 id="current-tunnel-name">Main Tunnel</h2>
+              <p id="current-tunnel-meta" class="panel-subtle">cloudflared • quick tunnel</p>
+            </div>
+            <div class="actions">
+              <label id="tunnel-switcher-shell" class="field tunnel-switcher-shell" hidden>
+                <span>Tunnel</span>
+                <select id="tunnel-switcher"></select>
+              </label>
+              <button id="new-tunnel" type="button" class="secondary">New Tunnel</button>
+              <button id="edit-tunnel" type="button" class="secondary">Edit Tunnel</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="home-grid" class="home-grid">
           <article class="panel hero-card">
             <div class="panel-header">
               <div>
@@ -213,9 +242,9 @@
       <aside id="settings-drawer" class="drawer settings-drawer" hidden aria-label="Settings">
         <div class="drawer-header">
           <div>
-            <p class="eyebrow">Settings</p>
-            <h2>Settings</h2>
-            <p class="panel-subtle">Only open this when you need to change connection or tunnel defaults.</p>
+            <p class="eyebrow">App Settings</p>
+            <h2>App Settings</h2>
+            <p class="panel-subtle">Only open this when you need to change how the desktop app connects to the local daemon.</p>
           </div>
           <button id="close-settings" type="button" class="secondary">Close</button>
         </div>
@@ -231,53 +260,77 @@
               <span>Bearer Token</span>
               <input id="settings-token" type="password" placeholder="Optional" />
             </label>
+          </section>
+        </div>
+
+        <div class="drawer-footer">
+          <button id="save-settings" type="button">Save Settings</button>
+        </div>
+      </aside>
+
+      <div id="tunnel-backdrop" class="drawer-backdrop" hidden></div>
+      <aside id="tunnel-drawer" class="drawer settings-drawer" hidden aria-label="Tunnel">
+        <div class="drawer-header">
+          <div>
+            <p class="eyebrow">Tunnel</p>
+            <h2 id="tunnel-form-title">Create Tunnel</h2>
+            <p class="panel-subtle">Start simple. You can change provider settings before launch or edit them later.</p>
+          </div>
+          <button id="close-tunnel" type="button" class="secondary">Close</button>
+        </div>
+
+        <div class="drawer-body">
+          <section class="drawer-section">
             <label class="field">
-              <span>Default Provider</span>
-              <select id="settings-default-provider">
+              <span>Tunnel Name</span>
+              <input id="tunnel-name" type="text" placeholder="Main Tunnel" />
+            </label>
+            <label class="field">
+              <span>Provider</span>
+              <select id="tunnel-provider">
                 <option value="cloudflared">cloudflared</option>
                 <option value="ngrok">ngrok</option>
               </select>
             </label>
           </section>
 
-          <details id="settings-advanced" class="advanced-section">
+          <details id="tunnel-advanced" class="advanced-section">
             <summary>Advanced tunnel settings</summary>
             <label class="field">
               <span>Gateway Target URL</span>
-              <input id="settings-gateway-target-url" type="text" placeholder="http://127.0.0.1:48080" />
+              <input id="tunnel-gateway-target-url" type="text" placeholder="http://127.0.0.1:48080" />
             </label>
             <label class="checkbox-row">
-              <input id="settings-auto-restart" type="checkbox" checked />
+              <input id="tunnel-auto-restart" type="checkbox" checked />
               <span>Auto restart tunnel</span>
             </label>
-            <div id="settings-cloudflared-fields">
+
+            <div id="tunnel-cloudflared-fields">
               <label class="field">
                 <span>Cloudflare Tunnel Token</span>
-                <input id="settings-cloudflared-tunnel-token" type="password" placeholder="Optional" />
+                <input id="tunnel-cloudflared-tunnel-token" type="password" placeholder="Optional" />
               </label>
-              <p id="settings-cloudflared-note" class="panel-subtle">
-                Leave this empty for a quick tunnel. Add a tunnel token to run a stable named tunnel. Hostname and Access are still managed in Cloudflare.
+              <p class="panel-subtle">
+                Leave this empty for a quick tunnel. Add a tunnel token to run a stable named tunnel.
               </p>
-              <div class="actions compact-actions provider-actions">
-                <button id="open-cloudflare-dashboard" type="button" class="secondary">Cloudflare Dashboard</button>
-                <button id="open-cloudflare-docs" type="button" class="secondary">Tunnel Docs</button>
-              </div>
             </div>
-            <div id="settings-ngrok-fields" hidden>
+
+            <div id="tunnel-ngrok-fields" hidden>
               <label class="field">
                 <span>ngrok Authtoken</span>
-                <input id="settings-ngrok-authtoken" type="password" placeholder="Optional" />
+                <input id="tunnel-ngrok-authtoken" type="password" placeholder="Optional" />
               </label>
               <label class="field">
                 <span>ngrok Reserved Domain</span>
-                <input id="settings-ngrok-domain" type="text" placeholder="Optional" />
+                <input id="tunnel-ngrok-domain" type="text" placeholder="Optional" />
               </label>
             </div>
           </details>
         </div>
 
-        <div class="drawer-footer">
-          <button id="save-settings" type="button">Save Settings</button>
+        <div class="drawer-footer tunnel-drawer-footer">
+          <button id="save-tunnel" type="button" class="secondary">Save</button>
+          <button id="save-and-start-tunnel" type="button">Save and Start</button>
         </div>
       </aside>
     </main>

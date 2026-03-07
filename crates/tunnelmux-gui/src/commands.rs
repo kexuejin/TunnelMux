@@ -3,7 +3,7 @@ use crate::settings::{GuiSettings, load_settings_from_dir, save_settings_to_dir}
 use crate::state::GuiAppState;
 use crate::view_models::{
     DiagnosticsSummaryVm, LogTailVm, ProviderStatusVm, RouteFormData, RouteWorkspaceSnapshot,
-    UpstreamHealthVm,
+    TunnelProfileVm, TunnelWorkspaceVm, UpstreamHealthVm,
 };
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,15 @@ pub async fn refresh_dashboard(
 ) -> Result<DashboardSnapshot, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     refresh_dashboard_from_settings_dir(&settings_dir).await
+}
+
+#[tauri::command]
+pub fn load_tunnel_workspace(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<TunnelWorkspaceVm, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    load_tunnel_workspace_from_settings_dir(&settings_dir)
 }
 
 #[tauri::command]
@@ -402,6 +411,32 @@ pub async fn load_provider_status_summary_from_settings_dir(
     ))
 }
 
+pub fn load_tunnel_workspace_from_settings_dir(
+    settings_dir: &Path,
+) -> Result<TunnelWorkspaceVm, String> {
+    let settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
+    let Some(name) = settings.tunnel_name.clone() else {
+        return Ok(TunnelWorkspaceVm {
+            tunnels: Vec::new(),
+            current_tunnel_id: None,
+        });
+    };
+
+    let tunnel = TunnelProfileVm {
+        id: "primary".to_string(),
+        name,
+        provider: match settings.default_provider {
+            TunnelProvider::Cloudflared => "cloudflared".to_string(),
+            TunnelProvider::Ngrok => "ngrok".to_string(),
+        },
+    };
+
+    Ok(TunnelWorkspaceVm {
+        tunnels: vec![tunnel],
+        current_tunnel_id: Some("primary".to_string()),
+    })
+}
+
 fn derive_provider_status_summary(
     settings: &GuiSettings,
     tunnel: Option<&TunnelStatus>,
@@ -637,6 +672,7 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
+                tunnel_name: Some("Main Tunnel".to_string()),
                 default_provider: TunnelProvider::Ngrok,
                 gateway_target_url: "http://127.0.0.1:28080".to_string(),
                 auto_restart: false,
@@ -1057,6 +1093,39 @@ mod tests {
             log_tail.lines,
             vec!["first log line".to_string(), "second log line".to_string()]
         );
+    }
+
+    #[test]
+    fn load_tunnel_workspace_returns_empty_when_tunnel_not_configured() {
+        let temp_dir = prepare_temp_dir();
+
+        let workspace = load_tunnel_workspace_from_settings_dir(&temp_dir)
+            .expect("workspace should load");
+
+        assert!(workspace.tunnels.is_empty());
+        assert_eq!(workspace.current_tunnel_id, None);
+    }
+
+    #[test]
+    fn load_tunnel_workspace_returns_single_current_tunnel_when_configured() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                tunnel_name: Some("Main Tunnel".to_string()),
+                default_provider: TunnelProvider::Cloudflared,
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let workspace = load_tunnel_workspace_from_settings_dir(&temp_dir)
+            .expect("workspace should load");
+
+        assert_eq!(workspace.tunnels.len(), 1);
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("primary"));
+        assert_eq!(workspace.tunnels[0].name, "Main Tunnel");
+        assert_eq!(workspace.tunnels[0].provider, "cloudflared");
     }
 
     #[test]

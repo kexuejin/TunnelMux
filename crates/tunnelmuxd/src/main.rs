@@ -389,6 +389,7 @@ async fn main() -> anyhow::Result<()> {
     let protected_control_app = Router::new()
         .route("/v1/tunnel/status", get(get_tunnel_status))
         .route("/v1/tunnel/status/stream", get(stream_tunnel_status))
+        .route("/v1/tunnels/workspace", get(get_tunnel_workspace))
         .route("/v1/tunnel/logs", get(get_tunnel_logs))
         .route("/v1/tunnel/logs/stream", get(stream_tunnel_logs))
         .route("/v1/tunnel/start", post(start_tunnel))
@@ -919,6 +920,7 @@ mod tests {
         let protected_control_app = Router::new()
             .route("/v1/tunnel/status", get(get_tunnel_status))
             .route("/v1/tunnel/status/stream", get(stream_tunnel_status))
+            .route("/v1/tunnels/workspace", get(get_tunnel_workspace))
             .route(
                 "/v1/settings/health-check",
                 get(get_health_check_settings).put(update_health_check_settings),
@@ -1988,6 +1990,79 @@ mod tests {
         assert_eq!(dashboard.routes.len(), 1);
         assert_eq!(dashboard.routes[0].id, "svc-a");
         assert_eq!(dashboard.upstreams.len(), 2);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn tunnel_workspace_endpoint_returns_empty_when_unconfigured() {
+        let state = test_state_with_routes(vec![], None);
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let workspace: tunnelmux_core::TunnelWorkspaceResponse = client
+            .get(format!("{base_url}/v1/tunnels/workspace"))
+            .send()
+            .await
+            .expect("workspace request should complete")
+            .json()
+            .await
+            .expect("workspace payload should decode");
+
+        assert!(workspace.tunnels.is_empty());
+        assert_eq!(workspace.current_tunnel_id, None);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn tunnel_workspace_endpoint_returns_single_primary_tunnel() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        {
+            let mut runtime = state.runtime.lock().await;
+            runtime.persisted.tunnel = TunnelStatus {
+                state: TunnelState::Running,
+                provider: Some(TunnelProvider::Cloudflared),
+                target_url: Some("http://127.0.0.1:48080".to_string()),
+                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+                started_at: Some("2026-03-07T00:00:00Z".to_string()),
+                updated_at: "2026-03-07T00:00:01Z".to_string(),
+                process_id: Some(12345),
+                auto_restart: true,
+                restart_count: 0,
+                last_error: None,
+            };
+        }
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let workspace: tunnelmux_core::TunnelWorkspaceResponse = client
+            .get(format!("{base_url}/v1/tunnels/workspace"))
+            .send()
+            .await
+            .expect("workspace request should complete")
+            .json()
+            .await
+            .expect("workspace payload should decode");
+
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("primary"));
+        assert_eq!(workspace.tunnels.len(), 1);
+        assert_eq!(workspace.tunnels[0].id, "primary");
+        assert_eq!(workspace.tunnels[0].route_count, 1);
+        assert_eq!(workspace.tunnels[0].enabled_route_count, 1);
+        assert_eq!(workspace.tunnels[0].provider, Some(TunnelProvider::Cloudflared));
 
         server_task.abort();
     }

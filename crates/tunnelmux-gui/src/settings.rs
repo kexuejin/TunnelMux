@@ -4,12 +4,14 @@ use tunnelmux_core::TunnelProvider;
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:4765";
 pub const DEFAULT_GUI_GATEWAY_TARGET_URL: &str = "http://127.0.0.1:48080";
+pub const DEFAULT_TUNNEL_NAME: &str = "Main Tunnel";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct GuiSettings {
     pub base_url: String,
     pub token: Option<String>,
+    pub tunnel_name: Option<String>,
     pub default_provider: TunnelProvider,
     pub gateway_target_url: String,
     pub auto_restart: bool,
@@ -23,6 +25,7 @@ impl Default for GuiSettings {
         Self {
             base_url: DEFAULT_BASE_URL.to_string(),
             token: None,
+            tunnel_name: None,
             default_provider: TunnelProvider::Cloudflared,
             gateway_target_url: DEFAULT_GUI_GATEWAY_TARGET_URL.to_string(),
             auto_restart: true,
@@ -55,9 +58,13 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
     settings.base_url = normalize_base_url(&settings.base_url);
     settings.gateway_target_url = normalize_base_url(&settings.gateway_target_url);
     settings.token = normalize_token(settings.token);
+    settings.tunnel_name = normalize_token(settings.tunnel_name);
     settings.cloudflared_tunnel_token = normalize_token(settings.cloudflared_tunnel_token);
     settings.ngrok_authtoken = normalize_token(settings.ngrok_authtoken);
     settings.ngrok_domain = normalize_token(settings.ngrok_domain);
+    if settings.tunnel_name.is_none() {
+        settings.tunnel_name = Some(DEFAULT_TUNNEL_NAME.to_string());
+    }
     Ok(settings)
 }
 
@@ -73,6 +80,7 @@ pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow
     normalized.base_url = normalize_base_url(&normalized.base_url);
     normalized.gateway_target_url = normalize_base_url(&normalized.gateway_target_url);
     normalized.token = normalize_token(normalized.token);
+    normalized.tunnel_name = normalize_token(normalized.tunnel_name);
     normalized.cloudflared_tunnel_token = normalize_token(normalized.cloudflared_tunnel_token);
     normalized.ngrok_authtoken = normalize_token(normalized.ngrok_authtoken);
     normalized.ngrok_domain = normalize_token(normalized.ngrok_domain);
@@ -116,6 +124,7 @@ mod tests {
 
         assert_eq!(settings.base_url, DEFAULT_BASE_URL);
         assert_eq!(settings.token, None);
+        assert_eq!(settings.tunnel_name, None);
         assert_eq!(settings.default_provider, TunnelProvider::Cloudflared);
         assert_eq!(settings.gateway_target_url, DEFAULT_GUI_GATEWAY_TARGET_URL);
         assert!(settings.auto_restart);
@@ -130,6 +139,7 @@ mod tests {
         let expected = GuiSettings {
             base_url: "http://127.0.0.1:9999".to_string(),
             token: Some("dev-token".to_string()),
+            tunnel_name: Some("Main Tunnel".to_string()),
             default_provider: TunnelProvider::Ngrok,
             gateway_target_url: "127.0.0.1:28080".to_string(),
             auto_restart: false,
@@ -164,6 +174,7 @@ mod tests {
 
         assert_eq!(loaded.base_url, "http://127.0.0.1:8765");
         assert_eq!(loaded.token.as_deref(), Some("legacy-token"));
+        assert_eq!(loaded.tunnel_name.as_deref(), Some(DEFAULT_TUNNEL_NAME));
         assert_eq!(loaded.default_provider, TunnelProvider::Cloudflared);
         assert_eq!(loaded.gateway_target_url, DEFAULT_GUI_GATEWAY_TARGET_URL);
         assert!(loaded.auto_restart);

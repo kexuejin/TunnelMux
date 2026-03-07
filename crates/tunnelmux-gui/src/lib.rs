@@ -20,6 +20,7 @@ pub fn run() {
             commands::ensure_local_daemon,
             commands::daemon_connection_state,
             commands::probe_connection,
+            commands::load_tunnel_workspace,
             commands::refresh_dashboard,
             commands::start_tunnel,
             commands::stop_tunnel,
