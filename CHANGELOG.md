@@ -4,6 +4,8 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-08
+
 - Add true tunnel-scoped daemon runtime state so multiple tunnel profiles can coexist with independent status, restart, and route ownership.
 - Add tunnel-scoped control-plane APIs for routes, logs, diagnostics, dashboard, metrics, and upstream health.
 - Add per-tunnel gateway listener management plus cleanup on tunnel stop and hard delete.
