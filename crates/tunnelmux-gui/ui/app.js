@@ -556,6 +556,7 @@ async function ensureLocalDaemonAndRefresh() {
 }
 
 async function refreshAll() {
+  await refreshTunnelWorkspace();
   await refreshDashboard();
   await refreshRoutes();
   await refreshProviderStatusSummary();
@@ -621,6 +622,7 @@ async function startTunnel() {
       },
     });
     renderDashboard(snapshot);
+    await refreshTunnelWorkspace();
     renderStatus('Tunnel started.');
   } catch (error) {
     renderStatus(`Failed to start tunnel: ${formatError(error)}`, true);
@@ -631,6 +633,7 @@ async function stopTunnel() {
   try {
     const snapshot = await invoke('stop_tunnel');
     renderDashboard(snapshot);
+    await refreshTunnelWorkspace();
     renderStatus('Tunnel stopped.');
   } catch (error) {
     renderStatus(`Failed to stop tunnel: ${formatError(error)}`, true);
@@ -654,6 +657,7 @@ async function saveRoute() {
       },
     });
     renderRoutes(snapshot);
+    await refreshTunnelWorkspace();
     renderStatus(snapshot.message ?? 'Service saved.');
     resetRouteForm();
     closeServiceDrawer();
@@ -670,6 +674,7 @@ async function deleteRoute(id) {
   try {
     const snapshot = await invoke('delete_route', { id });
     renderRoutes(snapshot);
+    await refreshTunnelWorkspace();
     renderStatus(snapshot.message ?? 'Service deleted.');
     if (state.editingOriginalId === id) {
       resetRouteForm();
@@ -701,6 +706,7 @@ async function toggleRouteEnabled(id) {
       },
     });
     renderRoutes(snapshot);
+    await refreshTunnelWorkspace();
     renderStatus(`Service ${route.enabled ? 'turned off' : 'turned on'}.`);
   } catch (error) {
     renderStatus(`Failed to update service: ${formatError(error)}`, true);
