@@ -4,6 +4,12 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+- Add true tunnel-scoped daemon runtime state so multiple tunnel profiles can coexist with independent status, restart, and route ownership.
+- Add tunnel-scoped control-plane APIs for routes, logs, diagnostics, dashboard, metrics, and upstream health.
+- Add per-tunnel gateway listener management plus cleanup on tunnel stop and hard delete.
+- Add daemon-side hard tunnel deletion and wire GUI tunnel deletion through daemon cleanup before local settings removal.
+- Refine the GUI around a tunnel-first model with current-tunnel status summaries, custom tunnel picker, in-app delete confirmation, and quieter passive status messaging.
+
 ## [0.1.5] - 2026-03-06
 
 - Redesign the GUI into a single-page easy-first shell with the public URL, tunnel actions, and the service list on one screen.

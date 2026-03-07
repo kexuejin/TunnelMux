@@ -127,10 +127,17 @@ The GUI now prefers to auto-start a local `tunnelmuxd` when no daemon is reachab
 
 Current GUI focuses on a single easy-first page:
 - the main page highlights the current public URL and tunnel start/stop actions,
+- one current tunnel stays in focus while additional tunnel profiles can be switched from the top tunnel picker,
 - the service list is always visible on the same page,
 - service add/edit opens in a side drawer,
 - settings live behind a top-right settings entry,
 - troubleshooting remains available on demand instead of occupying the default shell.
+
+Current GUI tunnel model:
+- one selected tunnel is shown at a time,
+- each tunnel owns its own services and runtime status,
+- multiple tunnel profiles can exist locally,
+- deleting a tunnel removes its daemon-owned services and runtime state before removing the local profile.
 
 When the GUI starts its own local daemon, that daemon is scoped to the GUI session and stops when the GUI exits. Externally started daemons are never stopped by the GUI.
 
