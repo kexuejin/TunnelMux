@@ -401,6 +401,7 @@ pub(super) async fn process_pending_restart(state: &Arc<AppState>) -> Result<boo
     }
 
     let request = TunnelStartRequest {
+        tunnel_id: "primary".to_string(),
         provider: pending.provider.clone(),
         target_url: pending.target_url.clone(),
         auto_restart: Some(pending.auto_restart),
@@ -900,6 +901,7 @@ mod runtime_tests {
     #[test]
     fn cloudflared_named_tunnel_does_not_require_public_url() {
         let request = TunnelStartRequest {
+            tunnel_id: "primary".to_string(),
             provider: TunnelProvider::Cloudflared,
             target_url: "http://127.0.0.1:48080".to_string(),
             auto_restart: Some(true),
@@ -915,6 +917,7 @@ mod runtime_tests {
     #[test]
     fn cloudflared_command_uses_named_tunnel_token_when_present() {
         let request = TunnelStartRequest {
+            tunnel_id: "primary".to_string(),
             provider: TunnelProvider::Cloudflared,
             target_url: "http://127.0.0.1:48080".to_string(),
             auto_restart: Some(true),

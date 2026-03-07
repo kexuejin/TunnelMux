@@ -1,6 +1,11 @@
 use super::*;
 use tunnelmux_core::{TunnelProfileSummary, TunnelWorkspaceResponse};
 
+#[derive(Debug, Deserialize)]
+pub(super) struct TunnelQuery {
+    pub tunnel_id: Option<String>,
+}
+
 pub(super) async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         ok: true,
@@ -66,8 +71,12 @@ pub(super) fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 pub(super) async fn get_tunnel_status(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<TunnelQuery>,
 ) -> Result<Json<TunnelStatusResponse>, ApiError> {
-    Ok(Json(build_tunnel_status_snapshot(&state).await?))
+    Ok(Json(
+        build_tunnel_status_snapshot(&state, query.tunnel_id.as_deref().unwrap_or("primary"))
+            .await?,
+    ))
 }
 
 pub(super) async fn get_tunnel_workspace(
@@ -83,10 +92,11 @@ pub(super) async fn stream_tunnel_status(
     let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     let state_for_task = state.clone();
+    let tunnel_id = "primary".to_string();
 
     tokio::spawn(async move {
         loop {
-            match build_tunnel_status_snapshot(&state_for_task).await {
+            match build_tunnel_status_snapshot(&state_for_task, &tunnel_id).await {
                 Ok(snapshot) => {
                     let payload = match serde_json::to_string(&snapshot) {
                         Ok(value) => value,
@@ -312,6 +322,9 @@ pub(super) async fn start_tunnel(
     State(state): State<Arc<AppState>>,
     Json(mut request): Json<TunnelStartRequest>,
 ) -> Result<Json<TunnelStatusResponse>, ApiError> {
+    if request.tunnel_id.trim().is_empty() {
+        return Err(ApiError::bad_request("tunnel_id is required"));
+    }
     validate_target_url(&request.target_url)?;
     request.target_url = request.target_url.trim().to_string();
     let request_metadata = request.metadata.clone();
@@ -378,12 +391,19 @@ pub(super) async fn start_tunnel(
     };
     persist_from_runtime(&state).await?;
 
-    Ok(Json(TunnelStatusResponse { tunnel: status }))
+    Ok(Json(TunnelStatusResponse {
+        tunnel_id: request.tunnel_id,
+        tunnel: status,
+    }))
 }
 
 pub(super) async fn stop_tunnel(
     State(state): State<Arc<AppState>>,
+    Json(request): Json<tunnelmux_core::TunnelStopRequest>,
 ) -> Result<Json<TunnelStatusResponse>, ApiError> {
+    if request.tunnel_id.trim().is_empty() {
+        return Err(ApiError::bad_request("tunnel_id is required"));
+    }
     stop_running_process(&state)
         .await
         .map_err(|err| ApiError::internal(format!("failed to stop tunnel: {err}")))?;
@@ -396,7 +416,10 @@ pub(super) async fn stop_tunnel(
     };
     persist_from_runtime(&state).await?;
 
-    Ok(Json(TunnelStatusResponse { tunnel: status }))
+    Ok(Json(TunnelStatusResponse {
+        tunnel_id: request.tunnel_id,
+        tunnel: status,
+    }))
 }
 
 pub(super) async fn list_routes(State(state): State<Arc<AppState>>) -> Json<RoutesResponse> {
@@ -775,13 +798,17 @@ pub(super) async fn build_routes_snapshot(state: &Arc<AppState>) -> RoutesRespon
 
 pub(super) async fn build_tunnel_status_snapshot(
     state: &Arc<AppState>,
+    tunnel_id: &str,
 ) -> Result<TunnelStatusResponse, ApiError> {
     reconcile_runtime_and_maybe_restart(state).await?;
     let snapshot = {
         let runtime = state.runtime.lock().await;
         runtime.persisted.tunnel.clone()
     };
-    Ok(TunnelStatusResponse { tunnel: snapshot })
+    Ok(TunnelStatusResponse {
+        tunnel_id: tunnel_id.to_string(),
+        tunnel: snapshot,
+    })
 }
 
 pub(super) async fn build_tunnel_workspace_snapshot(

@@ -263,8 +263,11 @@ pub async fn refresh_dashboard_from_settings_dir(
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
     let current_tunnel = settings.current_tunnel();
+    let tunnel_id = current_tunnel
+        .map(|tunnel| tunnel.id.as_str())
+        .unwrap_or("primary");
     match client.health().await {
-        Ok(health) => match client.tunnel_status().await {
+        Ok(health) => match client.tunnel_status(tunnel_id).await {
             Ok(tunnel) => {
                 let message = if tunnel.tunnel.state == tunnelmux_core::TunnelState::Running
                     && tunnel.tunnel.provider == Some(TunnelProvider::Cloudflared)
@@ -317,9 +320,14 @@ pub async fn start_tunnel_from_settings_dir(
     input: StartTunnelInput,
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.clone())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
     let metadata = build_tunnel_metadata(settings.current_tunnel(), &input.provider);
     let response = client
         .start_tunnel(&TunnelStartRequest {
+            tunnel_id,
             provider: input.provider,
             target_url: input.target_url,
             auto_restart: Some(input.auto_restart),
@@ -341,7 +349,11 @@ pub async fn stop_tunnel_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
-    let response = client.stop_tunnel().await.map_err(command_error)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.clone())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
+    let response = client.stop_tunnel(&tunnel_id).await.map_err(command_error)?;
 
     Ok(DashboardSnapshot {
         connected: true,
@@ -469,7 +481,15 @@ pub async fn load_provider_status_summary_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<Option<ProviderStatusVm>, String> {
     let (settings, client) = load_client(settings_dir)?;
-    let tunnel = client.tunnel_status().await.ok().map(|response| response.tunnel);
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.clone())
+        .unwrap_or_else(|| "primary".to_string());
+    let tunnel = client
+        .tunnel_status(&tunnel_id)
+        .await
+        .ok()
+        .map(|response| response.tunnel);
     let log_lines = client
         .tunnel_logs(40)
         .await
@@ -1050,6 +1070,7 @@ mod tests {
 
     async fn tunnel_status_handler() -> Json<TunnelStatusResponse> {
         Json(TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: TunnelStatus {
                 state: tunnelmux_core::TunnelState::Running,
                 provider: Some(TunnelProvider::Cloudflared),
@@ -1067,6 +1088,7 @@ mod tests {
 
     async fn stopped_tunnel_status_handler() -> Json<TunnelStatusResponse> {
         Json(TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: TunnelStatus {
                 state: tunnelmux_core::TunnelState::Stopped,
                 provider: Some(TunnelProvider::Cloudflared),
@@ -1084,6 +1106,7 @@ mod tests {
 
     async fn running_named_tunnel_status_handler() -> Json<TunnelStatusResponse> {
         Json(TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: TunnelStatus {
                 state: tunnelmux_core::TunnelState::Running,
                 provider: Some(TunnelProvider::Cloudflared),
@@ -1573,6 +1596,7 @@ mod tests {
     ) -> Json<TunnelStatusResponse> {
         *captured.lock().await = Some(request.clone());
         Json(TunnelStatusResponse {
+            tunnel_id: request.tunnel_id.clone(),
             tunnel: TunnelStatus {
                 state: tunnelmux_core::TunnelState::Running,
                 provider: Some(request.provider),

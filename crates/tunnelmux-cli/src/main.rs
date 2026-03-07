@@ -1626,6 +1626,7 @@ mod tests {
             version: "0.1.0".to_string(),
         };
         let tunnel = TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: tunnelmux_core::TunnelStatus {
                 state: tunnelmux_core::TunnelState::Running,
                 provider: Some(tunnelmux_core::TunnelProvider::Cloudflared),
@@ -1814,6 +1815,7 @@ mod tests {
     #[test]
     fn is_tunnel_ready_requires_running_state_and_public_url() {
         let running_ready = TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: tunnelmux_core::TunnelStatus {
                 state: tunnelmux_core::TunnelState::Running,
                 provider: Some(tunnelmux_core::TunnelProvider::Cloudflared),
@@ -1830,6 +1832,7 @@ mod tests {
         assert!(is_tunnel_ready(&running_ready));
 
         let running_without_public = TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: tunnelmux_core::TunnelStatus {
                 public_base_url: None,
                 ..running_ready.tunnel.clone()
@@ -1838,6 +1841,7 @@ mod tests {
         assert!(!is_tunnel_ready(&running_without_public));
 
         let starting_with_public = TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: tunnelmux_core::TunnelStatus {
                 state: tunnelmux_core::TunnelState::Starting,
                 ..running_ready.tunnel
@@ -1935,6 +1939,7 @@ mod tests {
         target_url: Option<&str>,
     ) -> TunnelStatusResponse {
         TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: tunnelmux_core::TunnelStatus {
                 state,
                 provider,
