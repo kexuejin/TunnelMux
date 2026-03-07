@@ -441,6 +441,53 @@ pub(super) async fn stop_tunnel(
     }))
 }
 
+pub(super) async fn delete_tunnel(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<tunnelmux_core::TunnelDeleteRequest>,
+) -> Result<Json<tunnelmux_core::DeleteTunnelResponse>, ApiError> {
+    if request.tunnel_id.trim().is_empty() {
+        return Err(ApiError::bad_request("tunnel_id is required"));
+    }
+
+    stop_running_process(&state, &request.tunnel_id)
+        .await
+        .map_err(|err| ApiError::internal(format!("failed to stop tunnel before delete: {err}")))?;
+    let gateway_removed = release_tunnel_gateway_listener(&state, &request.tunnel_id).await;
+
+    let removed = {
+        let mut runtime = state.runtime.lock().await;
+        runtime.running_tunnels.remove(&request.tunnel_id);
+        runtime.pending_restarts.remove(&request.tunnel_id);
+
+        let before_tunnels = runtime.persisted.tunnels.len();
+        runtime
+            .persisted
+            .tunnels
+            .retain(|tunnel| tunnel.id != request.tunnel_id);
+        let tunnels_removed = before_tunnels != runtime.persisted.tunnels.len();
+
+        let before_routes = runtime.persisted.routes.len();
+        runtime
+            .persisted
+            .routes
+            .retain(|route| route.tunnel_id != request.tunnel_id);
+        let routes_removed = before_routes != runtime.persisted.routes.len();
+
+        if runtime.persisted.current_tunnel_id.as_deref() == Some(request.tunnel_id.as_str()) {
+            runtime.persisted.current_tunnel_id =
+                runtime.persisted.known_tunnel_ids().into_iter().next();
+        }
+
+        tunnels_removed || routes_removed || gateway_removed
+    };
+
+    if removed {
+        persist_from_runtime(&state).await?;
+    }
+
+    Ok(Json(tunnelmux_core::DeleteTunnelResponse { removed }))
+}
+
 pub(super) async fn list_routes(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TunnelRouteQuery>,

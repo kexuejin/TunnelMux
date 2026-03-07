@@ -594,11 +594,8 @@ pub async fn delete_tunnel_profile_from_settings_dir(
     id: &str,
 ) -> Result<TunnelWorkspaceVm, String> {
     if let Ok((_, client)) = load_client(settings_dir) {
-        let _ = client.stop_tunnel(id).await;
-        if let Ok(routes) = client.list_routes(id).await {
-            for route in routes.routes {
-                let _ = client.delete_route(&route.id, id, true).await;
-            }
+        if client.health().await.is_ok() {
+            client.delete_tunnel(id).await.map_err(command_error)?;
         }
     }
     delete_tunnel_profile_from_settings_dir_without_daemon(settings_dir, id)
@@ -1501,8 +1498,8 @@ mod tests {
                 enabled: true,
             },
         ]));
-        let stopped_tunnels = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
-        let base_url = spawn_tunnel_delete_server(routes.clone(), stopped_tunnels.clone()).await;
+        let deleted_tunnels = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let base_url = spawn_tunnel_delete_server(routes.clone(), deleted_tunnels.clone()).await;
         save_settings_to_dir(
             &temp_dir,
             &GuiSettings {
@@ -1534,7 +1531,7 @@ mod tests {
         assert_eq!(workspace.tunnels.len(), 1);
         assert_eq!(workspace.current_tunnel_id.as_deref(), Some("primary"));
         assert_eq!(
-            stopped_tunnels.lock().await.as_slice(),
+            deleted_tunnels.lock().await.as_slice(),
             &["tunnel-2".to_string()]
         );
         let remaining_routes = routes.lock().await.clone();
@@ -1778,19 +1775,16 @@ mod tests {
 
     async fn spawn_tunnel_delete_server(
         routes: std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
-        stopped_tunnels: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
+        deleted_tunnels: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
     ) -> String {
         let app = Router::new()
-            .route("/v1/routes", get(list_routes_handler))
+            .route("/v1/health", get(health_handler))
             .route(
-                "/v1/routes/{id}",
-                axum::routing::delete(delete_route_with_query_handler),
-            )
-            .route(
-                "/v1/tunnel/stop",
+                "/v1/tunnel/delete",
                 axum::routing::post({
-                    let stopped_tunnels = stopped_tunnels.clone();
-                    move |payload| stop_tunnel_handler(stopped_tunnels.clone(), payload)
+                    let deleted_tunnels = deleted_tunnels.clone();
+                    let routes = routes.clone();
+                    move |payload| delete_tunnel_handler(deleted_tunnels.clone(), routes.clone(), payload)
                 }),
             )
             .with_state(routes);
@@ -1880,60 +1874,17 @@ mod tests {
         Ok(Json(tunnelmux_core::DeleteRouteResponse { removed: true }))
     }
 
-    async fn delete_route_with_query_handler(
-        axum::extract::Path(id): axum::extract::Path<String>,
-        tauri_state: axum::extract::State<
-            std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
-        >,
-        Query(query): Query<std::collections::HashMap<String, String>>,
-    ) -> Result<
-        Json<tunnelmux_core::DeleteRouteResponse>,
-        (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>),
-    > {
-        let Some(tunnel_id) = query.get("tunnel_id") else {
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(tunnelmux_core::ErrorResponse {
-                    error: "missing tunnel_id".to_string(),
-                }),
-            ));
-        };
-
-        let mut routes = tauri_state.0.lock().await;
-        let before = routes.len();
-        routes.retain(|item| !(item.id == id && item.tunnel_id == *tunnel_id));
-        if routes.len() == before {
-            return Err((
-                axum::http::StatusCode::NOT_FOUND,
-                Json(tunnelmux_core::ErrorResponse {
-                    error: "route not found".to_string(),
-                }),
-            ));
-        }
-
-        Ok(Json(tunnelmux_core::DeleteRouteResponse { removed: true }))
-    }
-
-    async fn stop_tunnel_handler(
-        stopped_tunnels: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
-        Json(request): Json<tunnelmux_core::TunnelStopRequest>,
-    ) -> Json<tunnelmux_core::TunnelStatusResponse> {
-        stopped_tunnels.lock().await.push(request.tunnel_id.clone());
-        Json(tunnelmux_core::TunnelStatusResponse {
-            tunnel_id: request.tunnel_id,
-            tunnel: tunnelmux_core::TunnelStatus {
-                state: tunnelmux_core::TunnelState::Stopped,
-                provider: Some(TunnelProvider::Ngrok),
-                target_url: Some("http://127.0.0.1:58080".to_string()),
-                public_base_url: None,
-                started_at: None,
-                updated_at: "2026-03-07T00:00:01Z".to_string(),
-                process_id: None,
-                auto_restart: true,
-                restart_count: 0,
-                last_error: None,
-            },
-        })
+    async fn delete_tunnel_handler(
+        deleted_tunnels: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
+        routes: std::sync::Arc<tokio::sync::Mutex<Vec<tunnelmux_core::RouteRule>>>,
+        Json(request): Json<tunnelmux_core::TunnelDeleteRequest>,
+    ) -> Json<tunnelmux_core::DeleteTunnelResponse> {
+        deleted_tunnels.lock().await.push(request.tunnel_id.clone());
+        routes
+            .lock()
+            .await
+            .retain(|route| route.tunnel_id != request.tunnel_id);
+        Json(tunnelmux_core::DeleteTunnelResponse { removed: true })
     }
 
     fn prepare_temp_dir() -> PathBuf {

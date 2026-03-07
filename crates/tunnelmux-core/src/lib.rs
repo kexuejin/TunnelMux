@@ -57,6 +57,11 @@ pub struct TunnelStopRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TunnelDeleteRequest {
+    pub tunnel_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TunnelProfileSummary {
     pub id: String,
     pub name: Option<String>,
@@ -224,6 +229,11 @@ pub struct DashboardResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteRouteResponse {
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteTunnelResponse {
     pub removed: bool,
 }
 
