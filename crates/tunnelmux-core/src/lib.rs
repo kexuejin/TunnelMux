@@ -38,6 +38,7 @@ pub struct TunnelStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TunnelStartRequest {
+    pub tunnel_id: String,
     pub provider: TunnelProvider,
     pub target_url: String,
     pub auto_restart: Option<bool>,
@@ -46,7 +47,13 @@ pub struct TunnelStartRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TunnelStatusResponse {
+    pub tunnel_id: String,
     pub tunnel: TunnelStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TunnelStopRequest {
+    pub tunnel_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +81,7 @@ pub struct TunnelLogsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteRule {
+    pub tunnel_id: String,
     pub id: String,
     pub match_host: Option<String>,
     pub match_path_prefix: Option<String>,
@@ -86,6 +94,7 @@ pub struct RouteRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateRouteRequest {
+    pub tunnel_id: String,
     pub id: String,
     pub match_host: Option<String>,
     pub match_path_prefix: Option<String>,

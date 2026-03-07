@@ -118,6 +118,7 @@ async fn tunnel_stop_handler(
     );
 
     Json(TunnelStatusResponse {
+        tunnel_id: "primary".to_string(),
         tunnel: TunnelStatus {
             state: TunnelState::Stopped,
             provider: Some(TunnelProvider::Cloudflared),

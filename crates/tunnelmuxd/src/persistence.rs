@@ -29,6 +29,7 @@ pub(super) fn default_provider_log_file() -> PathBuf {
 
 fn route_rule_to_create_request(route: RouteRule) -> CreateRouteRequest {
     CreateRouteRequest {
+        tunnel_id: route.tunnel_id,
         id: route.id,
         match_host: route.match_host,
         match_path_prefix: route.match_path_prefix,

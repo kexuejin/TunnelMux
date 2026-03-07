@@ -263,8 +263,11 @@ pub async fn refresh_dashboard_from_settings_dir(
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
     let current_tunnel = settings.current_tunnel();
+    let tunnel_id = current_tunnel
+        .map(|tunnel| tunnel.id.as_str())
+        .unwrap_or("primary");
     match client.health().await {
-        Ok(health) => match client.tunnel_status().await {
+        Ok(health) => match client.tunnel_status(tunnel_id).await {
             Ok(tunnel) => {
                 let message = if tunnel.tunnel.state == tunnelmux_core::TunnelState::Running
                     && tunnel.tunnel.provider == Some(TunnelProvider::Cloudflared)
@@ -317,9 +320,14 @@ pub async fn start_tunnel_from_settings_dir(
     input: StartTunnelInput,
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.clone())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
     let metadata = build_tunnel_metadata(settings.current_tunnel(), &input.provider);
     let response = client
         .start_tunnel(&TunnelStartRequest {
+            tunnel_id,
             provider: input.provider,
             target_url: input.target_url,
             auto_restart: Some(input.auto_restart),
@@ -341,7 +349,11 @@ pub async fn stop_tunnel_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
-    let response = client.stop_tunnel().await.map_err(command_error)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.clone())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
+    let response = client.stop_tunnel(&tunnel_id).await.map_err(command_error)?;
 
     Ok(DashboardSnapshot {
         connected: true,
@@ -355,9 +367,17 @@ pub async fn stop_tunnel_from_settings_dir(
 pub async fn list_routes_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<RouteWorkspaceSnapshot, String> {
-    let (_, client) = load_client(settings_dir)?;
-    let response = client.list_routes().await.map_err(command_error)?;
-    let message = if response.routes.is_empty() {
+    let (settings, client) = load_client(settings_dir)?;
+    let current_tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
+    let response = client
+        .list_routes(current_tunnel_id)
+        .await
+        .map_err(command_error)?;
+    let routes = response.routes;
+    let message = if routes.is_empty() {
         Some(
             "No services yet. Add your first local service to replace the default welcome page."
                 .to_string(),
@@ -365,15 +385,19 @@ pub async fn list_routes_from_settings_dir(
     } else {
         None
     };
-    Ok(RouteWorkspaceSnapshot::from_routes(response.routes, message))
+    Ok(RouteWorkspaceSnapshot::from_routes(routes, message))
 }
 
 pub async fn save_route_from_settings_dir(
     settings_dir: &Path,
     form: RouteFormData,
 ) -> Result<RouteWorkspaceSnapshot, String> {
-    let (_, client) = load_client(settings_dir)?;
-    let request = form.into_create_request();
+    let (settings, client) = load_client(settings_dir)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
+    let request = form.into_create_request(tunnel_id);
     if let Some(original_id) = form.original_id.as_deref() {
         client
             .update_route_with_options(original_id, &request, true)
@@ -383,9 +407,10 @@ pub async fn save_route_from_settings_dir(
         client.create_route(&request).await.map_err(command_error)?;
     }
 
-    let routes = client.list_routes().await.map_err(command_error)?;
+    let routes = client.list_routes(tunnel_id).await.map_err(command_error)?;
+    let filtered = routes.routes;
     Ok(RouteWorkspaceSnapshot::from_routes(
-        routes.routes,
+        filtered,
         Some("Route saved.".to_string()),
     ))
 }
@@ -394,14 +419,19 @@ pub async fn delete_route_from_settings_dir(
     settings_dir: &Path,
     id: String,
 ) -> Result<RouteWorkspaceSnapshot, String> {
-    let (_, client) = load_client(settings_dir)?;
+    let (settings, client) = load_client(settings_dir)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
     client
-        .delete_route(&id, false)
+        .delete_route(&id, tunnel_id, false)
         .await
         .map_err(command_error)?;
-    let routes = client.list_routes().await.map_err(command_error)?;
+    let routes = client.list_routes(tunnel_id).await.map_err(command_error)?;
+    let filtered = routes.routes;
     Ok(RouteWorkspaceSnapshot::from_routes(
-        routes.routes,
+        filtered,
         Some("Route deleted.".to_string()),
     ))
 }
@@ -443,7 +473,15 @@ pub async fn load_provider_status_summary_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<Option<ProviderStatusVm>, String> {
     let (settings, client) = load_client(settings_dir)?;
-    let tunnel = client.tunnel_status().await.ok().map(|response| response.tunnel);
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.clone())
+        .unwrap_or_else(|| "primary".to_string());
+    let tunnel = client
+        .tunnel_status(&tunnel_id)
+        .await
+        .ok()
+        .map(|response| response.tunnel);
     let log_lines = client
         .tunnel_logs(40)
         .await
@@ -1024,6 +1062,7 @@ mod tests {
 
     async fn tunnel_status_handler() -> Json<TunnelStatusResponse> {
         Json(TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: TunnelStatus {
                 state: tunnelmux_core::TunnelState::Running,
                 provider: Some(TunnelProvider::Cloudflared),
@@ -1041,6 +1080,7 @@ mod tests {
 
     async fn stopped_tunnel_status_handler() -> Json<TunnelStatusResponse> {
         Json(TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: TunnelStatus {
                 state: tunnelmux_core::TunnelState::Stopped,
                 provider: Some(TunnelProvider::Cloudflared),
@@ -1058,6 +1098,7 @@ mod tests {
 
     async fn running_named_tunnel_status_handler() -> Json<TunnelStatusResponse> {
         Json(TunnelStatusResponse {
+            tunnel_id: "primary".to_string(),
             tunnel: TunnelStatus {
                 state: tunnelmux_core::TunnelState::Running,
                 provider: Some(TunnelProvider::Cloudflared),
@@ -1118,6 +1159,7 @@ mod tests {
         let temp_dir = prepare_temp_dir();
         let routes = std::sync::Arc::new(tokio::sync::Mutex::new(vec![
             tunnelmux_core::RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/".to_string()),
@@ -1128,6 +1170,7 @@ mod tests {
                 enabled: true,
             },
             tunnelmux_core::RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/api".to_string()),
@@ -1545,6 +1588,7 @@ mod tests {
     ) -> Json<TunnelStatusResponse> {
         *captured.lock().await = Some(request.clone());
         Json(TunnelStatusResponse {
+            tunnel_id: request.tunnel_id.clone(),
             tunnel: TunnelStatus {
                 state: tunnelmux_core::TunnelState::Running,
                 provider: Some(request.provider),
@@ -1603,6 +1647,7 @@ mod tests {
         Json(request): Json<tunnelmux_core::CreateRouteRequest>,
     ) -> Json<tunnelmux_core::RouteRule> {
         let route = tunnelmux_core::RouteRule {
+            tunnel_id: request.tunnel_id,
             id: request.id,
             match_host: request.match_host,
             match_path_prefix: request.match_path_prefix,
@@ -1627,6 +1672,7 @@ mod tests {
         (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>),
     > {
         let route = tunnelmux_core::RouteRule {
+            tunnel_id: request.tunnel_id,
             id: request.id,
             match_host: request.match_host,
             match_path_prefix: request.match_path_prefix,

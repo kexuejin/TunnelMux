@@ -1,6 +1,11 @@
 use super::*;
 use tunnelmux_core::{TunnelProfileSummary, TunnelWorkspaceResponse};
 
+#[derive(Debug, Deserialize)]
+pub(super) struct TunnelQuery {
+    pub tunnel_id: Option<String>,
+}
+
 pub(super) async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         ok: true,
@@ -66,8 +71,12 @@ pub(super) fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 pub(super) async fn get_tunnel_status(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<TunnelQuery>,
 ) -> Result<Json<TunnelStatusResponse>, ApiError> {
-    Ok(Json(build_tunnel_status_snapshot(&state).await?))
+    Ok(Json(
+        build_tunnel_status_snapshot(&state, query.tunnel_id.as_deref().unwrap_or("primary"))
+            .await?,
+    ))
 }
 
 pub(super) async fn get_tunnel_workspace(
@@ -83,10 +92,11 @@ pub(super) async fn stream_tunnel_status(
     let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     let state_for_task = state.clone();
+    let tunnel_id = "primary".to_string();
 
     tokio::spawn(async move {
         loop {
-            match build_tunnel_status_snapshot(&state_for_task).await {
+            match build_tunnel_status_snapshot(&state_for_task, &tunnel_id).await {
                 Ok(snapshot) => {
                     let payload = match serde_json::to_string(&snapshot) {
                         Ok(value) => value,
@@ -312,6 +322,9 @@ pub(super) async fn start_tunnel(
     State(state): State<Arc<AppState>>,
     Json(mut request): Json<TunnelStartRequest>,
 ) -> Result<Json<TunnelStatusResponse>, ApiError> {
+    if request.tunnel_id.trim().is_empty() {
+        return Err(ApiError::bad_request("tunnel_id is required"));
+    }
     validate_target_url(&request.target_url)?;
     request.target_url = request.target_url.trim().to_string();
     let request_metadata = request.metadata.clone();
@@ -378,12 +391,19 @@ pub(super) async fn start_tunnel(
     };
     persist_from_runtime(&state).await?;
 
-    Ok(Json(TunnelStatusResponse { tunnel: status }))
+    Ok(Json(TunnelStatusResponse {
+        tunnel_id: request.tunnel_id,
+        tunnel: status,
+    }))
 }
 
 pub(super) async fn stop_tunnel(
     State(state): State<Arc<AppState>>,
+    Json(request): Json<tunnelmux_core::TunnelStopRequest>,
 ) -> Result<Json<TunnelStatusResponse>, ApiError> {
+    if request.tunnel_id.trim().is_empty() {
+        return Err(ApiError::bad_request("tunnel_id is required"));
+    }
     stop_running_process(&state)
         .await
         .map_err(|err| ApiError::internal(format!("failed to stop tunnel: {err}")))?;
@@ -396,11 +416,17 @@ pub(super) async fn stop_tunnel(
     };
     persist_from_runtime(&state).await?;
 
-    Ok(Json(TunnelStatusResponse { tunnel: status }))
+    Ok(Json(TunnelStatusResponse {
+        tunnel_id: request.tunnel_id,
+        tunnel: status,
+    }))
 }
 
-pub(super) async fn list_routes(State(state): State<Arc<AppState>>) -> Json<RoutesResponse> {
-    Json(build_routes_snapshot(&state).await)
+pub(super) async fn list_routes(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TunnelRouteQuery>,
+) -> Json<RoutesResponse> {
+    Json(build_routes_snapshot_for_tunnel(&state, query.tunnel_id.as_deref()).await)
 }
 
 pub(super) async fn match_route(
@@ -417,7 +443,18 @@ pub(super) async fn match_route(
 
     let route = {
         let runtime = state.runtime.lock().await;
-        select_route(&runtime.persisted.routes, host.as_deref(), &path).cloned()
+        let routes = if let Some(tunnel_id) = query.tunnel_id.as_deref() {
+            runtime
+                .persisted
+                .routes
+                .iter()
+                .filter(|route| route.tunnel_id == tunnel_id)
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            runtime.persisted.routes.clone()
+        };
+        select_route(&routes, host.as_deref(), &path).cloned()
     };
 
     let Some(route) = route else {
@@ -766,22 +803,39 @@ pub(super) async fn build_upstreams_health_snapshot(
 }
 
 pub(super) async fn build_routes_snapshot(state: &Arc<AppState>) -> RoutesResponse {
+    build_routes_snapshot_for_tunnel(state, None).await
+}
+
+pub(super) async fn build_routes_snapshot_for_tunnel(
+    state: &Arc<AppState>,
+    tunnel_id: Option<&str>,
+) -> RoutesResponse {
     let routes = {
         let runtime = state.runtime.lock().await;
-        runtime.persisted.routes.clone()
+        runtime
+            .persisted
+            .routes
+            .iter()
+            .filter(|route| tunnel_id.map(|id| route.tunnel_id == id).unwrap_or(true))
+            .cloned()
+            .collect()
     };
     RoutesResponse { routes }
 }
 
 pub(super) async fn build_tunnel_status_snapshot(
     state: &Arc<AppState>,
+    tunnel_id: &str,
 ) -> Result<TunnelStatusResponse, ApiError> {
     reconcile_runtime_and_maybe_restart(state).await?;
     let snapshot = {
         let runtime = state.runtime.lock().await;
         runtime.persisted.tunnel.clone()
     };
-    Ok(TunnelStatusResponse { tunnel: snapshot })
+    Ok(TunnelStatusResponse {
+        tunnel_id: tunnel_id.to_string(),
+        tunnel: snapshot,
+    })
 }
 
 pub(super) async fn build_tunnel_workspace_snapshot(
@@ -865,11 +919,11 @@ pub(super) async fn add_route(
             .persisted
             .routes
             .iter()
-            .any(|item| item.id == route.id)
+            .any(|item| item.id == route.id && item.tunnel_id == route.tunnel_id)
         {
             return Err(ApiError::conflict(format!(
-                "route '{}' already exists",
-                route.id
+                "route '{}' already exists in tunnel '{}'",
+                route.id, route.tunnel_id
             )));
         }
         runtime.persisted.routes.push(route.clone());
@@ -897,7 +951,10 @@ pub(super) async fn update_route(
             runtime.persisted.routes.push(route.clone());
             false
         } else {
-            return Err(ApiError::not_found(format!("route '{}' not found", id)));
+            return Err(ApiError::not_found(format!(
+                "route '{}' not found in tunnel '{}'",
+                id, route.tunnel_id
+            )));
         }
     };
 
@@ -913,16 +970,26 @@ pub(super) async fn update_route(
 pub(super) async fn delete_route(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
+    Query(query): Query<TunnelRouteQuery>,
 ) -> Result<Json<DeleteRouteResponse>, ApiError> {
+    let Some(tunnel_id) = query.tunnel_id.filter(|value| !value.trim().is_empty()) else {
+        return Err(ApiError::bad_request("tunnel_id is required"));
+    };
     let removed = {
         let mut runtime = state.runtime.lock().await;
         let before = runtime.persisted.routes.len();
-        runtime.persisted.routes.retain(|item| item.id != id);
+        runtime
+            .persisted
+            .routes
+            .retain(|item| !(item.id == id && item.tunnel_id == tunnel_id));
         before != runtime.persisted.routes.len()
     };
 
     if !removed {
-        return Err(ApiError::not_found(format!("route '{}' not found", id)));
+        return Err(ApiError::not_found(format!(
+            "route '{}' not found in tunnel '{}'",
+            id, tunnel_id
+        )));
     }
 
     persist_from_runtime(&state).await?;
