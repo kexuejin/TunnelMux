@@ -5,6 +5,7 @@ import {
   formatCurrentTunnelMeta,
   formatCurrentTunnelUrl,
   formatTunnelOptionLabel,
+  resolveDashboardStatus,
   tunnelPickerRowClass,
 } from './tunnel-picker-helpers.mjs';
 
@@ -61,4 +62,19 @@ test('tunnelPickerRowClass distinguishes selected and runtime states', () => {
   assert.equal(tunnelPickerRowClass({ state: 'running' }, true), 'tunnel-picker-item selected running');
   assert.equal(tunnelPickerRowClass({ state: 'starting' }, false), 'tunnel-picker-item starting');
   assert.equal(tunnelPickerRowClass({ state: 'error' }, false), 'tunnel-picker-item error');
+});
+
+test('resolveDashboardStatus only surfaces daemon errors for passive refresh', () => {
+  assert.deepEqual(
+    resolveDashboardStatus({ connected: true, message: 'running fine' }),
+    null,
+  );
+
+  assert.deepEqual(
+    resolveDashboardStatus({ connected: false, message: 'connection refused' }),
+    {
+      message: 'Daemon unavailable: connection refused',
+      isError: true,
+    },
+  );
 });

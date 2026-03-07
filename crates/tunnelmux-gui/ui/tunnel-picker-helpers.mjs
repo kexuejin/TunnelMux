@@ -39,3 +39,13 @@ export function tunnelPickerRowClass(tunnel, selected) {
   const state = tunnel?.state ?? 'idle';
   return `tunnel-picker-item${selected ? ' selected' : ''} ${state}`.trim();
 }
+
+export function resolveDashboardStatus(snapshot) {
+  if (snapshot?.connected) {
+    return null;
+  }
+  return {
+    message: `Daemon unavailable: ${snapshot?.message ?? 'check Settings'}`,
+    isError: true,
+  };
+}

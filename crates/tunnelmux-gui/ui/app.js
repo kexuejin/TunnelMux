@@ -2,6 +2,7 @@ import {
   formatCurrentTunnelMeta,
   formatCurrentTunnelUrl,
   formatTunnelOptionLabel,
+  resolveDashboardStatus,
   titleCase,
   tunnelPickerRowClass,
 } from './tunnel-picker-helpers.mjs';
@@ -852,10 +853,13 @@ function renderDashboard(snapshot) {
   elements.stateBadge.textContent = titleCase(tunnelState);
   elements.stateBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
 
+  const dashboardStatus = resolveDashboardStatus(snapshot);
   if (!connected) {
     elements.homePublicUrlMeta.textContent = 'TunnelMux is not ready yet. Retry or open Settings.';
     elements.dashboardMessage.textContent = snapshot?.message ?? 'Unable to reach the local daemon.';
-    renderStatus(`Daemon unavailable: ${snapshot?.message ?? 'check Settings'}`, true);
+    if (dashboardStatus) {
+      renderStatus(dashboardStatus.message, dashboardStatus.isError);
+    }
     return;
   }
 
@@ -866,27 +870,23 @@ function renderDashboard(snapshot) {
     elements.dashboardMessage.textContent = enabledServices > 0
       ? 'Live now.'
       : 'No services configured yet.';
-    renderStatus('Dashboard refreshed.');
     return;
   }
 
   if (tunnelState === 'running' && namedCloudflared) {
     elements.homePublicUrlMeta.textContent = 'Your named Cloudflare tunnel is connected. Public hostname and Access are managed in Cloudflare.';
     elements.dashboardMessage.textContent = snapshot?.message ?? 'Named tunnel running.';
-    renderStatus('Dashboard refreshed.');
     return;
   }
 
   if (tunnelState === 'stopped' || tunnelState === 'error') {
     elements.homePublicUrlMeta.textContent = 'The previous tunnel is no longer running. Start it again to restore a public URL.';
     elements.dashboardMessage.textContent = snapshot?.message ?? 'Tunnel not running.';
-    renderStatus('Dashboard refreshed.', tunnelState === 'error');
     return;
   }
 
   elements.homePublicUrlMeta.textContent = 'TunnelMux is connected. Start the tunnel to get a public URL.';
   elements.dashboardMessage.textContent = snapshot?.message ?? 'Connected, but not live yet.';
-  renderStatus('Dashboard refreshed.');
 }
 
 function renderProviderStatusSummary(summary) {
