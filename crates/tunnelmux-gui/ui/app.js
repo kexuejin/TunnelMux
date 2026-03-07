@@ -87,6 +87,7 @@ function bindElements() {
   elements.createTunnelEmpty = document.getElementById('create-tunnel-empty');
   elements.tunnelContextBar = document.getElementById('tunnel-context-bar');
   elements.currentTunnelName = document.getElementById('current-tunnel-name');
+  elements.currentTunnelBadge = document.getElementById('current-tunnel-badge');
   elements.currentTunnelMeta = document.getElementById('current-tunnel-meta');
   elements.tunnelSwitcherShell = document.getElementById('tunnel-switcher-shell');
   elements.tunnelSwitcher = document.getElementById('tunnel-switcher');
@@ -380,14 +381,23 @@ function renderTunnelWorkspace(workspace) {
   }
 
   elements.currentTunnelName.textContent = currentTunnel.name;
-  elements.currentTunnelMeta.textContent = currentTunnel.provider;
+  const tunnelState = currentTunnel.state ?? 'idle';
+  const routeCount = Number(currentTunnel.route_count ?? 0);
+  const enabledRouteCount = Number(currentTunnel.enabled_route_count ?? 0);
+  elements.currentTunnelBadge.textContent = titleCase(tunnelState);
+  elements.currentTunnelBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
+  elements.currentTunnelMeta.textContent = [
+    currentTunnel.provider,
+    titleCase(tunnelState),
+    `${enabledRouteCount}/${routeCount} services live`,
+  ].join(' • ');
   elements.tunnelSwitcherShell.hidden = tunnels.length <= 1;
   if (elements.tunnelSwitcher) {
     elements.tunnelSwitcher.innerHTML = '';
     tunnels.forEach((tunnel) => {
       const option = document.createElement('option');
       option.value = tunnel.id;
-      option.textContent = tunnel.name;
+      option.textContent = formatTunnelOptionLabel(tunnel);
       option.selected = tunnel.id === workspace.current_tunnel_id;
       elements.tunnelSwitcher.appendChild(option);
     });
@@ -469,11 +479,17 @@ async function saveTunnel({ startNow }) {
 }
 
 async function switchTunnel() {
+  const nextTunnelId = elements.tunnelSwitcher.value || '';
   const workspace = await invoke('select_tunnel_profile', { id: elements.tunnelSwitcher.value || '' });
   state.tunnelWorkspace = workspace;
   await loadSettings();
   renderTunnelWorkspace(workspace);
   await ensureLocalDaemonAndRefresh();
+  const selectedTunnel = (workspace?.tunnels ?? []).find((tunnel) => tunnel.id === nextTunnelId)
+    ?? (workspace?.tunnels ?? []).find((tunnel) => tunnel.id === workspace.current_tunnel_id);
+  if (selectedTunnel) {
+    renderStatus(`Switched to ${selectedTunnel.name}.`);
+  }
 }
 
 async function deleteTunnelProfile() {
@@ -485,7 +501,13 @@ async function deleteTunnelProfile() {
     renderStatus('Keep at least one tunnel, or create another before deleting this one.', true);
     return;
   }
-  if (!window.confirm(`Delete tunnel '${current.name}'?`)) {
+  const currentSummary = (state.tunnelWorkspace?.tunnels ?? []).find((tunnel) => tunnel.id === current.id);
+  const serviceCount = Number(currentSummary?.route_count ?? 0);
+  const stateLabel = titleCase(currentSummary?.state ?? 'idle');
+  const confirmMessage = serviceCount > 0
+    ? `Delete tunnel '${current.name}'?\n\nState: ${stateLabel}\nServices removed from daemon: ${serviceCount}`
+    : `Delete tunnel '${current.name}'?\n\nState: ${stateLabel}`;
+  if (!window.confirm(confirmMessage)) {
     return;
   }
 
@@ -495,7 +517,7 @@ async function deleteTunnelProfile() {
   renderTunnelWorkspace(workspace);
   closeTunnelDrawer();
   await ensureLocalDaemonAndRefresh();
-  renderStatus('Tunnel deleted.');
+  renderStatus(`Deleted tunnel ${current.name}.`);
 }
 
 async function loadSettings() {
@@ -1134,6 +1156,13 @@ function ensurePath(value) {
 function renderStatus(message, isError = false) {
   elements.status.textContent = message;
   elements.status.classList.toggle('error', isError);
+}
+
+function formatTunnelOptionLabel(tunnel) {
+  const stateLabel = titleCase(tunnel.state ?? 'idle');
+  const routeCount = Number(tunnel.route_count ?? 0);
+  const enabledRouteCount = Number(tunnel.enabled_route_count ?? 0);
+  return `${tunnel.name} • ${stateLabel} • ${enabledRouteCount}/${routeCount}`;
 }
 
 function formatYesNo(value) {

@@ -145,6 +145,17 @@ select:disabled {
   margin-bottom: 18px;
 }
 
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.title-row .status-pill {
+  margin-bottom: 0;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   color: #93c5fd;

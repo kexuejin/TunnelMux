@@ -119,12 +119,12 @@ pub async fn refresh_dashboard(
 }
 
 #[tauri::command]
-pub fn load_tunnel_workspace(
+pub async fn load_tunnel_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, GuiAppState>,
 ) -> Result<TunnelWorkspaceVm, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
-    load_tunnel_workspace_from_settings_dir(&settings_dir)
+    load_tunnel_workspace_from_settings_dir(&settings_dir).await
 }
 
 #[tauri::command]
@@ -515,7 +515,7 @@ pub async fn load_provider_status_summary_from_settings_dir(
     ))
 }
 
-pub fn load_tunnel_workspace_from_settings_dir(
+pub async fn load_tunnel_workspace_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<TunnelWorkspaceVm, String> {
     let settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
@@ -526,22 +526,44 @@ pub fn load_tunnel_workspace_from_settings_dir(
         });
     }
 
+    let daemon_workspace = if let Ok((_, client)) = load_client(settings_dir) {
+        if client.health().await.is_ok() {
+            client.tunnel_workspace().await.ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let tunnels = settings
         .tunnels
         .iter()
-        .map(|tunnel| TunnelProfileVm {
-            id: tunnel.id.clone(),
-            name: tunnel.name.clone(),
-            provider: match tunnel.provider {
-                TunnelProvider::Cloudflared => "cloudflared".to_string(),
-                TunnelProvider::Ngrok => "ngrok".to_string(),
-            },
+        .map(|tunnel| {
+            let summary = daemon_workspace
+                .as_ref()
+                .and_then(|workspace| workspace.tunnels.iter().find(|item| item.id == tunnel.id));
+            TunnelProfileVm {
+                id: tunnel.id.clone(),
+                name: tunnel.name.clone(),
+                provider: match tunnel.provider {
+                    TunnelProvider::Cloudflared => "cloudflared".to_string(),
+                    TunnelProvider::Ngrok => "ngrok".to_string(),
+                },
+                state: summary
+                    .map(|item| format!("{:?}", item.state).to_lowercase())
+                    .unwrap_or_else(|| "idle".to_string()),
+                route_count: summary.map(|item| item.route_count).unwrap_or(0),
+                enabled_route_count: summary.map(|item| item.enabled_route_count).unwrap_or(0),
+            }
         })
         .collect();
 
     Ok(TunnelWorkspaceVm {
         tunnels,
-        current_tunnel_id: settings.current_tunnel_id.clone(),
+        current_tunnel_id: daemon_workspace
+            .and_then(|workspace| workspace.current_tunnel_id)
+            .or(settings.current_tunnel_id.clone()),
     })
 }
 
@@ -573,7 +595,7 @@ pub fn save_tunnel_profile_to_settings_dir(
     }
     settings.current_tunnel_id = Some(tunnel_id);
     save_settings_to_dir(settings_dir, &settings).map_err(command_error)?;
-    load_tunnel_workspace_from_settings_dir(settings_dir)
+    load_tunnel_workspace_from_settings_dir_without_daemon(settings_dir)
 }
 
 pub fn select_tunnel_profile_from_settings_dir(
@@ -586,7 +608,7 @@ pub fn select_tunnel_profile_from_settings_dir(
     }
     settings.current_tunnel_id = Some(id.to_string());
     save_settings_to_dir(settings_dir, &settings).map_err(command_error)?;
-    load_tunnel_workspace_from_settings_dir(settings_dir)
+    load_tunnel_workspace_from_settings_dir_without_daemon(settings_dir)
 }
 
 pub async fn delete_tunnel_profile_from_settings_dir(
@@ -613,7 +635,40 @@ fn delete_tunnel_profile_from_settings_dir_without_daemon(
     }
     settings.current_tunnel_id = settings.tunnels.first().map(|item| item.id.clone());
     save_settings_to_dir(settings_dir, &settings).map_err(command_error)?;
-    load_tunnel_workspace_from_settings_dir(settings_dir)
+    load_tunnel_workspace_from_settings_dir_without_daemon(settings_dir)
+}
+
+fn load_tunnel_workspace_from_settings_dir_without_daemon(
+    settings_dir: &Path,
+) -> Result<TunnelWorkspaceVm, String> {
+    let settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
+    if settings.tunnels.is_empty() {
+        return Ok(TunnelWorkspaceVm {
+            tunnels: Vec::new(),
+            current_tunnel_id: None,
+        });
+    }
+
+    let tunnels = settings
+        .tunnels
+        .iter()
+        .map(|tunnel| TunnelProfileVm {
+            id: tunnel.id.clone(),
+            name: tunnel.name.clone(),
+            provider: match tunnel.provider {
+                TunnelProvider::Cloudflared => "cloudflared".to_string(),
+                TunnelProvider::Ngrok => "ngrok".to_string(),
+            },
+            state: "idle".to_string(),
+            route_count: 0,
+            enabled_route_count: 0,
+        })
+        .collect();
+
+    Ok(TunnelWorkspaceVm {
+        tunnels,
+        current_tunnel_id: settings.current_tunnel_id.clone(),
+    })
 }
 
 fn next_tunnel_profile_id(
@@ -1376,19 +1431,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_tunnel_workspace_returns_empty_when_tunnel_not_configured() {
+    #[tokio::test]
+    async fn load_tunnel_workspace_returns_empty_when_tunnel_not_configured() {
         let temp_dir = prepare_temp_dir();
 
         let workspace = load_tunnel_workspace_from_settings_dir(&temp_dir)
+            .await
             .expect("workspace should load");
 
         assert!(workspace.tunnels.is_empty());
         assert_eq!(workspace.current_tunnel_id, None);
     }
 
-    #[test]
-    fn load_tunnel_workspace_returns_single_current_tunnel_when_configured() {
+    #[tokio::test]
+    async fn load_tunnel_workspace_returns_single_current_tunnel_when_configured() {
         let temp_dir = prepare_temp_dir();
         save_settings_to_dir(
             &temp_dir,
@@ -1406,12 +1462,61 @@ mod tests {
         .expect("settings should save");
 
         let workspace = load_tunnel_workspace_from_settings_dir(&temp_dir)
+            .await
             .expect("workspace should load");
 
         assert_eq!(workspace.tunnels.len(), 1);
         assert_eq!(workspace.current_tunnel_id.as_deref(), Some("primary"));
         assert_eq!(workspace.tunnels[0].name, "Main Tunnel");
         assert_eq!(workspace.tunnels[0].provider, "cloudflared");
+        assert_eq!(workspace.tunnels[0].state, "idle");
+        assert_eq!(workspace.tunnels[0].route_count, 0);
+        assert_eq!(workspace.tunnels[0].enabled_route_count, 0);
+    }
+
+    #[tokio::test]
+    async fn load_tunnel_workspace_merges_daemon_summary_when_available() {
+        let temp_dir = prepare_temp_dir();
+        let base_url = spawn_test_server(
+            Router::new()
+                .route("/v1/health", get(health_handler))
+                .route("/v1/tunnels/workspace", get(tunnel_workspace_handler)),
+        )
+        .await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                current_tunnel_id: Some("tunnel-2".to_string()),
+                tunnels: vec![
+                    crate::settings::TunnelProfileSettings {
+                        id: "primary".to_string(),
+                        name: "Main Tunnel".to_string(),
+                        provider: TunnelProvider::Cloudflared,
+                        ..crate::settings::TunnelProfileSettings::default()
+                    },
+                    crate::settings::TunnelProfileSettings {
+                        id: "tunnel-2".to_string(),
+                        name: "API Tunnel".to_string(),
+                        provider: TunnelProvider::Ngrok,
+                        ..crate::settings::TunnelProfileSettings::default()
+                    },
+                ],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let workspace = load_tunnel_workspace_from_settings_dir(&temp_dir)
+            .await
+            .expect("workspace should load");
+
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("tunnel-2"));
+        assert_eq!(workspace.tunnels.len(), 2);
+        assert_eq!(workspace.tunnels[0].state, "running");
+        assert_eq!(workspace.tunnels[0].route_count, 3);
+        assert_eq!(workspace.tunnels[1].state, "stopped");
+        assert_eq!(workspace.tunnels[1].enabled_route_count, 1);
     }
 
     #[test]
@@ -1679,6 +1784,34 @@ mod tests {
             config_reload_interval_ms: 1000,
             last_config_reload_at: Some("2026-03-06T10:00:00Z".to_string()),
             last_config_reload_error: None,
+        })
+    }
+
+    async fn tunnel_workspace_handler() -> Json<tunnelmux_core::TunnelWorkspaceResponse> {
+        Json(tunnelmux_core::TunnelWorkspaceResponse {
+            current_tunnel_id: Some("tunnel-2".to_string()),
+            tunnels: vec![
+                tunnelmux_core::TunnelProfileSummary {
+                    id: "primary".to_string(),
+                    name: Some("Main Tunnel".to_string()),
+                    provider: Some(TunnelProvider::Cloudflared),
+                    state: tunnelmux_core::TunnelState::Running,
+                    target_url: Some("http://127.0.0.1:48080".to_string()),
+                    public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+                    route_count: 3,
+                    enabled_route_count: 2,
+                },
+                tunnelmux_core::TunnelProfileSummary {
+                    id: "tunnel-2".to_string(),
+                    name: Some("API Tunnel".to_string()),
+                    provider: Some(TunnelProvider::Ngrok),
+                    state: tunnelmux_core::TunnelState::Stopped,
+                    target_url: Some("http://127.0.0.1:58080".to_string()),
+                    public_base_url: None,
+                    route_count: 2,
+                    enabled_route_count: 1,
+                },
+            ],
         })
     }
 

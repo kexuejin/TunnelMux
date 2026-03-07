@@ -6,7 +6,7 @@ use tunnelmux_core::{
     DeleteRouteResponse, DeleteTunnelResponse, DiagnosticsResponse, ErrorResponse,
     HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
     RouteMatchResponse, RouteRule, RoutesResponse, TunnelDeleteRequest, TunnelLogsResponse,
-    TunnelStartRequest, TunnelStatusResponse,
+    TunnelStartRequest, TunnelStatusResponse, TunnelWorkspaceResponse,
     UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
 };
 
@@ -64,6 +64,10 @@ impl TunnelmuxControlClient {
             .await
             .with_context(|| format!("request failed: {url}"))?;
         decode_response(response).await
+    }
+
+    pub async fn tunnel_workspace(&self) -> anyhow::Result<TunnelWorkspaceResponse> {
+        self.get("/v1/tunnels/workspace").await
     }
 
     pub async fn start_tunnel(
