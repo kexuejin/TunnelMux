@@ -23,3 +23,19 @@ export function formatTunnelOptionLabel(tunnel) {
   const enabledRouteCount = Number(tunnel?.enabled_route_count ?? 0);
   return `${tunnel?.name ?? 'Tunnel'} • ${stateLabel} • ${enabledRouteCount}/${routeCount}`;
 }
+
+export function formatCurrentTunnelUrl(tunnel) {
+  const publicBaseUrl = tunnel?.public_base_url ?? '';
+  if (publicBaseUrl) {
+    return publicBaseUrl;
+  }
+  if (tunnel?.provider === 'cloudflared' && tunnel?.state === 'running') {
+    return 'Managed in Cloudflare';
+  }
+  return '';
+}
+
+export function tunnelPickerRowClass(tunnel, selected) {
+  const state = tunnel?.state ?? 'idle';
+  return `tunnel-picker-item${selected ? ' selected' : ''} ${state}`.trim();
+}

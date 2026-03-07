@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatCurrentTunnelMeta, formatTunnelOptionLabel } from './tunnel-picker-helpers.mjs';
+import {
+  formatCurrentTunnelMeta,
+  formatCurrentTunnelUrl,
+  formatTunnelOptionLabel,
+  tunnelPickerRowClass,
+} from './tunnel-picker-helpers.mjs';
 
 test('formatCurrentTunnelMeta includes provider state and service counts', () => {
   const text = formatCurrentTunnelMeta({
@@ -23,4 +28,37 @@ test('formatTunnelOptionLabel includes tunnel name state and service counts', ()
   });
 
   assert.equal(text, 'API Tunnel • Stopped • 1/2');
+});
+
+test('formatCurrentTunnelUrl prefers public url and falls back to provider-specific copy', () => {
+  assert.equal(
+    formatCurrentTunnelUrl({
+      public_base_url: 'https://demo.trycloudflare.com',
+    }),
+    'https://demo.trycloudflare.com',
+  );
+
+  assert.equal(
+    formatCurrentTunnelUrl({
+      provider: 'cloudflared',
+      state: 'running',
+      public_base_url: null,
+    }),
+    'Managed in Cloudflare',
+  );
+
+  assert.equal(
+    formatCurrentTunnelUrl({
+      provider: 'ngrok',
+      state: 'stopped',
+      public_base_url: null,
+    }),
+    '',
+  );
+});
+
+test('tunnelPickerRowClass distinguishes selected and runtime states', () => {
+  assert.equal(tunnelPickerRowClass({ state: 'running' }, true), 'tunnel-picker-item selected running');
+  assert.equal(tunnelPickerRowClass({ state: 'starting' }, false), 'tunnel-picker-item starting');
+  assert.equal(tunnelPickerRowClass({ state: 'error' }, false), 'tunnel-picker-item error');
 });
