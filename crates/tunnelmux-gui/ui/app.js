@@ -24,6 +24,7 @@ const state = {
   tunnelDrawerOpen: false,
   tunnelEditorMode: 'create',
   confirmResolver: null,
+  tunnelPickerOpen: false,
   providerStatusAction: null,
   diagnostics: {
     logLines: 100,
@@ -91,8 +92,10 @@ function bindElements() {
   elements.currentTunnelBadge = document.getElementById('current-tunnel-badge');
   elements.currentTunnelMeta = document.getElementById('current-tunnel-meta');
   elements.currentTunnelUrl = document.getElementById('current-tunnel-url');
-  elements.tunnelSwitcherShell = document.getElementById('tunnel-switcher-shell');
-  elements.tunnelSwitcher = document.getElementById('tunnel-switcher');
+  elements.tunnelPickerShell = document.getElementById('tunnel-picker-shell');
+  elements.tunnelPickerTrigger = document.getElementById('tunnel-picker-trigger');
+  elements.tunnelPickerPopover = document.getElementById('tunnel-picker-popover');
+  elements.tunnelPickerList = document.getElementById('tunnel-picker-list');
   elements.newTunnel = document.getElementById('new-tunnel');
   elements.editTunnel = document.getElementById('edit-tunnel');
   elements.homeGrid = document.getElementById('home-grid');
@@ -207,7 +210,7 @@ function bindEvents() {
   elements.closeTunnel?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelBackdrop?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelProvider?.addEventListener('change', syncTunnelProviderFields);
-  elements.tunnelSwitcher?.addEventListener('change', () => withBusy(switchTunnel));
+  elements.tunnelPickerTrigger?.addEventListener('click', toggleTunnelPicker);
   elements.deleteTunnel?.addEventListener('click', deleteTunnelProfile);
   elements.saveTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: false })));
   elements.saveAndStartTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: true })));
@@ -217,7 +220,24 @@ function bindEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && state.confirmResolver) {
       closeConfirmDialog(false);
+      return;
     }
+    if (event.key === 'Escape' && state.tunnelPickerOpen) {
+      closeTunnelPicker();
+    }
+  });
+  document.addEventListener('click', (event) => {
+    if (!state.tunnelPickerOpen) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return;
+    }
+    if (elements.tunnelPickerShell?.contains(target)) {
+      return;
+    }
+    closeTunnelPicker();
   });
 
   elements.startTunnel?.addEventListener('click', () => withBusy(startTunnel));
@@ -393,6 +413,7 @@ function renderTunnelWorkspace(workspace) {
   elements.troubleshootingDetails.hidden = !hasCurrentTunnel;
 
   if (!hasCurrentTunnel) {
+    closeTunnelPicker();
     return;
   }
 
@@ -412,17 +433,61 @@ function renderTunnelWorkspace(workspace) {
   if (publicBaseUrl) {
     elements.currentTunnelUrl.textContent = publicBaseUrl;
   }
-  elements.tunnelSwitcherShell.hidden = tunnels.length <= 1;
-  if (elements.tunnelSwitcher) {
-    elements.tunnelSwitcher.innerHTML = '';
-    tunnels.forEach((tunnel) => {
-      const option = document.createElement('option');
-      option.value = tunnel.id;
-      option.textContent = formatTunnelOptionLabel(tunnel);
-      option.selected = tunnel.id === workspace.current_tunnel_id;
-      elements.tunnelSwitcher.appendChild(option);
-    });
+  renderTunnelPicker(workspace, currentTunnel);
+}
+
+function toggleTunnelPicker() {
+  if (state.tunnelPickerOpen) {
+    closeTunnelPicker();
+    return;
   }
+  state.tunnelPickerOpen = true;
+  elements.tunnelPickerPopover.hidden = false;
+  elements.tunnelPickerTrigger.setAttribute('aria-expanded', 'true');
+}
+
+function closeTunnelPicker() {
+  state.tunnelPickerOpen = false;
+  if (elements.tunnelPickerPopover) {
+    elements.tunnelPickerPopover.hidden = true;
+  }
+  if (elements.tunnelPickerTrigger) {
+    elements.tunnelPickerTrigger.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function renderTunnelPicker(workspace, currentTunnel) {
+  const tunnels = workspace?.tunnels ?? [];
+  if (!elements.tunnelPickerShell || !elements.tunnelPickerList || !elements.tunnelPickerTrigger) {
+    return;
+  }
+
+  elements.tunnelPickerShell.hidden = tunnels.length <= 1;
+  elements.tunnelPickerTrigger.textContent = currentTunnel
+    ? `Switch from ${currentTunnel.name}`
+    : 'Switch Tunnel';
+  elements.tunnelPickerList.innerHTML = '';
+
+  tunnels.forEach((tunnel) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `tunnel-picker-item${tunnel.id === workspace.current_tunnel_id ? ' selected' : ''}`;
+    button.innerHTML = `
+      <div class="picker-item-copy">
+        <span class="picker-item-name">${escapeHtml(tunnel.name)}</span>
+        <span class="picker-item-meta">${escapeHtml(formatTunnelOptionLabel(tunnel))}</span>
+      </div>
+      <span class="status-pill ${escapeClassName(tunnel.state ?? 'idle')}">${escapeHtml(titleCase(tunnel.state ?? 'idle'))}</span>
+    `;
+    button.addEventListener('click', () => {
+      if (tunnel.id === workspace.current_tunnel_id) {
+        closeTunnelPicker();
+        return;
+      }
+      void withBusy(() => switchTunnel(tunnel.id));
+    });
+    elements.tunnelPickerList.appendChild(button);
+  });
 }
 
 function populateTunnelFields(tunnel) {
@@ -499,12 +564,12 @@ async function saveTunnel({ startNow }) {
   }
 }
 
-async function switchTunnel() {
-  const nextTunnelId = elements.tunnelSwitcher.value || '';
-  const workspace = await invoke('select_tunnel_profile', { id: elements.tunnelSwitcher.value || '' });
+async function switchTunnel(nextTunnelId) {
+  const workspace = await invoke('select_tunnel_profile', { id: nextTunnelId || '' });
   state.tunnelWorkspace = workspace;
   await loadSettings();
   renderTunnelWorkspace(workspace);
+  closeTunnelPicker();
   await ensureLocalDaemonAndRefresh();
   const selectedTunnel = (workspace?.tunnels ?? []).find((tunnel) => tunnel.id === nextTunnelId)
     ?? (workspace?.tunnels ?? []).find((tunnel) => tunnel.id === workspace.current_tunnel_id);
