@@ -438,7 +438,7 @@ async function toggleRouteEnabled(id) {
       },
     });
     renderRoutes(snapshot);
-    renderStatus(`Service ${route.enabled ? 'disabled' : 'enabled'}.`);
+    renderStatus(`Service ${route.enabled ? 'turned off' : 'turned on'}.`);
   } catch (error) {
     renderStatus(`Failed to update service: ${formatError(error)}`, true);
   }
@@ -466,27 +466,27 @@ function renderDashboard(snapshot) {
   elements.stateBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
 
   if (!connected) {
-    elements.homePublicUrlMeta.textContent = 'TunnelMux daemon is not ready. Retry or open Settings.';
+    elements.homePublicUrlMeta.textContent = 'TunnelMux is not ready yet. Retry or open Settings.';
     elements.dashboardMessage.textContent = snapshot?.message ?? 'Unable to reach the local daemon.';
     renderStatus(`Daemon unavailable: ${snapshot?.message ?? 'check Settings'}`, true);
     return;
   }
 
   if (publicUrl) {
-    elements.homePublicUrlMeta.textContent = 'Ready to share. Copy the URL or open it in your browser.';
-    elements.dashboardMessage.textContent = 'Tunnel is live.';
+    elements.homePublicUrlMeta.textContent = 'Your tunnel is live and ready to share.';
+    elements.dashboardMessage.textContent = 'Live now.';
     renderStatus('Dashboard refreshed.');
     return;
   }
 
-  elements.homePublicUrlMeta.textContent = 'TunnelMux is connected. Start the tunnel to generate a public URL.';
-  elements.dashboardMessage.textContent = snapshot?.message ?? 'Tunnel is connected but not running.';
+  elements.homePublicUrlMeta.textContent = 'TunnelMux is connected. Start the tunnel to get a public URL.';
+  elements.dashboardMessage.textContent = snapshot?.message ?? 'Connected, but not live yet.';
   renderStatus('Dashboard refreshed.');
 }
 
 function renderRoutes(snapshot) {
   state.routeCache = snapshot?.routes ?? [];
-  elements.routesMessage.textContent = snapshot?.message ?? 'Services loaded from the daemon.';
+  elements.routesMessage.textContent = snapshot?.message ?? 'Services exposed through your current tunnel.';
   elements.routesList.innerHTML = '';
 
   const configured = state.routeCache.length;
@@ -514,7 +514,7 @@ function renderRoutes(snapshot) {
           <p class="service-exposure">${escapeHtml(describeRouteExposure(route))}</p>
           <p class="service-local">${escapeHtml(route.upstream_url)}</p>
         </div>
-        <span class="service-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'Live' : 'Paused'}</span>
+        <span class="service-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'Live' : 'Off'}</span>
       </div>
       <div class="actions compact-actions">
         <button type="button" class="secondary action-chip" data-route-action="edit" data-route-id="${escapeAttribute(route.id)}">Edit</button>
