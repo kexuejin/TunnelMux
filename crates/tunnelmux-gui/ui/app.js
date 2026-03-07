@@ -153,6 +153,7 @@ function bindElements() {
   elements.tunnelNgrokFields = document.getElementById('tunnel-ngrok-fields');
   elements.tunnelNgrokAuthtoken = document.getElementById('tunnel-ngrok-authtoken');
   elements.tunnelNgrokDomain = document.getElementById('tunnel-ngrok-domain');
+  elements.deleteTunnel = document.getElementById('delete-tunnel');
   elements.saveTunnel = document.getElementById('save-tunnel');
   elements.saveAndStartTunnel = document.getElementById('save-and-start-tunnel');
 
@@ -198,6 +199,7 @@ function bindEvents() {
   elements.tunnelBackdrop?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelProvider?.addEventListener('change', syncTunnelProviderFields);
   elements.tunnelSwitcher?.addEventListener('change', () => withBusy(switchTunnel));
+  elements.deleteTunnel?.addEventListener('click', () => withBusy(deleteTunnelProfile));
   elements.saveTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: false })));
   elements.saveAndStartTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: true })));
 
@@ -258,6 +260,7 @@ function openTunnelDrawer({ mode }) {
   elements.tunnelDrawer.hidden = false;
   elements.tunnelFormTitle.textContent = mode === 'edit' ? 'Edit Tunnel' : 'Create Tunnel';
   populateTunnelFields(mode === 'edit' ? getCurrentTunnelSettings() : null);
+  elements.deleteTunnel.hidden = mode !== 'edit' || (state.settings?.tunnels?.length ?? 0) <= 1;
 }
 
 function closeTunnelDrawer() {
@@ -471,6 +474,28 @@ async function switchTunnel() {
   await loadSettings();
   renderTunnelWorkspace(workspace);
   await ensureLocalDaemonAndRefresh();
+}
+
+async function deleteTunnelProfile() {
+  const current = getCurrentTunnelSettings();
+  if (!current) {
+    return;
+  }
+  if ((state.settings?.tunnels?.length ?? 0) <= 1) {
+    renderStatus('Keep at least one tunnel, or create another before deleting this one.', true);
+    return;
+  }
+  if (!window.confirm(`Delete tunnel '${current.name}'?`)) {
+    return;
+  }
+
+  const workspace = await invoke('delete_tunnel_profile', { id: current.id });
+  state.tunnelWorkspace = workspace;
+  await loadSettings();
+  renderTunnelWorkspace(workspace);
+  closeTunnelDrawer();
+  await ensureLocalDaemonAndRefresh();
+  renderStatus('Tunnel deleted.');
 }
 
 async function loadSettings() {
