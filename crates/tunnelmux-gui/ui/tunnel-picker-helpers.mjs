@@ -53,3 +53,23 @@ export function resolveDashboardStatus(snapshot) {
 export function shouldShowErrorDetailsAction({ isError }) {
   return Boolean(isError);
 }
+
+export function summarizeStatusMessage(message, isError) {
+  const text = String(message ?? '').trim();
+  if (!text) {
+    return '';
+  }
+  if (!isError) {
+    return text;
+  }
+
+  if (text.includes('failed to parse successful response body')) {
+    return 'Daemon response format mismatch. Restart the latest tunnelmuxd.';
+  }
+
+  if (text.length > 140) {
+    return `${text.slice(0, 137)}…`;
+  }
+
+  return text;
+}

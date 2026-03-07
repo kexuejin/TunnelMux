@@ -7,6 +7,7 @@ import {
   formatTunnelOptionLabel,
   resolveDashboardStatus,
   shouldShowErrorDetailsAction,
+  summarizeStatusMessage,
   tunnelPickerRowClass,
 } from './tunnel-picker-helpers.mjs';
 
@@ -83,4 +84,13 @@ test('resolveDashboardStatus only surfaces daemon errors for passive refresh', (
 test('shouldShowErrorDetailsAction only enables the action for error states', () => {
   assert.equal(shouldShowErrorDetailsAction({ isError: true }), true);
   assert.equal(shouldShowErrorDetailsAction({ isError: false }), false);
+});
+
+test('summarizeStatusMessage compresses protocol mismatch errors', () => {
+  const text = summarizeStatusMessage(
+    'Daemon unavailable: failed to parse successful response body: {"tunnel":{"state":"running"}}',
+    true,
+  );
+
+  assert.equal(text, 'Daemon response format mismatch. Restart the latest tunnelmuxd.');
 });

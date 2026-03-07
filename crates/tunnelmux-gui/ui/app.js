@@ -4,6 +4,7 @@ import {
   formatTunnelOptionLabel,
   resolveDashboardStatus,
   shouldShowErrorDetailsAction,
+  summarizeStatusMessage,
   titleCase,
   tunnelPickerRowClass,
 } from './tunnel-picker-helpers.mjs';
@@ -36,6 +37,8 @@ const state = {
   confirmResolver: null,
   tunnelPickerOpen: false,
   providerStatusAction: null,
+  statusMessage: '',
+  statusIsError: false,
   diagnostics: {
     logLines: 100,
     summary: null,
@@ -1269,7 +1272,9 @@ function ensurePath(value) {
 }
 
 function renderStatus(message, isError = false) {
-  elements.status.textContent = message;
+  state.statusMessage = message ?? '';
+  state.statusIsError = Boolean(isError);
+  elements.status.textContent = summarizeStatusMessage(message, isError);
   elements.status.classList.toggle('error', isError);
   if (elements.statusErrorDetails) {
     elements.statusErrorDetails.hidden = !shouldShowErrorDetailsAction({ isError });
@@ -1284,7 +1289,7 @@ async function openErrorDetailsDialog() {
     elements.errorDetailsDialog.hidden = false;
   }
   if (elements.diagnosticsOverview) {
-    elements.diagnosticsOverview.textContent = elements.status.textContent || 'Error details';
+    elements.diagnosticsOverview.textContent = state.statusMessage || 'Error details';
     elements.diagnosticsOverview.classList.add('error');
   }
   await refreshDiagnosticsWorkspace({ manual: false });
