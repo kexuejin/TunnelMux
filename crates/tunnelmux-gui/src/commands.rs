@@ -203,13 +203,21 @@ pub async fn refresh_dashboard_from_settings_dir(
     let (settings, client) = load_client(settings_dir)?;
     match client.health().await {
         Ok(health) => match client.tunnel_status().await {
-            Ok(tunnel) => Ok(DashboardSnapshot {
-                connected: true,
-                settings,
-                health: Some(health),
-                tunnel: Some(tunnel.tunnel),
-                message: None,
-            }),
+            Ok(tunnel) => {
+                let message = tunnel.tunnel.last_error.clone().filter(|value| {
+                    matches!(
+                        tunnel.tunnel.state,
+                        tunnelmux_core::TunnelState::Stopped | tunnelmux_core::TunnelState::Error
+                    ) && !value.trim().is_empty()
+                });
+                Ok(DashboardSnapshot {
+                    connected: true,
+                    settings,
+                    health: Some(health),
+                    tunnel: Some(tunnel.tunnel),
+                    message,
+                })
+            }
             Err(error) => Ok(DashboardSnapshot {
                 connected: false,
                 settings,
@@ -272,7 +280,15 @@ pub async fn list_routes_from_settings_dir(
 ) -> Result<RouteWorkspaceSnapshot, String> {
     let (_, client) = load_client(settings_dir)?;
     let response = client.list_routes().await.map_err(command_error)?;
-    Ok(RouteWorkspaceSnapshot::from_routes(response.routes, None))
+    let message = if response.routes.is_empty() {
+        Some(
+            "No services yet. Add your first local service to replace the default welcome page."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    Ok(RouteWorkspaceSnapshot::from_routes(response.routes, message))
 }
 
 pub async fn save_route_from_settings_dir(
@@ -533,6 +549,64 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn refresh_dashboard_surfaces_stopped_tunnel_reason() {
+        let temp_dir = prepare_temp_dir();
+        let base_url = spawn_test_server(
+            Router::new()
+                .route("/v1/health", get(health_handler))
+                .route("/v1/tunnel/status", get(stopped_tunnel_status_handler)),
+        )
+        .await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let snapshot = refresh_dashboard_from_settings_dir(&temp_dir)
+            .await
+            .expect("dashboard refresh should succeed");
+
+        assert!(snapshot.connected);
+        assert_eq!(
+            snapshot.message.as_deref(),
+            Some("daemon restarted; previous tunnel process was detached")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_routes_returns_onboarding_message_when_empty() {
+        let temp_dir = prepare_temp_dir();
+        let routes = std::sync::Arc::new(tokio::sync::Mutex::new(
+            Vec::<tunnelmux_core::RouteRule>::new(),
+        ));
+        let base_url = spawn_routes_server(routes).await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let snapshot = list_routes_from_settings_dir(&temp_dir)
+            .await
+            .expect("list routes should succeed");
+
+        assert!(snapshot.routes.is_empty());
+        assert_eq!(
+            snapshot.message.as_deref(),
+            Some("No services yet. Add your first local service to replace the default welcome page.")
+        );
+    }
+
     async fn health_handler() -> Json<HealthResponse> {
         Json(HealthResponse {
             ok: true,
@@ -554,6 +628,23 @@ mod tests {
                 auto_restart: true,
                 restart_count: 0,
                 last_error: None,
+            },
+        })
+    }
+
+    async fn stopped_tunnel_status_handler() -> Json<TunnelStatusResponse> {
+        Json(TunnelStatusResponse {
+            tunnel: TunnelStatus {
+                state: tunnelmux_core::TunnelState::Stopped,
+                provider: Some(TunnelProvider::Cloudflared),
+                target_url: Some("http://127.0.0.1:48080".to_string()),
+                public_base_url: None,
+                started_at: Some("2026-03-06T00:00:00Z".to_string()),
+                updated_at: "2026-03-07T00:00:01Z".to_string(),
+                process_id: None,
+                auto_restart: true,
+                restart_count: 0,
+                last_error: Some("daemon restarted; previous tunnel process was detached".to_string()),
             },
         })
     }

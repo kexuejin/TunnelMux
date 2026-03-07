@@ -525,8 +525,29 @@ fn build_managed_daemon_command(
         command.arg("--ngrok-bin").arg(path);
     }
 
+    configure_managed_daemon_detachment(&mut command);
+
     Ok(command)
 }
+
+#[cfg(unix)]
+fn configure_managed_daemon_detachment(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+}
+
+#[cfg(windows)]
+fn configure_managed_daemon_detachment(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const DETACHED_PROCESS: u32 = 0x00000008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn configure_managed_daemon_detachment(_command: &mut Command) {}
 
 pub async fn wait_for_daemon_ready(settings: &GuiSettings) -> anyhow::Result<()> {
     let client = TunnelmuxControlClient::new(ControlClientConfig::new(

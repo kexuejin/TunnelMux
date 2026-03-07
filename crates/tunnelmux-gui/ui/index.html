@@ -65,13 +65,71 @@
           </div>
 
           <div id="routes-empty" class="empty-state">
-            <p class="empty-title">No services yet.</p>
-            <p class="panel-subtle">Add a local service to expose it through the current tunnel.</p>
+            <p id="routes-empty-title" class="empty-title">No services yet.</p>
+            <p id="routes-empty-copy" class="panel-subtle">
+              Add your first local service to replace the default welcome page.
+            </p>
+            <div class="actions">
+              <button id="new-route-empty" type="button">Add Service</button>
+            </div>
           </div>
 
           <div id="routes-list" class="service-list"></div>
           <p id="dashboard-message" class="message muted">No service data yet.</p>
         </section>
+
+        <details id="troubleshooting-details" class="panel diagnostics-shell">
+          <summary>View Details</summary>
+          <p id="diagnostics-overview" class="panel-subtle">
+            Hidden by default so the app stays focused on start, copy, and service management.
+          </p>
+          <div class="actions compact-actions">
+            <button id="refresh-diagnostics" type="button">Refresh Details</button>
+            <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
+            <button id="clear-logs" type="button" class="secondary">Clear Logs</button>
+          </div>
+
+          <section class="drawer-section diagnostics-panel">
+            <h3>Runtime Summary</h3>
+            <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
+            <dl class="stats-list diagnostics-stats">
+              <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
+              <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
+              <div><dt>Services</dt><dd id="diagnostics-route-count">—</dd></div>
+              <div><dt>Enabled Services</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
+              <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
+              <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
+              <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
+              <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
+              <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
+            </dl>
+          </section>
+
+          <section class="drawer-section diagnostics-panel">
+            <h3>Upstream Health</h3>
+            <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
+            <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
+            <div id="upstreams-list" class="diagnostics-list"></div>
+          </section>
+
+          <section class="drawer-section diagnostics-panel">
+            <div class="panel-header">
+              <div>
+                <h3>Recent Logs</h3>
+                <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
+              </div>
+              <label class="inline-field">
+                <span>Tail Size</span>
+                <select id="log-lines-select">
+                  <option value="50">50</option>
+                  <option value="100" selected>100</option>
+                  <option value="200">200</option>
+                </select>
+              </label>
+            </div>
+            <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
+          </section>
+        </details>
       </section>
 
       <div id="service-backdrop" class="drawer-backdrop" hidden></div>
@@ -177,67 +235,19 @@
               <input id="settings-auto-restart" type="checkbox" checked />
               <span>Auto restart tunnel</span>
             </label>
-            <label class="field">
-              <span>ngrok Authtoken</span>
-              <input id="settings-ngrok-authtoken" type="password" placeholder="Optional" />
-            </label>
-            <label class="field">
-              <span>ngrok Reserved Domain</span>
-              <input id="settings-ngrok-domain" type="text" placeholder="Optional" />
-            </label>
-          </details>
-
-          <details id="troubleshooting-details" class="advanced-section">
-            <summary>View details</summary>
-            <p id="diagnostics-overview" class="panel-subtle">
-              Hidden by default so the app stays focused on start, copy, and service management.
+            <p id="settings-cloudflared-note" class="panel-subtle">
+              cloudflared currently uses quick tunnel mode in the GUI. Named tunnels, Access, and custom hostnames are not exposed here yet.
             </p>
-            <div class="actions compact-actions">
-              <button id="refresh-diagnostics" type="button">Refresh Details</button>
-              <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
-              <button id="clear-logs" type="button" class="secondary">Clear Logs</button>
+            <div id="settings-ngrok-fields" hidden>
+              <label class="field">
+                <span>ngrok Authtoken</span>
+                <input id="settings-ngrok-authtoken" type="password" placeholder="Optional" />
+              </label>
+              <label class="field">
+                <span>ngrok Reserved Domain</span>
+                <input id="settings-ngrok-domain" type="text" placeholder="Optional" />
+              </label>
             </div>
-
-            <section class="drawer-section diagnostics-panel">
-              <h3>Runtime Summary</h3>
-              <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
-              <dl class="stats-list diagnostics-stats">
-                <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
-                <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
-                <div><dt>Services</dt><dd id="diagnostics-route-count">—</dd></div>
-                <div><dt>Enabled Services</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
-                <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
-                <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
-                <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
-                <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
-                <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
-              </dl>
-            </section>
-
-            <section class="drawer-section diagnostics-panel">
-              <h3>Upstream Health</h3>
-              <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
-              <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
-              <div id="upstreams-list" class="diagnostics-list"></div>
-            </section>
-
-            <section class="drawer-section diagnostics-panel">
-              <div class="panel-header">
-                <div>
-                  <h3>Recent Logs</h3>
-                  <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
-                </div>
-                <label class="inline-field">
-                  <span>Tail Size</span>
-                  <select id="log-lines-select">
-                    <option value="50">50</option>
-                    <option value="100" selected>100</option>
-                    <option value="200">200</option>
-                  </select>
-                </label>
-              </div>
-              <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
-            </section>
           </details>
         </div>
 

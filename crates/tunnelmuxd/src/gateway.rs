@@ -11,14 +11,22 @@ pub(super) async fn proxy_request(
     let query = uri.query().map(|value| value.to_string());
     let host = extract_host_from_headers(&headers);
 
-    let route = {
+    let (has_enabled_routes, route) = {
         let runtime = state.runtime.lock().await;
-        select_route(&runtime.persisted.routes, host.as_deref(), &path).cloned()
+        let has_enabled_routes = runtime.persisted.routes.iter().any(|route| route.enabled);
+        let route = select_route(&runtime.persisted.routes, host.as_deref(), &path).cloned();
+        (has_enabled_routes, route)
     };
 
     let route = match route {
         Some(route) => route,
         None => {
+            if !has_enabled_routes
+                && method == Method::GET
+                && !is_websocket_upgrade_request(&method, &headers)
+            {
+                return Ok(build_welcome_response());
+            }
             return Err(ApiError {
                 status: StatusCode::NOT_FOUND,
                 message: format!("no route matched host={host:?} path={path}"),
@@ -104,6 +112,57 @@ pub(super) async fn proxy_request(
         "no upstream available for route '{}'",
         route.id
     )))
+}
+
+fn build_welcome_response() -> Response {
+    const WELCOME_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TunnelMux</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        background: linear-gradient(180deg, #0b1324 0%, #08101d 100%);
+        color: #eef2ff;
+      }
+      main {
+        max-width: 640px;
+        padding: 28px;
+        border-radius: 24px;
+        background: rgba(18, 24, 34, 0.88);
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        box-shadow: 0 18px 44px rgba(15, 23, 42, 0.34);
+      }
+      p { color: #cbd5e1; line-height: 1.6; }
+      code {
+        padding: 2px 6px;
+        border-radius: 8px;
+        background: rgba(15, 23, 42, 0.92);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>TunnelMux is live</h1>
+      <p>Add your first service in the TunnelMux app to route this public URL to a local upstream.</p>
+      <p>Typical first target: <code>http://127.0.0.1:3000</code></p>
+    </main>
+  </body>
+</html>"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .body(Body::from(WELCOME_HTML))
+        .expect("welcome response should build")
 }
 
 pub(super) fn extract_host_from_headers(headers: &HeaderMap) -> Option<String> {
