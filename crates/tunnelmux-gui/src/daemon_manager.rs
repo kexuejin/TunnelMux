@@ -48,8 +48,11 @@ pub enum DaemonStartupAction {
     Unavailable,
 }
 
+const BOOTSTRAPPING_MESSAGE: &str = "Starting local TunnelMux…";
+
 pub trait ManagedDaemonHandle {
     fn id(&self) -> u32;
+    fn is_running(&mut self) -> std::io::Result<bool>;
     fn kill(&mut self) -> std::io::Result<()>;
 }
 
@@ -63,6 +66,7 @@ pub struct ManagedDaemonProcess<H = std::process::Child> {
 pub struct DaemonRuntimeState {
     pub connection: DaemonConnectionState,
     pub managed: Option<ManagedDaemonProcess>,
+    pub bootstrapping: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,13 +160,44 @@ impl ManagedDaemonHandle for std::process::Child {
         self.id()
     }
 
+    fn is_running(&mut self) -> std::io::Result<bool> {
+        Ok(self.try_wait()?.is_none())
+    }
+
     fn kill(&mut self) -> std::io::Result<()> {
         std::process::Child::kill(self)
     }
 }
 
-pub fn daemon_status_snapshot(connection: &DaemonConnectionState) -> DaemonStatusSnapshot {
-    let message = match connection.ownership {
+pub fn sync_connected_daemon_state<H: ManagedDaemonHandle>(
+    managed: &mut Option<ManagedDaemonProcess<H>>,
+) -> anyhow::Result<DaemonConnectionState> {
+    let managed_pid = if let Some(process) = managed.as_mut() {
+        if process.handle.is_running()? {
+            Some(process.handle.id())
+        } else {
+            *managed = None;
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok(if let Some(pid) = managed_pid {
+        mark_managed_daemon(pid)
+    } else {
+        mark_external_daemon()
+    })
+}
+
+pub fn daemon_status_snapshot(
+    connection: &DaemonConnectionState,
+    bootstrapping: bool,
+) -> DaemonStatusSnapshot {
+    let message = if bootstrapping && connection.ownership == DaemonOwnership::Unavailable {
+        Some(BOOTSTRAPPING_MESSAGE.to_string())
+    } else {
+        match connection.ownership {
         DaemonOwnership::Managed => {
             Some("Connected to a GUI-managed local TunnelMux daemon.".to_string())
         }
@@ -170,6 +205,7 @@ pub fn daemon_status_snapshot(connection: &DaemonConnectionState) -> DaemonStatu
             Some("Using an existing local TunnelMux daemon.".to_string())
         }
         DaemonOwnership::Unavailable => connection.last_error.clone(),
+        }
     };
 
     DaemonStatusSnapshot {
@@ -181,7 +217,7 @@ pub fn daemon_status_snapshot(connection: &DaemonConnectionState) -> DaemonStatu
 
 pub fn read_daemon_status(state: &Arc<Mutex<DaemonRuntimeState>>) -> DaemonStatusSnapshot {
     let runtime = state.lock().expect("daemon runtime state should lock");
-    daemon_status_snapshot(&runtime.connection)
+    daemon_status_snapshot(&runtime.connection, runtime.bootstrapping)
 }
 
 pub fn stop_managed_daemon_in_state(
@@ -196,8 +232,41 @@ pub fn stop_managed_daemon_in_state(
     if stopped {
         runtime.managed = None;
         runtime.connection = DaemonConnectionState::default();
+        runtime.bootstrapping = false;
     }
     Ok(stopped)
+}
+
+async fn wait_for_bootstrap_completion(
+    state: &Arc<Mutex<DaemonRuntimeState>>,
+) -> anyhow::Result<DaemonStatusSnapshot> {
+    for _ in 0..40 {
+        let snapshot = {
+            let runtime = state.lock().expect("daemon runtime state should lock");
+            if runtime.bootstrapping {
+                None
+            } else {
+                Some(daemon_status_snapshot(&runtime.connection, false))
+            }
+        };
+
+        if let Some(snapshot) = snapshot {
+            return if snapshot.connected {
+                Ok(snapshot)
+            } else {
+                Err(anyhow!(
+                    "{}",
+                    snapshot
+                        .message
+                        .unwrap_or_else(|| "local TunnelMux is unavailable".to_string())
+                ))
+            };
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    Err(anyhow!("local TunnelMux daemon is still starting"))
 }
 
 pub async fn ensure_local_daemon<R: Runtime>(
@@ -210,13 +279,27 @@ pub async fn ensure_local_daemon<R: Runtime>(
         settings.token.clone(),
     ));
 
+    let should_wait_for_bootstrap = {
+        let runtime = runtime_state
+            .lock()
+            .expect("daemon runtime state should lock");
+        runtime.bootstrapping
+    };
+
+    if should_wait_for_bootstrap {
+        return wait_for_bootstrap_completion(runtime_state).await;
+    }
+
     if client.health().await.is_ok() {
         let mut runtime = runtime_state
             .lock()
             .expect("daemon runtime state should lock");
-        runtime.managed = None;
-        runtime.connection = mark_external_daemon();
-        return Ok(daemon_status_snapshot(&runtime.connection));
+        runtime.connection = sync_connected_daemon_state(&mut runtime.managed)?;
+        runtime.bootstrapping = false;
+        return Ok(daemon_status_snapshot(
+            &runtime.connection,
+            runtime.bootstrapping,
+        ));
     }
 
     let existing_managed_pid = {
@@ -224,7 +307,7 @@ pub async fn ensure_local_daemon<R: Runtime>(
             .lock()
             .expect("daemon runtime state should lock");
         if let Some(process) = runtime.managed.as_mut() {
-            if process.handle.try_wait()?.is_none() {
+            if process.handle.is_running()? {
                 Some(process.handle.id())
             } else {
                 runtime.managed = None;
@@ -241,16 +324,59 @@ pub async fn ensure_local_daemon<R: Runtime>(
             .lock()
             .expect("daemon runtime state should lock");
         runtime.connection = mark_managed_daemon(pid);
-        return Ok(daemon_status_snapshot(&runtime.connection));
+        runtime.bootstrapping = false;
+        return Ok(daemon_status_snapshot(
+            &runtime.connection,
+            runtime.bootstrapping,
+        ));
+    }
+
+    let should_wait_for_bootstrap = {
+        let mut runtime = runtime_state
+            .lock()
+            .expect("daemon runtime state should lock");
+        if runtime.bootstrapping {
+            true
+        } else {
+            runtime.bootstrapping = true;
+            runtime.connection = mark_unavailable_daemon(None);
+            false
+        }
+    };
+
+    if should_wait_for_bootstrap {
+        return wait_for_bootstrap_completion(runtime_state).await;
     }
 
     let bundled_binary = resolve_bundled_daemon_binary(app);
     let path_binary = find_binary_on_path("tunnelmuxd");
-    let resolved =
-        resolve_daemon_binary_paths(bundled_binary.as_deref(), path_binary.as_deref())?;
-    let mut managed = spawn_managed_daemon(&resolved, settings)?;
+    let resolved = match resolve_daemon_binary_paths(bundled_binary.as_deref(), path_binary.as_deref())
+    {
+        Ok(binary) => binary,
+        Err(error) => {
+            let mut runtime = runtime_state
+                .lock()
+                .expect("daemon runtime state should lock");
+            runtime.managed = None;
+            runtime.connection = mark_unavailable_daemon(Some(error.to_string()));
+            runtime.bootstrapping = false;
+            return Err(error);
+        }
+    };
+    let mut managed = match spawn_managed_daemon(&resolved, settings) {
+        Ok(process) => process,
+        Err(error) => {
+            let mut runtime = runtime_state
+                .lock()
+                .expect("daemon runtime state should lock");
+            runtime.managed = None;
+            runtime.connection = mark_unavailable_daemon(Some(error.to_string()));
+            runtime.bootstrapping = false;
+            return Err(error);
+        }
+    };
 
-    if let Err(error) = wait_for_daemon_ready(settings).await {
+    if let Err(error) = wait_for_managed_daemon_ready(&mut managed, settings).await {
         let _ = managed.handle.kill();
         let _ = managed.handle.wait();
         let mut runtime = runtime_state
@@ -258,6 +384,7 @@ pub async fn ensure_local_daemon<R: Runtime>(
             .expect("daemon runtime state should lock");
         runtime.managed = None;
         runtime.connection = mark_unavailable_daemon(Some(error.to_string()));
+        runtime.bootstrapping = false;
         return Err(error);
     }
 
@@ -267,7 +394,11 @@ pub async fn ensure_local_daemon<R: Runtime>(
         .expect("daemon runtime state should lock");
     runtime.connection = mark_managed_daemon(pid);
     runtime.managed = Some(managed);
-    Ok(daemon_status_snapshot(&runtime.connection))
+    runtime.bootstrapping = false;
+    Ok(daemon_status_snapshot(
+        &runtime.connection,
+        runtime.bootstrapping,
+    ))
 }
 
 pub fn resolve_bundled_daemon_binary<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
@@ -407,6 +538,37 @@ pub async fn wait_for_daemon_ready(settings: &GuiSettings) -> anyhow::Result<()>
         if client.health().await.is_ok() {
             return Ok(());
         }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    Err(anyhow!(
+        "local TunnelMux daemon did not become ready at {}",
+        settings.base_url
+    ))
+}
+
+pub async fn wait_for_managed_daemon_ready<H: ManagedDaemonHandle>(
+    managed: &mut ManagedDaemonProcess<H>,
+    settings: &GuiSettings,
+) -> anyhow::Result<()> {
+    let client = TunnelmuxControlClient::new(ControlClientConfig::new(
+        settings.base_url.clone(),
+        settings.token.clone(),
+    ));
+
+    for _ in 0..40 {
+        if client.health().await.is_ok() {
+            return Ok(());
+        }
+
+        if !managed.handle.is_running()? {
+            return Err(anyhow!(
+                "local TunnelMux daemon exited before becoming ready; check whether {} or {} is already in use",
+                settings.base_url,
+                settings.gateway_target_url
+            ));
+        }
+
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
@@ -578,9 +740,67 @@ mod tests {
         assert!(!process.handle.killed);
     }
 
+    #[test]
+    fn sync_connected_daemon_state_preserves_gui_managed_process() {
+        let binary = ResolvedDaemonBinary {
+            path: PathBuf::from("/tmp/tunnelmuxd"),
+            source: DaemonBinarySource::Path,
+        };
+        let mut managed = Some(ManagedDaemonProcess {
+            binary,
+            handle: FakeManagedChild {
+                running: true,
+                ..FakeManagedChild::default()
+            },
+        });
+
+        let connection =
+            sync_connected_daemon_state(&mut managed).expect("connected daemon state should update");
+
+        assert_eq!(connection.ownership, DaemonOwnership::Managed);
+        assert_eq!(connection.managed_pid, Some(4242));
+        assert!(managed.is_some());
+    }
+
+    #[test]
+    fn daemon_status_snapshot_reports_bootstrapping_state() {
+        let snapshot = daemon_status_snapshot(&DaemonConnectionState::default(), true);
+
+        assert_eq!(snapshot.ownership, DaemonOwnership::Unavailable);
+        assert!(!snapshot.connected);
+        assert_eq!(
+            snapshot.message.as_deref(),
+            Some("Starting local TunnelMux…")
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_managed_daemon_ready_reports_early_exit() {
+        let settings = GuiSettings {
+            base_url: "http://127.0.0.1:9".to_string(),
+            gateway_target_url: "http://127.0.0.1:48080".to_string(),
+            ..GuiSettings::default()
+        };
+        let binary = ResolvedDaemonBinary {
+            path: PathBuf::from("/tmp/tunnelmuxd"),
+            source: DaemonBinarySource::Path,
+        };
+        let mut managed = ManagedDaemonProcess {
+            binary,
+            handle: FakeManagedChild::default(),
+        };
+
+        let error = wait_for_managed_daemon_ready(&mut managed, &settings)
+            .await
+            .expect_err("early process exit should fail immediately");
+
+        assert!(error.to_string().contains("exited before becoming ready"));
+    }
+
     #[derive(Debug, Default)]
     struct FakeManagedChild {
         killed: bool,
+        running: bool,
     }
 
     impl ManagedDaemonHandle for FakeManagedChild {
@@ -588,8 +808,13 @@ mod tests {
             4242
         }
 
+        fn is_running(&mut self) -> std::io::Result<bool> {
+            Ok(self.running)
+        }
+
         fn kill(&mut self) -> std::io::Result<()> {
             self.killed = true;
+            self.running = false;
             Ok(())
         }
     }

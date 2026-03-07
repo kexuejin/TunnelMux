@@ -23,9 +23,23 @@ pub async fn ensure_local_daemon(
     app: tauri::AppHandle,
     state: tauri::State<'_, GuiAppState>,
 ) -> Result<DaemonStatusSnapshot, String> {
-    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    bootstrap_local_daemon_with_state(&app, state.inner()).await
+}
+
+pub async fn bootstrap_local_daemon<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<DaemonStatusSnapshot, String> {
+    let state = app.state::<GuiAppState>();
+    bootstrap_local_daemon_with_state(app, state.inner()).await
+}
+
+async fn bootstrap_local_daemon_with_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &GuiAppState,
+) -> Result<DaemonStatusSnapshot, String> {
+    let settings_dir = resolve_settings_dir(app, state)?;
     let settings = load_settings_from_dir(&settings_dir).map_err(command_error)?;
-    daemon_manager::ensure_local_daemon(&app, &state.daemon_runtime, &settings)
+    daemon_manager::ensure_local_daemon(app, &state.daemon_runtime, &settings)
         .await
         .map_err(command_error)
 }

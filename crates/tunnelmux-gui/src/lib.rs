@@ -9,6 +9,13 @@ pub mod view_models;
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(state::GuiAppState::default())
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = commands::bootstrap_local_daemon(&app_handle).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::load_settings,
             commands::save_settings,
