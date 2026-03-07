@@ -449,18 +449,10 @@ function collectTunnelProfile() {
 async function saveTunnel({ startNow }) {
   try {
     const profile = collectTunnelProfile();
-    const nextSettings = structuredClone(collectSettingsForm());
-    const existingIndex = nextSettings.tunnels.findIndex((tunnel) => tunnel.id === profile.id);
-    if (existingIndex >= 0) {
-      nextSettings.tunnels.splice(existingIndex, 1, profile);
-    } else {
-      nextSettings.tunnels.push(profile);
-    }
-    nextSettings.current_tunnel_id = profile.id;
-
-    const settings = await invoke('save_settings', { settings: nextSettings });
-    populateSettingsFields(settings);
-    await refreshTunnelWorkspace();
+    const workspace = await invoke('save_tunnel_profile', { profile });
+    state.tunnelWorkspace = workspace;
+    await loadSettings();
+    renderTunnelWorkspace(workspace);
     closeTunnelDrawer();
     if (startNow) {
       await ensureLocalDaemonAndRefresh();
@@ -474,11 +466,10 @@ async function saveTunnel({ startNow }) {
 }
 
 async function switchTunnel() {
-  const settings = structuredClone(collectSettingsForm());
-  settings.current_tunnel_id = elements.tunnelSwitcher.value || null;
-  const next = await invoke('save_settings', { settings });
-  populateSettingsFields(next);
-  await refreshTunnelWorkspace();
+  const workspace = await invoke('select_tunnel_profile', { id: elements.tunnelSwitcher.value || '' });
+  state.tunnelWorkspace = workspace;
+  await loadSettings();
+  renderTunnelWorkspace(workspace);
   await ensureLocalDaemonAndRefresh();
 }
 

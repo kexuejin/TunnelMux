@@ -68,6 +68,18 @@ pub struct StartTunnelInput {
     pub auto_restart: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TunnelProfileInput {
+    pub id: Option<String>,
+    pub name: String,
+    pub provider: TunnelProvider,
+    pub gateway_target_url: String,
+    pub auto_restart: bool,
+    pub cloudflared_tunnel_token: Option<String>,
+    pub ngrok_authtoken: Option<String>,
+    pub ngrok_domain: Option<String>,
+}
+
 #[tauri::command]
 pub fn load_settings(
     app: tauri::AppHandle,
@@ -113,6 +125,36 @@ pub fn load_tunnel_workspace(
 ) -> Result<TunnelWorkspaceVm, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     load_tunnel_workspace_from_settings_dir(&settings_dir)
+}
+
+#[tauri::command]
+pub fn save_tunnel_profile(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    profile: TunnelProfileInput,
+) -> Result<TunnelWorkspaceVm, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    save_tunnel_profile_to_settings_dir(&settings_dir, profile)
+}
+
+#[tauri::command]
+pub fn select_tunnel_profile(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    id: String,
+) -> Result<TunnelWorkspaceVm, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    select_tunnel_profile_from_settings_dir(&settings_dir, &id)
+}
+
+#[tauri::command]
+pub fn delete_tunnel_profile(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    id: String,
+) -> Result<TunnelWorkspaceVm, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    delete_tunnel_profile_from_settings_dir(&settings_dir, &id)
 }
 
 #[tauri::command]
@@ -442,6 +484,78 @@ pub fn load_tunnel_workspace_from_settings_dir(
         tunnels,
         current_tunnel_id: settings.current_tunnel_id.clone(),
     })
+}
+
+pub fn save_tunnel_profile_to_settings_dir(
+    settings_dir: &Path,
+    profile: TunnelProfileInput,
+) -> Result<TunnelWorkspaceVm, String> {
+    let mut settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
+    let tunnel_id = profile
+        .id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| next_tunnel_profile_id(&settings.tunnels));
+    let next_profile = crate::settings::TunnelProfileSettings {
+        id: tunnel_id.clone(),
+        name: profile.name,
+        provider: profile.provider,
+        gateway_target_url: profile.gateway_target_url,
+        auto_restart: profile.auto_restart,
+        cloudflared_tunnel_token: profile.cloudflared_tunnel_token,
+        ngrok_authtoken: profile.ngrok_authtoken,
+        ngrok_domain: profile.ngrok_domain,
+    };
+
+    if let Some(index) = settings.tunnels.iter().position(|item| item.id == tunnel_id) {
+        settings.tunnels[index] = next_profile;
+    } else {
+        settings.tunnels.push(next_profile);
+    }
+    settings.current_tunnel_id = Some(tunnel_id);
+    save_settings_to_dir(settings_dir, &settings).map_err(command_error)?;
+    load_tunnel_workspace_from_settings_dir(settings_dir)
+}
+
+pub fn select_tunnel_profile_from_settings_dir(
+    settings_dir: &Path,
+    id: &str,
+) -> Result<TunnelWorkspaceVm, String> {
+    let mut settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
+    if !settings.tunnels.iter().any(|item| item.id == id) {
+        return Err(format!("tunnel profile not found: {id}"));
+    }
+    settings.current_tunnel_id = Some(id.to_string());
+    save_settings_to_dir(settings_dir, &settings).map_err(command_error)?;
+    load_tunnel_workspace_from_settings_dir(settings_dir)
+}
+
+pub fn delete_tunnel_profile_from_settings_dir(
+    settings_dir: &Path,
+    id: &str,
+) -> Result<TunnelWorkspaceVm, String> {
+    let mut settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
+    let before = settings.tunnels.len();
+    settings.tunnels.retain(|item| item.id != id);
+    if settings.tunnels.len() == before {
+        return Err(format!("tunnel profile not found: {id}"));
+    }
+    settings.current_tunnel_id = settings.tunnels.first().map(|item| item.id.clone());
+    save_settings_to_dir(settings_dir, &settings).map_err(command_error)?;
+    load_tunnel_workspace_from_settings_dir(settings_dir)
+}
+
+fn next_tunnel_profile_id(
+    profiles: &[crate::settings::TunnelProfileSettings],
+) -> String {
+    let mut index = 1;
+    loop {
+        let candidate = format!("tunnel-{index}");
+        if profiles.iter().all(|profile| profile.id != candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
 }
 
 fn derive_provider_status_summary(
@@ -1160,6 +1274,96 @@ mod tests {
         assert_eq!(workspace.current_tunnel_id.as_deref(), Some("primary"));
         assert_eq!(workspace.tunnels[0].name, "Main Tunnel");
         assert_eq!(workspace.tunnels[0].provider, "cloudflared");
+    }
+
+    #[test]
+    fn save_tunnel_profile_adds_new_profile_and_selects_it() {
+        let temp_dir = prepare_temp_dir();
+
+        let workspace = save_tunnel_profile_to_settings_dir(
+            &temp_dir,
+            TunnelProfileInput {
+                id: None,
+                name: "Second Tunnel".to_string(),
+                provider: TunnelProvider::Ngrok,
+                gateway_target_url: "http://127.0.0.1:58080".to_string(),
+                auto_restart: false,
+                cloudflared_tunnel_token: None,
+                ngrok_authtoken: Some("ngrok-token".to_string()),
+                ngrok_domain: None,
+            },
+        )
+        .expect("profile should save");
+
+        assert_eq!(workspace.tunnels.len(), 1);
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("tunnel-1"));
+        assert_eq!(workspace.tunnels[0].name, "Second Tunnel");
+        assert_eq!(workspace.tunnels[0].provider, "ngrok");
+    }
+
+    #[test]
+    fn select_tunnel_profile_switches_current_profile() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![
+                    crate::settings::TunnelProfileSettings {
+                        id: "primary".to_string(),
+                        name: "Main Tunnel".to_string(),
+                        provider: TunnelProvider::Cloudflared,
+                        ..crate::settings::TunnelProfileSettings::default()
+                    },
+                    crate::settings::TunnelProfileSettings {
+                        id: "tunnel-2".to_string(),
+                        name: "API Tunnel".to_string(),
+                        provider: TunnelProvider::Ngrok,
+                        ..crate::settings::TunnelProfileSettings::default()
+                    },
+                ],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let workspace = select_tunnel_profile_from_settings_dir(&temp_dir, "tunnel-2")
+            .expect("profile should switch");
+
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("tunnel-2"));
+    }
+
+    #[test]
+    fn delete_tunnel_profile_removes_profile_and_falls_back_to_first() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                current_tunnel_id: Some("tunnel-2".to_string()),
+                tunnels: vec![
+                    crate::settings::TunnelProfileSettings {
+                        id: "primary".to_string(),
+                        name: "Main Tunnel".to_string(),
+                        provider: TunnelProvider::Cloudflared,
+                        ..crate::settings::TunnelProfileSettings::default()
+                    },
+                    crate::settings::TunnelProfileSettings {
+                        id: "tunnel-2".to_string(),
+                        name: "API Tunnel".to_string(),
+                        provider: TunnelProvider::Ngrok,
+                        ..crate::settings::TunnelProfileSettings::default()
+                    },
+                ],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let workspace = delete_tunnel_profile_from_settings_dir(&temp_dir, "tunnel-2")
+            .expect("profile should delete");
+
+        assert_eq!(workspace.tunnels.len(), 1);
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("primary"));
     }
 
     #[test]
