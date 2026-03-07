@@ -612,6 +612,7 @@ pub(super) async fn spawn_provider_process(
     state: &Arc<AppState>,
     request: &TunnelStartRequest,
 ) -> anyhow::Result<SpawnedTunnel> {
+    ensure_tunnel_gateway_listener(state, &request.tunnel_id, &request.target_url).await?;
     let provider_binary = match request.provider {
         TunnelProvider::Cloudflared => state.cloudflared_bin.as_str(),
         TunnelProvider::Ngrok => state.ngrok_bin.as_str(),
@@ -780,6 +781,7 @@ pub(super) async fn wait_for_provider_startup(
     tokio::spawn(pipe_reader_to_channel(
         stdout,
         tx.clone(),
+        request.tunnel_id.clone(),
         provider.clone(),
         "stdout",
         provider_log_file.clone(),
@@ -787,6 +789,7 @@ pub(super) async fn wait_for_provider_startup(
     tokio::spawn(pipe_reader_to_channel(
         stderr,
         tx,
+        request.tunnel_id.clone(),
         provider.clone(),
         "stderr",
         provider_log_file,
@@ -865,6 +868,7 @@ pub(super) async fn wait_for_provider_startup(
 pub(super) async fn pipe_reader_to_channel<R>(
     reader: R,
     tx: mpsc::UnboundedSender<String>,
+    tunnel_id: String,
     provider: TunnelProvider,
     stream_name: &'static str,
     provider_log_file: PathBuf,
@@ -887,7 +891,8 @@ pub(super) async fn pipe_reader_to_channel<R>(
         match lines.next_line().await {
             Ok(Some(line)) => {
                 if let Some(file) = log_file.as_mut() {
-                    let formatted = format_provider_log_line(&provider, stream_name, &line);
+                    let formatted =
+                        format_provider_log_line(&tunnel_id, &provider, stream_name, &line);
                     if let Err(err) = file.write_all(formatted.as_bytes()).await {
                         warn!("failed to write provider logs: {err}");
                         log_file = None;
@@ -922,6 +927,7 @@ pub(super) async fn open_provider_log_file(path: &Path) -> anyhow::Result<fs::Fi
 }
 
 pub(super) fn format_provider_log_line(
+    tunnel_id: &str,
     provider: &TunnelProvider,
     stream_name: &str,
     line: &str,
@@ -931,8 +937,9 @@ pub(super) fn format_provider_log_line(
         TunnelProvider::Ngrok => "ngrok",
     };
     format!(
-        "{} [{}:{}] {}\n",
+        "{} [{}:{}:{}] {}\n",
         now_iso(),
+        tunnel_id,
         provider_name,
         stream_name,
         line

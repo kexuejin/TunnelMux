@@ -235,7 +235,7 @@ pub(super) async fn get_tunnel_logs(
     };
 
     Ok(Json(TunnelLogsResponse {
-        lines: tail_lines(&source, lines),
+        lines: filter_log_lines_for_tunnel(tail_lines(&source, lines), query.tunnel_id.as_deref()),
     }))
 }
 
@@ -247,12 +247,13 @@ pub(super) async fn stream_tunnel_logs(
     let poll_ms = normalize_log_stream_poll_ms(query.poll_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(128);
     let log_file = state.provider_log_file.clone();
+    let tunnel_id = query.tunnel_id.clone();
 
     tokio::spawn(async move {
         let mut last_offset = 0usize;
         if let Ok(source) = fs::read_to_string(&log_file).await {
             last_offset = source.len();
-            for line in tail_lines(&source, lines) {
+            for line in filter_log_lines_for_tunnel(tail_lines(&source, lines), tunnel_id.as_deref()) {
                 if tx
                     .send(Ok(Event::default().event("line").data(line)))
                     .await
@@ -271,9 +272,12 @@ pub(super) async fn stream_tunnel_logs(
                     }
                     if source.len() > last_offset {
                         let chunk = &source[last_offset..];
-                        for line in chunk.lines() {
+                        for line in filter_log_lines_for_tunnel(
+                            chunk.lines().map(ToString::to_string).collect(),
+                            tunnel_id.as_deref(),
+                        ) {
                             if tx
-                                .send(Ok(Event::default().event("line").data(line.to_string())))
+                                .send(Ok(Event::default().event("line").data(line)))
                                 .await
                                 .is_err()
                             {
@@ -658,8 +662,9 @@ pub(super) async fn stream_metrics(
 
 pub(super) async fn get_diagnostics(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<TunnelQuery>,
 ) -> Json<DiagnosticsResponse> {
-    Json(build_diagnostics_snapshot(&state).await)
+    Json(build_diagnostics_snapshot(&state, query.tunnel_id.as_deref()).await)
 }
 
 pub(super) async fn get_dashboard(
@@ -724,14 +729,31 @@ pub(super) async fn stream_dashboard(
         .into_response())
 }
 
-pub(super) async fn build_diagnostics_snapshot(state: &Arc<AppState>) -> DiagnosticsResponse {
+pub(super) async fn build_diagnostics_snapshot(
+    state: &Arc<AppState>,
+    tunnel_id: Option<&str>,
+) -> DiagnosticsResponse {
     let (routes, tunnel_state, pending_restart) = {
         let runtime = state.runtime.lock().await;
-        let current_tunnel_id = runtime.persisted.current_tunnel_id().to_string();
+        let tunnel_id = tunnel_id
+            .map(ToString::to_string)
+            .unwrap_or_else(|| runtime.persisted.current_tunnel_id().to_string());
+        let filtered_routes = runtime
+            .persisted
+            .routes
+            .iter()
+            .filter(|route| route.tunnel_id == tunnel_id)
+            .cloned()
+            .collect::<Vec<_>>();
         (
-            runtime.persisted.routes.clone(),
-            runtime.persisted.current_tunnel_status().state,
-            runtime.pending_restarts.contains_key(&current_tunnel_id),
+            filtered_routes,
+            runtime
+                .persisted
+                .tunnel_status(&tunnel_id)
+                .cloned()
+                .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle))
+                .state,
+            runtime.pending_restarts.contains_key(&tunnel_id),
         )
     };
     let (

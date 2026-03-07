@@ -270,6 +270,18 @@ struct RuntimeState {
     pending_restarts: HashMap<String, PendingRestart>,
 }
 
+#[derive(Debug)]
+struct GatewayBinding {
+    listen_addr: SocketAddr,
+    abort_handle: tokio::task::AbortHandle,
+}
+
+#[derive(Debug)]
+struct TunnelGatewayState {
+    app_state: Arc<AppState>,
+    tunnel_id: String,
+}
+
 #[derive(Debug, Default)]
 struct ConfigReloadStatus {
     enabled: bool,
@@ -282,6 +294,7 @@ struct ConfigReloadStatus {
 #[derive(Debug)]
 struct AppState {
     runtime: Mutex<RuntimeState>,
+    gateway_bindings: Mutex<HashMap<String, GatewayBinding>>,
     upstream_health: Mutex<HashMap<UpstreamHealthKey, UpstreamHealth>>,
     health_check_settings: RwLock<HealthCheckSettings>,
     data_file: PathBuf,
@@ -319,11 +332,13 @@ struct SpawnedTunnel {
 
 #[derive(Debug, Deserialize)]
 struct TunnelLogsQuery {
+    tunnel_id: Option<String>,
     lines: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TunnelLogsStreamQuery {
+    tunnel_id: Option<String>,
     lines: Option<usize>,
     poll_ms: Option<u64>,
 }
@@ -432,6 +447,7 @@ async fn main() -> anyhow::Result<()> {
             running_tunnels: HashMap::new(),
             pending_restarts: HashMap::new(),
         }),
+        gateway_bindings: Mutex::new(HashMap::new()),
         upstream_health: Mutex::new(HashMap::new()),
         health_check_settings: RwLock::new(health_check_settings),
         data_file,
@@ -483,12 +499,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/health", get(health))
         .merge(protected_control_app)
         .with_state(shared.clone());
-    let gateway_app = Router::new()
-        .fallback(proxy_request)
-        .with_state(shared.clone());
 
     let listener = TcpListener::bind(addr).await?;
-    let gateway_listener = TcpListener::bind(gateway_addr).await?;
+    let gateway_url = format!("http://{}", gateway_addr);
+    ensure_tunnel_gateway_listener(&shared, "primary", &gateway_url).await?;
     info!(
         "tunnelmuxd listening on {}, state file {}",
         listener.local_addr()?,
@@ -500,12 +514,89 @@ async fn main() -> anyhow::Result<()> {
         info!("control api token auth: disabled");
     }
     info!("provider log file {}", shared.provider_log_file.display());
-    info!("gateway listening on {}", gateway_listener.local_addr()?);
+    info!("gateway listening on {}", gateway_addr);
 
-    let control_server = axum::serve(listener, control_app);
-    let gateway_server = axum::serve(gateway_listener, gateway_app);
-    tokio::try_join!(control_server, gateway_server)?;
+    axum::serve(listener, control_app).await?;
     Ok(())
+}
+
+fn build_gateway_router_for_tunnel(state: Arc<AppState>, tunnel_id: String) -> Router {
+    Router::new()
+        .fallback(proxy_request_for_tunnel)
+        .with_state(Arc::new(TunnelGatewayState {
+            app_state: state,
+            tunnel_id,
+        }))
+}
+
+async fn ensure_tunnel_gateway_listener(
+    state: &Arc<AppState>,
+    tunnel_id: &str,
+    target_url: &str,
+) -> anyhow::Result<SocketAddr> {
+    let listen_addr = gateway_socket_addr_from_target_url(target_url)?;
+    {
+        let bindings = state.gateway_bindings.lock().await;
+        if let Some(binding) = bindings.get(tunnel_id) {
+            if binding.listen_addr == listen_addr {
+                return Ok(listen_addr);
+            }
+        }
+        if bindings
+            .iter()
+            .any(|(other_tunnel_id, binding)| other_tunnel_id != tunnel_id && binding.listen_addr == listen_addr)
+        {
+            return Err(anyhow!(
+                "gateway address {} is already in use by another tunnel",
+                listen_addr
+            ));
+        }
+    }
+
+    let listener = TcpListener::bind(listen_addr).await?;
+    let gateway_app = build_gateway_router_for_tunnel(state.clone(), tunnel_id.to_string());
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, gateway_app).await;
+    });
+    let abort_handle = task.abort_handle();
+    drop(task);
+
+    let previous = {
+        let mut bindings = state.gateway_bindings.lock().await;
+        bindings.insert(
+            tunnel_id.to_string(),
+            GatewayBinding {
+                listen_addr,
+                abort_handle,
+            },
+        )
+    };
+    if let Some(previous) = previous {
+        previous.abort_handle.abort();
+    }
+    Ok(listen_addr)
+}
+
+fn gateway_socket_addr_from_target_url(target_url: &str) -> anyhow::Result<SocketAddr> {
+    let parsed = Url::parse(target_url.trim())
+        .with_context(|| format!("invalid gateway target URL: {}", target_url.trim()))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("gateway target URL is missing a host: {}", target_url.trim()))?;
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("gateway target URL is missing a port: {}", target_url.trim()))?;
+    let candidate = format!("{host}:{port}");
+    candidate
+        .parse::<SocketAddr>()
+        .or_else(|_| {
+            use std::net::ToSocketAddrs;
+            candidate
+                .to_socket_addrs()
+                .with_context(|| format!("failed to resolve gateway target URL: {candidate}"))?
+                .next()
+                .ok_or_else(|| anyhow!("gateway target URL resolved to no addresses: {candidate}"))
+        })
 }
 
 fn normalize_route_request(request: CreateRouteRequest) -> Result<RouteRule, ApiError> {
@@ -822,6 +913,21 @@ fn normalize_log_stream_poll_ms(poll_ms: Option<u64>) -> Result<u64, ApiError> {
     Ok(poll_ms)
 }
 
+fn log_line_matches_tunnel(line: &str, tunnel_id: &str) -> bool {
+    let marker = format!("[{tunnel_id}:");
+    line.contains(&marker)
+}
+
+fn filter_log_lines_for_tunnel(lines: Vec<String>, tunnel_id: Option<&str>) -> Vec<String> {
+    match tunnel_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(tunnel_id) => lines
+            .into_iter()
+            .filter(|line| log_line_matches_tunnel(line, tunnel_id))
+            .collect(),
+        None => lines,
+    }
+}
+
 fn normalize_stream_interval_ms(interval_ms: Option<u64>) -> Result<u64, ApiError> {
     let interval_ms = interval_ms.unwrap_or(2_000);
     if interval_ms < 200 {
@@ -997,6 +1103,7 @@ mod tests {
                 running_tunnels: HashMap::new(),
                 pending_restarts: HashMap::new(),
             }),
+            gateway_bindings: Mutex::new(HashMap::new()),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
                 interval_ms: 5_000,
@@ -1028,6 +1135,8 @@ mod tests {
             .route("/v1/tunnel/status", get(get_tunnel_status))
             .route("/v1/tunnel/status/stream", get(stream_tunnel_status))
             .route("/v1/tunnels/workspace", get(get_tunnel_workspace))
+            .route("/v1/tunnel/logs", get(get_tunnel_logs))
+            .route("/v1/tunnel/logs/stream", get(stream_tunnel_logs))
             .route("/v1/tunnel/start", post(start_tunnel))
             .route("/v1/tunnel/stop", post(stop_tunnel))
             .route(
@@ -1064,6 +1173,35 @@ mod tests {
         let addr = listener.local_addr().expect("control listener addr");
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, control_app).await;
+        });
+        (format!("http://{}", addr), task)
+    }
+
+    async fn spawn_gateway_test_server_for_tunnel(
+        state: Arc<AppState>,
+        tunnel_id: &str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let gateway_app = build_gateway_router_for_tunnel(state, tunnel_id.to_string());
+        let gateway_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway listener");
+        let gateway_addr = gateway_listener.local_addr().expect("gateway addr");
+        let gateway_task = tokio::spawn(async move {
+            let _ = axum::serve(gateway_listener, gateway_app).await;
+        });
+        (format!("http://{}", gateway_addr), gateway_task)
+    }
+
+    async fn spawn_text_upstream_server(
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let app = Router::new().fallback(get(move || async move { body }));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream listener");
+        let addr = listener.local_addr().expect("upstream addr");
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
         });
         (format!("http://{}", addr), task)
     }
@@ -1211,6 +1349,7 @@ mod tests {
                 running_tunnels: HashMap::new(),
                 pending_restarts: HashMap::new(),
             }),
+            gateway_bindings: Mutex::new(HashMap::new()),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
                 interval_ms: 5_000,
@@ -1234,16 +1373,10 @@ mod tests {
             ws_proxy_client: HyperClient::builder(TokioExecutor::new()).build(https_connector),
         });
 
-        let gateway_app = Router::new().fallback(proxy_request).with_state(state);
-        let gateway_listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind gateway listener");
-        let gateway_addr = gateway_listener.local_addr().expect("gateway addr");
-        let gateway_task = tokio::spawn(async move {
-            let _ = axum::serve(gateway_listener, gateway_app).await;
-        });
+        let (gateway_base_url, gateway_task) =
+            spawn_gateway_test_server_for_tunnel(state, "primary").await;
 
-        let ws_url = format!("ws://127.0.0.1:{}/echo", gateway_addr.port());
+        let ws_url = gateway_base_url.replacen("http://", "ws://", 1) + "/echo";
         let (mut client_ws, _) = tokio_tungstenite::connect_async(ws_url)
             .await
             .expect("connect to gateway websocket");
@@ -1270,18 +1403,12 @@ mod tests {
     #[tokio::test]
     async fn gateway_returns_welcome_page_when_no_routes_configured() {
         let state = test_state_with_routes(vec![], None);
-        let gateway_app = Router::new().fallback(proxy_request).with_state(state);
-        let gateway_listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind gateway listener");
-        let gateway_addr = gateway_listener.local_addr().expect("gateway addr");
-        let gateway_task = tokio::spawn(async move {
-            let _ = axum::serve(gateway_listener, gateway_app).await;
-        });
+        let (gateway_base_url, gateway_task) =
+            spawn_gateway_test_server_for_tunnel(state, "primary").await;
 
         let client = ReqwestClient::new();
         let response = client
-            .get(format!("http://{}/", gateway_addr))
+            .get(format!("{gateway_base_url}/"))
             .send()
             .await
             .expect("request should complete");
@@ -1300,6 +1427,81 @@ mod tests {
         assert!(body.contains("Add your first service"));
 
         gateway_task.abort();
+    }
+
+    #[tokio::test]
+    async fn gateway_routes_are_isolated_per_tunnel() {
+        let (primary_upstream, primary_upstream_task) =
+            spawn_text_upstream_server("primary-upstream").await;
+        let (secondary_upstream, secondary_upstream_task) =
+            spawn_text_upstream_server("secondary-upstream").await;
+
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    tunnel_id: "primary".to_string(),
+                    id: "svc-primary".to_string(),
+                    match_host: None,
+                    match_path_prefix: Some("/".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: primary_upstream,
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    tunnel_id: "tunnel-2".to_string(),
+                    id: "svc-secondary".to_string(),
+                    match_host: None,
+                    match_path_prefix: Some("/".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: secondary_upstream,
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+            ],
+            None,
+        );
+
+        let (primary_gateway_base, primary_gateway_task) =
+            spawn_gateway_test_server_for_tunnel(state.clone(), "primary").await;
+        let (secondary_gateway_base, secondary_gateway_task) =
+            spawn_gateway_test_server_for_tunnel(state, "tunnel-2").await;
+
+        let client = ReqwestClient::new();
+        let primary_response = client
+            .get(format!("{primary_gateway_base}/"))
+            .send()
+            .await
+            .expect("primary gateway request should complete");
+        assert_eq!(primary_response.status(), StatusCode::OK);
+        assert_eq!(
+            primary_response
+                .text()
+                .await
+                .expect("primary response body should decode"),
+            "primary-upstream"
+        );
+
+        let secondary_response = client
+            .get(format!("{secondary_gateway_base}/"))
+            .send()
+            .await
+            .expect("secondary gateway request should complete");
+        assert_eq!(secondary_response.status(), StatusCode::OK);
+        assert_eq!(
+            secondary_response
+                .text()
+                .await
+                .expect("secondary response body should decode"),
+            "secondary-upstream"
+        );
+
+        primary_gateway_task.abort();
+        secondary_gateway_task.abort();
+        primary_upstream_task.abort();
+        secondary_upstream_task.abort();
     }
 
     #[tokio::test]
@@ -2898,6 +3100,89 @@ mod tests {
         assert_eq!(payload["config_reload_interval_ms"], 1_000);
         assert_eq!(payload["last_config_reload_at"], serde_json::Value::Null);
         assert_eq!(payload["last_config_reload_error"], serde_json::Value::Null);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn diagnostics_endpoint_filters_by_tunnel_id() {
+        let state = test_state_with_routes(
+            vec![
+                route_for_tunnel("primary", "svc-a", None, Some("/a"), None, true),
+                route_for_tunnel("tunnel-2", "svc-b", None, Some("/b"), None, true),
+                route_for_tunnel("tunnel-2", "svc-c", None, Some("/c"), None, false),
+            ],
+            None,
+        );
+        {
+            let mut runtime = state.runtime.lock().await;
+            *runtime.persisted.ensure_tunnel_status_mut("primary") =
+                default_tunnel_status(TunnelState::Running);
+            *runtime.persisted.ensure_tunnel_status_mut("tunnel-2") =
+                default_tunnel_status(TunnelState::Starting);
+            runtime.pending_restarts.insert(
+                "tunnel-2".to_string(),
+                PendingRestart {
+                    provider: TunnelProvider::Ngrok,
+                    target_url: "http://127.0.0.1:58080".to_string(),
+                    metadata: None,
+                    auto_restart: true,
+                    restart_count: 1,
+                    started_at: "2026-03-05T00:00:00Z".to_string(),
+                    next_attempt_at: Instant::now() + Duration::from_secs(5),
+                    reason: "provider exited".to_string(),
+                },
+            );
+        }
+
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+        let payload: serde_json::Value = client
+            .get(format!("{base_url}/v1/diagnostics"))
+            .query(&[("tunnel_id", "tunnel-2")])
+            .send()
+            .await
+            .expect("diagnostics request should complete")
+            .json()
+            .await
+            .expect("diagnostics response should decode");
+
+        assert_eq!(payload["route_count"], 2);
+        assert_eq!(payload["enabled_route_count"], 1);
+        assert_eq!(payload["tunnel_state"], "starting");
+        assert_eq!(payload["pending_restart"], true);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn tunnel_logs_endpoint_filters_by_tunnel_id() {
+        let state = test_state_with_routes(vec![], None);
+        fs::write(
+            &state.provider_log_file,
+            concat!(
+                "2026-03-07T00:00:00Z [primary:cloudflared:stdout] primary-line\n",
+                "2026-03-07T00:00:01Z [tunnel-2:ngrok:stderr] secondary-line\n"
+            ),
+        )
+        .await
+        .expect("log fixture should write");
+
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+        let payload: TunnelLogsResponse = client
+            .get(format!("{base_url}/v1/tunnel/logs"))
+            .query(&[("tunnel_id", "tunnel-2"), ("lines", "20")])
+            .send()
+            .await
+            .expect("logs request should complete")
+            .json()
+            .await
+            .expect("logs payload should decode");
+
+        assert_eq!(payload.lines.len(), 1);
+        assert!(payload.lines[0].contains("secondary-line"));
+        assert!(!payload.lines[0].contains("primary-line"));
 
         server_task.abort();
     }

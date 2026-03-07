@@ -1,9 +1,11 @@
 use super::*;
 
-pub(super) async fn proxy_request(
-    State(state): State<Arc<AppState>>,
+pub(super) async fn proxy_request_for_tunnel(
+    State(gateway_state): State<Arc<TunnelGatewayState>>,
     request: Request,
 ) -> Result<Response, ApiError> {
+    let state = &gateway_state.app_state;
+    let tunnel_id = gateway_state.tunnel_id.as_str();
     let method = request.method().clone();
     let uri = request.uri().clone();
     let headers = request.headers().clone();
@@ -13,8 +15,15 @@ pub(super) async fn proxy_request(
 
     let (has_enabled_routes, route) = {
         let runtime = state.runtime.lock().await;
-        let has_enabled_routes = runtime.persisted.routes.iter().any(|route| route.enabled);
-        let route = select_route(&runtime.persisted.routes, host.as_deref(), &path).cloned();
+        let routes = runtime
+            .persisted
+            .routes
+            .iter()
+            .filter(|route| route.tunnel_id == tunnel_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_enabled_routes = routes.iter().any(|route| route.enabled);
+        let route = select_route(&routes, host.as_deref(), &path).cloned();
         (has_enabled_routes, route)
     };
 
