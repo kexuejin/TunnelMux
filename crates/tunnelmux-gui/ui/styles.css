@@ -461,6 +461,25 @@ select {
   font-size: 0.92rem;
 }
 
+.diagnostics-shell {
+  display: block;
+}
+
+.diagnostics-shell summary {
+  cursor: pointer;
+  color: #dbeafe;
+  font-weight: 600;
+  list-style: none;
+}
+
+.diagnostics-shell summary::-webkit-details-marker {
+  display: none;
+}
+
+.diagnostics-shell > :not(summary) {
+  margin-top: 16px;
+}
+
 .advanced-section[open] {
   padding-bottom: 18px;
 }

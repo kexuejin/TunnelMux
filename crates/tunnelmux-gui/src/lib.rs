@@ -1,5 +1,3 @@
-use tauri::Manager;
-
 pub mod commands;
 pub mod daemon_manager;
 pub mod settings;
@@ -7,7 +5,7 @@ pub mod state;
 pub mod view_models;
 
 pub fn run() {
-    let app = tauri::Builder::default()
+    tauri::Builder::default()
         .manage(state::GuiAppState::default())
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -33,12 +31,6 @@ pub fn run() {
             commands::load_recent_logs,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build TunnelMux GUI");
-
-    app.run(|app_handle, event| {
-        if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) {
-            let state = app_handle.state::<state::GuiAppState>();
-            let _ = daemon_manager::stop_managed_daemon_in_state(&state.daemon_runtime);
-        }
-    });
+        .expect("failed to build TunnelMux GUI")
+        .run(|_, _| {});
 }

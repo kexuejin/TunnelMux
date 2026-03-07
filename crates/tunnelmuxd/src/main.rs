@@ -1149,6 +1149,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_returns_welcome_page_when_no_routes_configured() {
+        let state = test_state_with_routes(vec![], None);
+        let gateway_app = Router::new().fallback(proxy_request).with_state(state);
+        let gateway_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway listener");
+        let gateway_addr = gateway_listener.local_addr().expect("gateway addr");
+        let gateway_task = tokio::spawn(async move {
+            let _ = axum::serve(gateway_listener, gateway_app).await;
+        });
+
+        let client = ReqwestClient::new();
+        let response = client
+            .get(format!("http://{}/", gateway_addr))
+            .send()
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(content_type.starts_with("text/html"));
+
+        let body = response.text().await.expect("body should decode");
+        assert!(body.contains("TunnelMux is live"));
+        assert!(body.contains("Add your first service"));
+
+        gateway_task.abort();
+    }
+
+    #[tokio::test]
     async fn control_endpoint_rejects_unauthorized_requests() {
         let state = test_state_with_routes(vec![], Some("secret-token"));
         let (base_url, server_task) = spawn_control_test_server(state).await;

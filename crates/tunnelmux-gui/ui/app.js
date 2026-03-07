@@ -64,7 +64,6 @@ function bindElements() {
   elements.homePublicUrlMeta = document.getElementById('home-public-url-meta');
   elements.dashboardConnected = document.getElementById('dashboard-connected');
   elements.dashboardProvider = document.getElementById('dashboard-provider');
-  elements.servicesCount = document.getElementById('services-count');
   elements.servicesEnabledCount = document.getElementById('services-enabled-count');
   elements.dashboardMessage = document.getElementById('dashboard-message');
   elements.homeProviderHint = document.getElementById('home-provider-hint');
@@ -76,8 +75,11 @@ function bindElements() {
 
   elements.routesMessage = document.getElementById('routes-message');
   elements.routesEmpty = document.getElementById('routes-empty');
+  elements.routesEmptyTitle = document.getElementById('routes-empty-title');
+  elements.routesEmptyCopy = document.getElementById('routes-empty-copy');
   elements.routesList = document.getElementById('routes-list');
   elements.newRoute = document.getElementById('new-route');
+  elements.newRouteEmpty = document.getElementById('new-route-empty');
   elements.servicesShell = document.getElementById('services-shell');
 
   elements.serviceBackdrop = document.getElementById('service-backdrop');
@@ -105,6 +107,8 @@ function bindElements() {
   elements.settingsAdvanced = document.getElementById('settings-advanced');
   elements.settingsGatewayTargetUrl = document.getElementById('settings-gateway-target-url');
   elements.settingsAutoRestart = document.getElementById('settings-auto-restart');
+  elements.settingsCloudflaredNote = document.getElementById('settings-cloudflared-note');
+  elements.settingsNgrokFields = document.getElementById('settings-ngrok-fields');
   elements.settingsNgrokAuthtoken = document.getElementById('settings-ngrok-authtoken');
   elements.settingsNgrokDomain = document.getElementById('settings-ngrok-domain');
   elements.saveSettings = document.getElementById('save-settings');
@@ -147,6 +151,10 @@ function bindEvents() {
     resetRouteForm();
     openServiceDrawer();
   });
+  elements.newRouteEmpty?.addEventListener('click', () => {
+    resetRouteForm();
+    openServiceDrawer();
+  });
   elements.cancelRouteEdit?.addEventListener('click', closeServiceDrawer);
   elements.serviceBackdrop?.addEventListener('click', closeServiceDrawer);
   elements.saveRoute?.addEventListener('click', () => withBusy(saveRoute));
@@ -162,6 +170,11 @@ function bindEvents() {
     state.diagnostics.logLines = Number(elements.logLinesSelect.value) || 100;
     if (elements.troubleshootingDetails?.open) {
       void refreshRecentLogs({ manual: false });
+    }
+  });
+  elements.troubleshootingDetails?.addEventListener('toggle', () => {
+    if (elements.troubleshootingDetails.open) {
+      void refreshDiagnosticsWorkspace({ manual: false });
     }
   });
 }
@@ -267,6 +280,12 @@ function syncProviderHints() {
   const provider = elements.settingsDefaultProvider.value || 'cloudflared';
   const gatewayTarget = elements.settingsGatewayTargetUrl.value || 'http://127.0.0.1:48080';
   const restartLabel = elements.settingsAutoRestart.checked ? 'enabled' : 'disabled';
+  if (elements.settingsNgrokFields) {
+    elements.settingsNgrokFields.hidden = provider !== 'ngrok';
+  }
+  if (elements.settingsCloudflaredNote) {
+    elements.settingsCloudflaredNote.hidden = provider !== 'cloudflared';
+  }
   elements.homeProviderHint.textContent = `${provider} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
 }
 
@@ -449,14 +468,18 @@ function renderDashboard(snapshot) {
   const connected = Boolean(snapshot?.connected);
   const publicUrl = tunnel?.public_base_url ?? '';
   const tunnelState = tunnel?.state ?? (connected ? 'idle' : 'offline');
+  const enabledServices = state.routeCache.filter((route) => route.enabled).length;
 
   elements.publicUrl.textContent = publicUrl || 'Not running';
   elements.dashboardConnected.textContent = connected ? 'Yes' : 'No';
   elements.dashboardProvider.textContent = tunnel?.provider ?? collectSettingsForm().default_provider ?? '—';
-  elements.servicesEnabledCount.textContent = `${elements.servicesEnabledCount.textContent.replace(/[^0-9]/g, '') || '0'} enabled`;
+  elements.servicesEnabledCount.textContent = `${enabledServices} enabled`;
   elements.copyPublicUrl.disabled = !publicUrl;
   elements.openPublicUrl.disabled = !publicUrl;
   elements.stopTunnel.disabled = !publicUrl;
+  elements.startTunnel.textContent = tunnelState === 'stopped' || tunnelState === 'error'
+    ? 'Restart Tunnel'
+    : 'Start Tunnel';
   elements.startTunnel.hidden = Boolean(publicUrl);
   elements.copyPublicUrl.hidden = !publicUrl;
   elements.openPublicUrl.hidden = !publicUrl;
@@ -473,9 +496,20 @@ function renderDashboard(snapshot) {
   }
 
   if (publicUrl) {
-    elements.homePublicUrlMeta.textContent = 'Your tunnel is live and ready to share.';
-    elements.dashboardMessage.textContent = 'Live now.';
+    elements.homePublicUrlMeta.textContent = enabledServices > 0
+      ? 'Your tunnel is live and ready to share.'
+      : 'Your tunnel is live. Visitors will see the default welcome page until you add a service.';
+    elements.dashboardMessage.textContent = enabledServices > 0
+      ? 'Live now.'
+      : 'No services configured yet.';
     renderStatus('Dashboard refreshed.');
+    return;
+  }
+
+  if (tunnelState === 'stopped' || tunnelState === 'error') {
+    elements.homePublicUrlMeta.textContent = 'The previous tunnel is no longer running. Start it again to restore a public URL.';
+    elements.dashboardMessage.textContent = snapshot?.message ?? 'Tunnel not running.';
+    renderStatus('Dashboard refreshed.', tunnelState === 'error');
     return;
   }
 
@@ -486,22 +520,30 @@ function renderDashboard(snapshot) {
 
 function renderRoutes(snapshot) {
   state.routeCache = snapshot?.routes ?? [];
-  elements.routesMessage.textContent = snapshot?.message ?? 'Services exposed through your current tunnel.';
+  elements.routesMessage.textContent = state.routeCache.length
+    ? 'Services exposed through your current tunnel.'
+    : 'Add a local service to route traffic somewhere useful.';
   elements.routesList.innerHTML = '';
 
   const configured = state.routeCache.length;
   const enabled = state.routeCache.filter((route) => route.enabled).length;
-  elements.servicesCount.textContent = String(configured);
   elements.servicesEnabledCount.textContent = `${enabled} enabled`;
-  elements.newRoute.hidden = configured === 0;
+  elements.newRoute.hidden = false;
 
   if (!state.routeCache.length) {
+    const isLoadError = typeof snapshot?.message === 'string' && snapshot.message.startsWith('Failed to load services:');
+    elements.routesEmptyTitle.textContent = isLoadError ? 'Could not load services.' : 'No services yet.';
+    elements.routesEmptyCopy.textContent = isLoadError
+      ? snapshot.message
+      : (snapshot?.message ?? 'Add your first local service to replace the default welcome page.');
+    elements.routesEmptyCopy.classList.toggle('error', isLoadError);
     elements.routesEmpty.hidden = false;
     elements.dashboardMessage.hidden = true;
     return;
   }
 
   elements.routesEmpty.hidden = true;
+  elements.routesEmptyCopy.classList.remove('error');
   elements.dashboardMessage.hidden = false;
 
   for (const route of state.routeCache) {
