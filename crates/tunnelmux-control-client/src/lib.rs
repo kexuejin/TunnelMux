@@ -3,9 +3,10 @@ use reqwest::{Client, RequestBuilder, Response, StatusCode as ReqwestStatusCode}
 use serde::de::DeserializeOwned;
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DashboardResponse,
-    DeleteRouteResponse, DiagnosticsResponse, ErrorResponse, HealthCheckSettingsResponse,
-    HealthResponse, MetricsResponse, ReloadSettingsResponse, RouteMatchResponse, RouteRule,
-    RoutesResponse, TunnelLogsResponse, TunnelStartRequest, TunnelStatusResponse,
+    DeleteRouteResponse, DeleteTunnelResponse, DiagnosticsResponse, ErrorResponse,
+    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
+    RouteMatchResponse, RouteRule, RoutesResponse, TunnelDeleteRequest, TunnelLogsResponse,
+    TunnelStartRequest, TunnelStatusResponse,
     UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
 };
 
@@ -76,6 +77,16 @@ impl TunnelmuxControlClient {
         self.post(
             "/v1/tunnel/stop",
             &tunnelmux_core::TunnelStopRequest {
+                tunnel_id: tunnel_id.to_string(),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_tunnel(&self, tunnel_id: &str) -> anyhow::Result<DeleteTunnelResponse> {
+        self.post(
+            "/v1/tunnel/delete",
+            &TunnelDeleteRequest {
                 tunnel_id: tunnel_id.to_string(),
             },
         )
@@ -507,6 +518,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_tunnel_decodes_success_payload() {
+        let app = Router::new().route("/v1/tunnel/delete", post(delete_tunnel_handler));
+        let base_url = spawn_test_server(app).await;
+        let client = TunnelmuxControlClient::new(ControlClientConfig::new(base_url, None));
+
+        let response = client
+            .delete_tunnel("tunnel-2")
+            .await
+            .expect("delete tunnel request should succeed");
+
+        assert!(response.removed);
+    }
+
+    #[tokio::test]
     async fn create_route_surfaces_structured_error_message() {
         let app = Router::new().route("/v1/routes", post(route_error_handler));
         let base_url = spawn_test_server(app).await;
@@ -653,6 +678,10 @@ mod tests {
                 error: "duplicate route id".to_string(),
             }),
         )
+    }
+
+    async fn delete_tunnel_handler() -> Json<DeleteTunnelResponse> {
+        Json(DeleteTunnelResponse { removed: true })
     }
 
     async fn spawn_test_server(app: Router) -> String {

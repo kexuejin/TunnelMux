@@ -481,6 +481,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/tunnel/logs/stream", get(stream_tunnel_logs))
         .route("/v1/tunnel/start", post(start_tunnel))
         .route("/v1/tunnel/stop", post(stop_tunnel))
+        .route("/v1/tunnel/delete", post(delete_tunnel))
         .route(
             "/v1/settings/health-check",
             get(get_health_check_settings).put(update_health_check_settings),
@@ -1157,6 +1158,7 @@ mod tests {
             .route("/v1/tunnel/logs/stream", get(stream_tunnel_logs))
             .route("/v1/tunnel/start", post(start_tunnel))
             .route("/v1/tunnel/stop", post(stop_tunnel))
+            .route("/v1/tunnel/delete", post(delete_tunnel))
             .route(
                 "/v1/settings/health-check",
                 get(get_health_check_settings).put(update_health_check_settings),
@@ -2834,6 +2836,88 @@ mod tests {
         let rebound = TcpListener::bind(listen_addr)
             .await
             .expect("stopped tunnel should release gateway port");
+        drop(rebound);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_tunnel_endpoint_removes_tunnel_state_routes_and_binding() {
+        let state = test_state_with_routes(
+            vec![
+                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
+                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+            ],
+            None,
+        );
+        {
+            let mut runtime = state.runtime.lock().await;
+            runtime.persisted.current_tunnel_id = Some("tunnel-2".to_string());
+            *runtime.persisted.ensure_tunnel_status_mut("primary") = default_tunnel_status(TunnelState::Running);
+            *runtime.persisted.ensure_tunnel_status_mut("tunnel-2") = default_tunnel_status(TunnelState::Stopped);
+        }
+        let tunnel_2_target = "http://127.0.0.1:58992".to_string();
+        let tunnel_2_listen = ensure_tunnel_gateway_listener(&state, "tunnel-2", &tunnel_2_target)
+            .await
+            .expect("gateway listener should start");
+
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+        let response = client
+            .post(format!("{base_url}/v1/tunnel/delete"))
+            .json(&tunnelmux_core::TunnelDeleteRequest {
+                tunnel_id: "tunnel-2".to_string(),
+            })
+            .send()
+            .await
+            .expect("delete request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: tunnelmux_core::DeleteTunnelResponse = response
+            .json()
+            .await
+            .expect("delete response should decode");
+        assert!(payload.removed);
+
+        let workspace: tunnelmux_core::TunnelWorkspaceResponse = client
+            .get(format!("{base_url}/v1/tunnels/workspace"))
+            .send()
+            .await
+            .expect("workspace request should complete")
+            .json()
+            .await
+            .expect("workspace payload should decode");
+        assert_eq!(workspace.tunnels.len(), 1);
+        assert_eq!(workspace.tunnels[0].id, "primary");
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("primary"));
+
+        let secondary_routes: tunnelmux_core::RoutesResponse = client
+            .get(format!("{base_url}/v1/routes"))
+            .query(&[("tunnel_id", "tunnel-2")])
+            .send()
+            .await
+            .expect("routes request should complete")
+            .json()
+            .await
+            .expect("routes payload should decode");
+        assert!(secondary_routes.routes.is_empty());
+
+        {
+            let runtime = state.runtime.lock().await;
+            assert!(runtime.persisted.tunnel_status("tunnel-2").is_none());
+            assert!(runtime
+                .persisted
+                .routes
+                .iter()
+                .all(|route| route.tunnel_id != "tunnel-2"));
+        }
+        {
+            let bindings = state.gateway_bindings.lock().await;
+            assert!(!bindings.contains_key("tunnel-2"));
+        }
+
+        let rebound = TcpListener::bind(tunnel_2_listen)
+            .await
+            .expect("deleted tunnel should release gateway port");
         drop(rebound);
 
         server_task.abort();
