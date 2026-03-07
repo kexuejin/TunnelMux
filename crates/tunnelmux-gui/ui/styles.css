@@ -421,8 +421,19 @@ select {
 }
 
 .compact-actions button {
-  padding: 8px 10px;
   min-width: auto;
+}
+
+.action-chip {
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.danger-chip {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.24);
 }
 
 .action-link {
