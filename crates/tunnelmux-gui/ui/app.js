@@ -249,7 +249,7 @@ function populateSettingsFields(settings) {
   elements.baseUrl.value = settings.base_url ?? '';
   elements.token.value = settings.token ?? '';
   elements.settingsDefaultProvider.value = settings.default_provider ?? 'cloudflared';
-  elements.settingsGatewayTargetUrl.value = settings.gateway_target_url ?? 'http://127.0.0.1:18080';
+  elements.settingsGatewayTargetUrl.value = settings.gateway_target_url ?? 'http://127.0.0.1:48080';
   elements.settingsAutoRestart.checked = Boolean(settings.auto_restart);
   elements.settingsNgrokAuthtoken.value = settings.ngrok_authtoken ?? '';
   elements.settingsNgrokDomain.value = settings.ngrok_domain ?? '';
@@ -265,7 +265,7 @@ function populateSettingsFields(settings) {
 
 function syncProviderHints() {
   const provider = elements.settingsDefaultProvider.value || 'cloudflared';
-  const gatewayTarget = elements.settingsGatewayTargetUrl.value || 'http://127.0.0.1:18080';
+  const gatewayTarget = elements.settingsGatewayTargetUrl.value || 'http://127.0.0.1:48080';
   const restartLabel = elements.settingsAutoRestart.checked ? 'enabled' : 'disabled';
   elements.homeProviderHint.textContent = `${provider} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
 }

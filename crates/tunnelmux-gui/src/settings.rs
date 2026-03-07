@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tunnelmux_core::{DEFAULT_GATEWAY_TARGET_URL, TunnelProvider};
+use tunnelmux_core::TunnelProvider;
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:4765";
+pub const DEFAULT_GUI_GATEWAY_TARGET_URL: &str = "http://127.0.0.1:48080";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -22,7 +23,7 @@ impl Default for GuiSettings {
             base_url: DEFAULT_BASE_URL.to_string(),
             token: None,
             default_provider: TunnelProvider::Cloudflared,
-            gateway_target_url: DEFAULT_GATEWAY_TARGET_URL.to_string(),
+            gateway_target_url: DEFAULT_GUI_GATEWAY_TARGET_URL.to_string(),
             auto_restart: true,
             ngrok_authtoken: None,
             ngrok_domain: None,
@@ -112,7 +113,7 @@ mod tests {
         assert_eq!(settings.base_url, DEFAULT_BASE_URL);
         assert_eq!(settings.token, None);
         assert_eq!(settings.default_provider, TunnelProvider::Cloudflared);
-        assert_eq!(settings.gateway_target_url, DEFAULT_GATEWAY_TARGET_URL);
+        assert_eq!(settings.gateway_target_url, DEFAULT_GUI_GATEWAY_TARGET_URL);
         assert!(settings.auto_restart);
         assert_eq!(settings.ngrok_authtoken, None);
         assert_eq!(settings.ngrok_domain, None);
@@ -158,7 +159,7 @@ mod tests {
         assert_eq!(loaded.base_url, "http://127.0.0.1:8765");
         assert_eq!(loaded.token.as_deref(), Some("legacy-token"));
         assert_eq!(loaded.default_provider, TunnelProvider::Cloudflared);
-        assert_eq!(loaded.gateway_target_url, DEFAULT_GATEWAY_TARGET_URL);
+        assert_eq!(loaded.gateway_target_url, DEFAULT_GUI_GATEWAY_TARGET_URL);
         assert!(loaded.auto_restart);
         assert_eq!(loaded.ngrok_authtoken, None);
         assert_eq!(loaded.ngrok_domain, None);
