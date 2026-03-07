@@ -118,15 +118,21 @@ pub(super) async fn load_persisted_state(path: &Path) -> anyhow::Result<Persiste
     let mut parsed: PersistedState = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse state file: {}", path.display()))?;
 
-    if matches!(
-        parsed.tunnel.state,
-        TunnelState::Running | TunnelState::Starting
-    ) {
-        parsed.tunnel.state = TunnelState::Stopped;
-        parsed.tunnel.process_id = None;
-        parsed.tunnel.last_error =
-            Some("daemon restarted; previous tunnel process was detached".to_string());
-        parsed.tunnel.updated_at = now_iso();
+    if parsed.current_tunnel_id.is_none() {
+        parsed.current_tunnel_id = Some("primary".to_string());
+    }
+
+    for tunnel in &mut parsed.tunnels {
+        if matches!(
+            tunnel.status.state,
+            TunnelState::Running | TunnelState::Starting
+        ) {
+            tunnel.status.state = TunnelState::Stopped;
+            tunnel.status.process_id = None;
+            tunnel.status.last_error =
+                Some("daemon restarted; previous tunnel process was detached".to_string());
+            tunnel.status.updated_at = now_iso();
+        }
     }
 
     Ok(parsed)

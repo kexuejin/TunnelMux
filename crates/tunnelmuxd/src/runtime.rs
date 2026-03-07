@@ -46,12 +46,15 @@ pub(super) fn restart_backoff(attempt: u32) -> Duration {
     Duration::from_secs(1_u64 << exponent)
 }
 
-pub(super) async fn stop_running_process(state: &Arc<AppState>) -> anyhow::Result<bool> {
+pub(super) async fn stop_running_process(
+    state: &Arc<AppState>,
+    tunnel_id: &str,
+) -> anyhow::Result<bool> {
     let (running, pending_cleared) = {
         let mut runtime = state.runtime.lock().await;
         (
-            runtime.running_tunnel.take(),
-            runtime.pending_restart.take().is_some(),
+            runtime.running_tunnels.remove(tunnel_id),
+            runtime.pending_restarts.remove(tunnel_id).is_some(),
         )
     };
 
@@ -259,40 +262,117 @@ pub(super) fn reconcile_runtime_tunnel_state(
     runtime: &mut RuntimeState,
     max_auto_restarts: u32,
 ) -> Result<bool, ApiError> {
-    if let Some(running) = runtime.running_tunnel.as_mut() {
-        match running.child.try_wait() {
-            Ok(Some(status)) => {
-                let provider = running.provider.clone();
-                let target_url = running.target_url.clone();
-                let metadata = running.metadata.clone();
-                let public_base_url = running.public_base_url.clone();
-                let started_at = running.started_at.clone();
-                let auto_restart = running.auto_restart;
-                let restart_count = running.restart_count;
-                let exit_reason =
-                    format!("provider process exited unexpectedly with status: {status}");
-                warn!(
-                    "provider process exited unexpectedly: provider={:?}, status={status}",
-                    provider
-                );
-                runtime.running_tunnel = None;
-                match determine_exit_action(auto_restart, restart_count, max_auto_restarts) {
-                    ExitAction::NoRestart => {
-                        runtime.pending_restart = None;
-                        runtime.persisted.tunnel = default_tunnel_status(TunnelState::Stopped);
-                        runtime.persisted.tunnel.provider = Some(provider);
-                        runtime.persisted.tunnel.target_url = Some(target_url);
-                        runtime.persisted.tunnel.public_base_url = public_base_url.clone();
-                        runtime.persisted.tunnel.started_at = Some(started_at);
-                        runtime.persisted.tunnel.auto_restart = auto_restart;
-                        runtime.persisted.tunnel.restart_count = restart_count;
-                        runtime.persisted.tunnel.last_error = Some(exit_reason);
-                    }
-                    ExitAction::Restart {
-                        next_restart_count,
-                        backoff,
-                    } => {
-                        runtime.pending_restart = Some(PendingRestart {
+    let tunnel_ids = runtime.running_tunnels.keys().cloned().collect::<Vec<_>>();
+    let mut changed = false;
+    for tunnel_id in tunnel_ids {
+        changed |= reconcile_single_runtime_tunnel(runtime, &tunnel_id, max_auto_restarts)?;
+    }
+
+    Ok(changed)
+}
+
+fn reconcile_single_runtime_tunnel(
+    runtime: &mut RuntimeState,
+    tunnel_id: &str,
+    max_auto_restarts: u32,
+) -> Result<bool, ApiError> {
+    enum Outcome {
+        Exited {
+            provider: TunnelProvider,
+            target_url: String,
+            metadata: Option<HashMap<String, String>>,
+            public_base_url: Option<String>,
+            started_at: String,
+            auto_restart: bool,
+            restart_count: u32,
+            exit_reason: String,
+        },
+        Alive {
+            provider: TunnelProvider,
+            target_url: String,
+            public_base_url: Option<String>,
+            started_at: String,
+            process_id: Option<u32>,
+            auto_restart: bool,
+            restart_count: u32,
+        },
+        InspectError {
+            provider: TunnelProvider,
+            target_url: String,
+            message: String,
+        },
+    }
+
+    let Some(running) = runtime.running_tunnels.get_mut(tunnel_id) else {
+        return Ok(false);
+    };
+
+    let outcome = match running.child.try_wait() {
+        Ok(Some(status)) => {
+            let exit_reason = format!("provider process exited unexpectedly with status: {status}");
+            warn!(
+                "provider process exited unexpectedly: tunnel_id={}, provider={:?}, status={status}",
+                tunnel_id, running.provider
+            );
+            Outcome::Exited {
+                provider: running.provider.clone(),
+                target_url: running.target_url.clone(),
+                metadata: running.metadata.clone(),
+                public_base_url: running.public_base_url.clone(),
+                started_at: running.started_at.clone(),
+                auto_restart: running.auto_restart,
+                restart_count: running.restart_count,
+                exit_reason,
+            }
+        }
+        Ok(None) => Outcome::Alive {
+            provider: running.provider.clone(),
+            target_url: running.target_url.clone(),
+            public_base_url: running.public_base_url.clone(),
+            started_at: running.started_at.clone(),
+            process_id: running.process_id,
+            auto_restart: running.auto_restart,
+            restart_count: running.restart_count,
+        },
+        Err(err) => Outcome::InspectError {
+            provider: running.provider.clone(),
+            target_url: running.target_url.clone(),
+            message: format!("failed to inspect provider process state: {err}"),
+        },
+    };
+
+    match outcome {
+        Outcome::Exited {
+            provider,
+            target_url,
+            metadata,
+            public_base_url,
+            started_at,
+            auto_restart,
+            restart_count,
+            exit_reason,
+        } => {
+            runtime.running_tunnels.remove(tunnel_id);
+            match determine_exit_action(auto_restart, restart_count, max_auto_restarts) {
+                ExitAction::NoRestart => {
+                    runtime.pending_restarts.remove(tunnel_id);
+                    let tunnel = runtime.persisted.ensure_tunnel_status_mut(tunnel_id);
+                    *tunnel = default_tunnel_status(TunnelState::Stopped);
+                    tunnel.provider = Some(provider);
+                    tunnel.target_url = Some(target_url);
+                    tunnel.public_base_url = public_base_url;
+                    tunnel.started_at = Some(started_at);
+                    tunnel.auto_restart = auto_restart;
+                    tunnel.restart_count = restart_count;
+                    tunnel.last_error = Some(exit_reason);
+                }
+                ExitAction::Restart {
+                    next_restart_count,
+                    backoff,
+                } => {
+                    runtime.pending_restarts.insert(
+                        tunnel_id.to_string(),
+                        PendingRestart {
                             provider: provider.clone(),
                             target_url: target_url.clone(),
                             metadata,
@@ -301,200 +381,231 @@ pub(super) fn reconcile_runtime_tunnel_state(
                             started_at: started_at.clone(),
                             next_attempt_at: Instant::now() + backoff,
                             reason: exit_reason.clone(),
-                        });
-                        runtime.persisted.tunnel = TunnelStatus {
-                            state: TunnelState::Starting,
-                            provider: Some(provider),
-                            target_url: Some(target_url),
-                            public_base_url: None,
-                            started_at: Some(started_at),
-                            updated_at: now_iso(),
-                            process_id: None,
-                            auto_restart,
-                            restart_count: next_restart_count,
-                            last_error: Some(format!(
-                                "{exit_reason}; scheduling auto restart attempt {} in {}s",
-                                next_restart_count,
-                                backoff.as_secs()
-                            )),
-                        };
-                    }
-                    ExitAction::Exhausted => {
-                        runtime.pending_restart = None;
-                        runtime.persisted.tunnel = default_tunnel_status(TunnelState::Error);
-                        runtime.persisted.tunnel.provider = Some(provider);
-                        runtime.persisted.tunnel.target_url = Some(target_url);
-                        runtime.persisted.tunnel.public_base_url = public_base_url.clone();
-                        runtime.persisted.tunnel.started_at = Some(started_at);
-                        runtime.persisted.tunnel.auto_restart = auto_restart;
-                        runtime.persisted.tunnel.restart_count = restart_count;
-                        runtime.persisted.tunnel.last_error = Some(format!(
-                            "{exit_reason}; auto restart limit reached ({max_auto_restarts})"
-                        ));
-                    }
-                }
-                return Ok(true);
-            }
-            Ok(None) => {
-                let should_update = runtime.persisted.tunnel.state != TunnelState::Running
-                    || runtime.persisted.tunnel.provider != Some(running.provider.clone())
-                    || runtime.persisted.tunnel.target_url != Some(running.target_url.clone())
-                    || runtime.persisted.tunnel.public_base_url != running.public_base_url
-                    || runtime.persisted.tunnel.started_at != Some(running.started_at.clone())
-                    || runtime.persisted.tunnel.process_id != running.process_id
-                    || runtime.persisted.tunnel.auto_restart != running.auto_restart
-                    || runtime.persisted.tunnel.restart_count != running.restart_count
-                    || runtime.persisted.tunnel.last_error.is_some();
-                if should_update {
-                    runtime.persisted.tunnel = TunnelStatus {
-                        state: TunnelState::Running,
-                        provider: Some(running.provider.clone()),
-                        target_url: Some(running.target_url.clone()),
-                        public_base_url: running.public_base_url.clone(),
-                        started_at: Some(running.started_at.clone()),
-                        updated_at: now_iso(),
-                        process_id: running.process_id,
-                        auto_restart: running.auto_restart,
-                        restart_count: running.restart_count,
-                        last_error: None,
-                    };
-                    return Ok(true);
-                }
-            }
-            Err(err) => {
-                let provider = running.provider.clone();
-                let target_url = running.target_url.clone();
-                runtime.running_tunnel = None;
-                runtime.pending_restart = None;
-                runtime.persisted.tunnel = default_tunnel_status(TunnelState::Error);
-                runtime.persisted.tunnel.provider = Some(provider);
-                runtime.persisted.tunnel.target_url = Some(target_url);
-                runtime.persisted.tunnel.last_error =
-                    Some(format!("failed to inspect provider process state: {err}"));
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
-}
-
-pub(super) async fn process_pending_restart(state: &Arc<AppState>) -> Result<bool, ApiError> {
-    let maybe_pending = {
-        let runtime = state.runtime.lock().await;
-        runtime.pending_restart.clone()
-    };
-
-    let Some(pending) = maybe_pending else {
-        return Ok(false);
-    };
-
-    if Instant::now() < pending.next_attempt_at {
-        return Ok(false);
-    }
-
-    {
-        let mut runtime = state.runtime.lock().await;
-        runtime.pending_restart = None;
-        runtime.persisted.tunnel.state = TunnelState::Starting;
-        runtime.persisted.tunnel.updated_at = now_iso();
-    }
-
-    let request = TunnelStartRequest {
-        tunnel_id: "primary".to_string(),
-        provider: pending.provider.clone(),
-        target_url: pending.target_url.clone(),
-        auto_restart: Some(pending.auto_restart),
-        metadata: pending.metadata.clone(),
-    };
-    let attempt_no = pending.restart_count;
-
-    match spawn_provider_process(state, &request).await {
-        Ok(spawned) => {
-            let status = TunnelStatus {
-                state: TunnelState::Running,
-                provider: Some(pending.provider.clone()),
-                target_url: Some(pending.target_url.clone()),
-                public_base_url: spawned.public_url.clone(),
-                started_at: Some(pending.started_at.clone()),
-                updated_at: now_iso(),
-                process_id: spawned.process_id,
-                auto_restart: pending.auto_restart,
-                restart_count: pending.restart_count,
-                last_error: None,
-            };
-            let mut runtime = state.runtime.lock().await;
-            runtime.running_tunnel = Some(RunningTunnel {
-                child: spawned.child,
-                provider: pending.provider,
-                target_url: pending.target_url,
-                metadata: pending.metadata,
-                auto_restart: pending.auto_restart,
-                restart_count: pending.restart_count,
-                started_at: pending.started_at,
-                public_base_url: spawned.public_url,
-                process_id: spawned.process_id,
-            });
-            runtime.pending_restart = None;
-            runtime.persisted.tunnel = status;
-            Ok(true)
-        }
-        Err(err) => {
-            let action = determine_exit_action(
-                pending.auto_restart,
-                pending.restart_count,
-                state.max_auto_restarts,
-            );
-            let mut runtime = state.runtime.lock().await;
-            match action {
-                ExitAction::Restart {
-                    next_restart_count,
-                    backoff,
-                } => {
-                    runtime.pending_restart = Some(PendingRestart {
-                        provider: pending.provider.clone(),
-                        target_url: pending.target_url.clone(),
-                        metadata: pending.metadata.clone(),
-                        auto_restart: pending.auto_restart,
-                        restart_count: next_restart_count,
-                        started_at: pending.started_at.clone(),
-                        next_attempt_at: Instant::now() + backoff,
-                        reason: pending.reason.clone(),
-                    });
-                    runtime.persisted.tunnel = TunnelStatus {
+                        },
+                    );
+                    let tunnel = runtime.persisted.ensure_tunnel_status_mut(tunnel_id);
+                    *tunnel = TunnelStatus {
                         state: TunnelState::Starting,
-                        provider: Some(pending.provider),
-                        target_url: Some(pending.target_url),
+                        provider: Some(provider),
+                        target_url: Some(target_url),
                         public_base_url: None,
-                        started_at: Some(pending.started_at),
+                        started_at: Some(started_at),
                         updated_at: now_iso(),
                         process_id: None,
-                        auto_restart: pending.auto_restart,
+                        auto_restart,
                         restart_count: next_restart_count,
                         last_error: Some(format!(
-                            "auto restart attempt {} failed: {err}; retrying in {}s",
-                            attempt_no,
+                            "{exit_reason}; scheduling auto restart attempt {} in {}s",
+                            next_restart_count,
                             backoff.as_secs()
                         )),
                     };
                 }
-                ExitAction::NoRestart | ExitAction::Exhausted => {
-                    runtime.pending_restart = None;
-                    runtime.persisted.tunnel = default_tunnel_status(TunnelState::Error);
-                    runtime.persisted.tunnel.provider = Some(pending.provider);
-                    runtime.persisted.tunnel.target_url = Some(pending.target_url);
-                    runtime.persisted.tunnel.started_at = Some(pending.started_at);
-                    runtime.persisted.tunnel.auto_restart = pending.auto_restart;
-                    runtime.persisted.tunnel.restart_count = pending.restart_count;
-                    runtime.persisted.tunnel.last_error = Some(format!(
-                        "auto restart attempt {} failed and no more retries are available: {err}",
-                        attempt_no
+                ExitAction::Exhausted => {
+                    runtime.pending_restarts.remove(tunnel_id);
+                    let tunnel = runtime.persisted.ensure_tunnel_status_mut(tunnel_id);
+                    *tunnel = default_tunnel_status(TunnelState::Error);
+                    tunnel.provider = Some(provider);
+                    tunnel.target_url = Some(target_url);
+                    tunnel.public_base_url = public_base_url;
+                    tunnel.started_at = Some(started_at);
+                    tunnel.auto_restart = auto_restart;
+                    tunnel.restart_count = restart_count;
+                    tunnel.last_error = Some(format!(
+                        "{exit_reason}; auto restart limit reached ({max_auto_restarts})"
                     ));
                 }
             }
             Ok(true)
         }
+        Outcome::Alive {
+            provider,
+            target_url,
+            public_base_url,
+            started_at,
+            process_id,
+            auto_restart,
+            restart_count,
+        } => {
+            let current = runtime
+                .persisted
+                .tunnel_status(tunnel_id)
+                .cloned()
+                .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle));
+            let should_update = current.state != TunnelState::Running
+                || current.provider != Some(provider.clone())
+                || current.target_url != Some(target_url.clone())
+                || current.public_base_url != public_base_url
+                || current.started_at != Some(started_at.clone())
+                || current.process_id != process_id
+                || current.auto_restart != auto_restart
+                || current.restart_count != restart_count
+                || current.last_error.is_some();
+            if should_update {
+                *runtime.persisted.ensure_tunnel_status_mut(tunnel_id) = TunnelStatus {
+                    state: TunnelState::Running,
+                    provider: Some(provider),
+                    target_url: Some(target_url),
+                    public_base_url,
+                    started_at: Some(started_at),
+                    updated_at: now_iso(),
+                    process_id,
+                    auto_restart,
+                    restart_count,
+                    last_error: None,
+                };
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        Outcome::InspectError {
+            provider,
+            target_url,
+            message,
+        } => {
+            runtime.running_tunnels.remove(tunnel_id);
+            runtime.pending_restarts.remove(tunnel_id);
+            let tunnel = runtime.persisted.ensure_tunnel_status_mut(tunnel_id);
+            *tunnel = default_tunnel_status(TunnelState::Error);
+            tunnel.provider = Some(provider);
+            tunnel.target_url = Some(target_url);
+            tunnel.last_error = Some(message);
+            Ok(true)
+        }
     }
+}
+
+pub(super) async fn process_pending_restart(state: &Arc<AppState>) -> Result<bool, ApiError> {
+    let due_tunnels = {
+        let runtime = state.runtime.lock().await;
+        runtime
+            .pending_restarts
+            .iter()
+            .filter(|(_, pending)| Instant::now() >= pending.next_attempt_at)
+            .map(|(tunnel_id, _)| tunnel_id.clone())
+            .collect::<Vec<_>>()
+    };
+
+    if due_tunnels.is_empty() {
+        return Ok(false);
+    }
+
+    let mut changed = false;
+    for tunnel_id in due_tunnels {
+        let pending = {
+            let mut runtime = state.runtime.lock().await;
+            let Some(pending) = runtime.pending_restarts.remove(&tunnel_id) else {
+                continue;
+            };
+            let tunnel = runtime.persisted.ensure_tunnel_status_mut(&tunnel_id);
+            tunnel.state = TunnelState::Starting;
+            tunnel.updated_at = now_iso();
+            pending
+        };
+
+        let request = TunnelStartRequest {
+            tunnel_id: tunnel_id.clone(),
+            provider: pending.provider.clone(),
+            target_url: pending.target_url.clone(),
+            auto_restart: Some(pending.auto_restart),
+            metadata: pending.metadata.clone(),
+        };
+        let attempt_no = pending.restart_count;
+
+        match spawn_provider_process(state, &request).await {
+            Ok(spawned) => {
+                let status = TunnelStatus {
+                    state: TunnelState::Running,
+                    provider: Some(pending.provider.clone()),
+                    target_url: Some(pending.target_url.clone()),
+                    public_base_url: spawned.public_url.clone(),
+                    started_at: Some(pending.started_at.clone()),
+                    updated_at: now_iso(),
+                    process_id: spawned.process_id,
+                    auto_restart: pending.auto_restart,
+                    restart_count: pending.restart_count,
+                    last_error: None,
+                };
+                let mut runtime = state.runtime.lock().await;
+                runtime.running_tunnels.insert(
+                    tunnel_id.clone(),
+                    RunningTunnel {
+                        child: spawned.child,
+                        provider: pending.provider,
+                        target_url: pending.target_url,
+                        metadata: pending.metadata,
+                        auto_restart: pending.auto_restart,
+                        restart_count: pending.restart_count,
+                        started_at: pending.started_at,
+                        public_base_url: spawned.public_url,
+                        process_id: spawned.process_id,
+                    },
+                );
+                *runtime.persisted.ensure_tunnel_status_mut(&tunnel_id) = status;
+                changed = true;
+            }
+            Err(err) => {
+                let action = determine_exit_action(
+                    pending.auto_restart,
+                    pending.restart_count,
+                    state.max_auto_restarts,
+                );
+                let mut runtime = state.runtime.lock().await;
+                match action {
+                    ExitAction::Restart {
+                        next_restart_count,
+                        backoff,
+                    } => {
+                        runtime.pending_restarts.insert(
+                            tunnel_id.clone(),
+                            PendingRestart {
+                                provider: pending.provider.clone(),
+                                target_url: pending.target_url.clone(),
+                                metadata: pending.metadata.clone(),
+                                auto_restart: pending.auto_restart,
+                                restart_count: next_restart_count,
+                                started_at: pending.started_at.clone(),
+                                next_attempt_at: Instant::now() + backoff,
+                                reason: pending.reason.clone(),
+                            },
+                        );
+                        *runtime.persisted.ensure_tunnel_status_mut(&tunnel_id) = TunnelStatus {
+                            state: TunnelState::Starting,
+                            provider: Some(pending.provider),
+                            target_url: Some(pending.target_url),
+                            public_base_url: None,
+                            started_at: Some(pending.started_at),
+                            updated_at: now_iso(),
+                            process_id: None,
+                            auto_restart: pending.auto_restart,
+                            restart_count: next_restart_count,
+                            last_error: Some(format!(
+                                "auto restart attempt {} failed: {err}; retrying in {}s",
+                                attempt_no,
+                                backoff.as_secs()
+                            )),
+                        };
+                    }
+                    ExitAction::NoRestart | ExitAction::Exhausted => {
+                        let tunnel = runtime.persisted.ensure_tunnel_status_mut(&tunnel_id);
+                        *tunnel = default_tunnel_status(TunnelState::Error);
+                        tunnel.provider = Some(pending.provider);
+                        tunnel.target_url = Some(pending.target_url);
+                        tunnel.started_at = Some(pending.started_at);
+                        tunnel.auto_restart = pending.auto_restart;
+                        tunnel.restart_count = pending.restart_count;
+                        tunnel.last_error = Some(format!(
+                            "auto restart attempt {} failed and no more retries are available: {err}",
+                            attempt_no
+                        ));
+                    }
+                }
+                changed = true;
+            }
+        }
+    }
+
+    Ok(changed)
 }
 
 pub(super) async fn spawn_provider_process(
