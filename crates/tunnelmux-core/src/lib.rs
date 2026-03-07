@@ -74,6 +74,7 @@ pub struct TunnelLogsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteRule {
+    pub tunnel_id: String,
     pub id: String,
     pub match_host: Option<String>,
     pub match_path_prefix: Option<String>,
@@ -86,6 +87,7 @@ pub struct RouteRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateRouteRequest {
+    pub tunnel_id: String,
     pub id: String,
     pub match_host: Option<String>,
     pub match_path_prefix: Option<String>,
