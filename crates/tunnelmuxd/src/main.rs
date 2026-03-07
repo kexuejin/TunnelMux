@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     convert::Infallible,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -163,8 +163,15 @@ impl IntoResponse for ApiError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedTunnelState {
+    id: String,
+    status: TunnelStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedState {
-    tunnel: TunnelStatus,
+    current_tunnel_id: Option<String>,
+    tunnels: Vec<PersistedTunnelState>,
     routes: Vec<RouteRule>,
     health_check: Option<HealthCheckSettings>,
 }
@@ -172,10 +179,62 @@ struct PersistedState {
 impl Default for PersistedState {
     fn default() -> Self {
         Self {
-            tunnel: default_tunnel_status(TunnelState::Idle),
+            current_tunnel_id: Some("primary".to_string()),
+            tunnels: vec![PersistedTunnelState {
+                id: "primary".to_string(),
+                status: default_tunnel_status(TunnelState::Idle),
+            }],
             routes: Vec::new(),
             health_check: None,
         }
+    }
+}
+
+impl PersistedState {
+    fn current_tunnel_id(&self) -> &str {
+        self.current_tunnel_id.as_deref().unwrap_or("primary")
+    }
+
+    fn current_tunnel_status(&self) -> TunnelStatus {
+        self.tunnel_status(self.current_tunnel_id())
+            .cloned()
+            .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle))
+    }
+
+    fn tunnel_status(&self, tunnel_id: &str) -> Option<&TunnelStatus> {
+        self.tunnels
+            .iter()
+            .find(|tunnel| tunnel.id == tunnel_id)
+            .map(|tunnel| &tunnel.status)
+    }
+
+    fn ensure_tunnel_status_mut(&mut self, tunnel_id: &str) -> &mut TunnelStatus {
+        if let Some(index) = self.tunnels.iter().position(|tunnel| tunnel.id == tunnel_id) {
+            return &mut self.tunnels[index].status;
+        }
+
+        self.tunnels.push(PersistedTunnelState {
+            id: tunnel_id.to_string(),
+            status: default_tunnel_status(TunnelState::Idle),
+        });
+        &mut self
+            .tunnels
+            .last_mut()
+            .expect("tunnel entry should exist after push")
+            .status
+    }
+
+    fn known_tunnel_ids(&self) -> Vec<String> {
+        let mut ids = BTreeSet::new();
+        for tunnel in &self.tunnels {
+            if tunnel_is_configured(&tunnel.status) {
+                ids.insert(tunnel.id.clone());
+            }
+        }
+        for route in &self.routes {
+            ids.insert(route.tunnel_id.clone());
+        }
+        ids.into_iter().collect()
     }
 }
 
@@ -207,8 +266,8 @@ struct PendingRestart {
 #[derive(Debug)]
 struct RuntimeState {
     persisted: PersistedState,
-    running_tunnel: Option<RunningTunnel>,
-    pending_restart: Option<PendingRestart>,
+    running_tunnels: HashMap<String, RunningTunnel>,
+    pending_restarts: HashMap<String, PendingRestart>,
 }
 
 #[derive(Debug, Default)]
@@ -370,8 +429,8 @@ async fn main() -> anyhow::Result<()> {
     let shared = Arc::new(AppState {
         runtime: Mutex::new(RuntimeState {
             persisted,
-            running_tunnel: None,
-            pending_restart: None,
+            running_tunnels: HashMap::new(),
+            pending_restarts: HashMap::new(),
         }),
         upstream_health: Mutex::new(HashMap::new()),
         health_check_settings: RwLock::new(health_check_settings),
@@ -816,6 +875,20 @@ fn default_tunnel_status(state: TunnelState) -> TunnelStatus {
     }
 }
 
+fn tunnel_is_configured(status: &TunnelStatus) -> bool {
+    status.provider.is_some()
+        || status
+            .target_url
+            .as_deref()
+            .is_some_and(|value| value != DEFAULT_GATEWAY_TARGET_URL)
+        || status.public_base_url.is_some()
+        || status.started_at.is_some()
+        || status.process_id.is_some()
+        || status.restart_count > 0
+        || status.last_error.is_some()
+        || !matches!(status.state, TunnelState::Idle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,8 +914,19 @@ mod tests {
         strip: Option<&str>,
         enabled: bool,
     ) -> RouteRule {
+        route_for_tunnel("primary", id, host, prefix, strip, enabled)
+    }
+
+    fn route_for_tunnel(
+        tunnel_id: &str,
+        id: &str,
+        host: Option<&str>,
+        prefix: Option<&str>,
+        strip: Option<&str>,
+        enabled: bool,
+    ) -> RouteRule {
         RouteRule {
-            tunnel_id: "primary".to_string(),
+            tunnel_id: tunnel_id.to_string(),
             id: id.to_string(),
             match_host: host.map(ToString::to_string),
             match_path_prefix: prefix.map(ToString::to_string),
@@ -898,7 +982,11 @@ mod tests {
         Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
-                    tunnel: default_tunnel_status(TunnelState::Idle),
+                    current_tunnel_id: Some("primary".to_string()),
+                    tunnels: vec![PersistedTunnelState {
+                        id: "primary".to_string(),
+                        status: default_tunnel_status(TunnelState::Idle),
+                    }],
                     routes,
                     health_check: Some(HealthCheckSettings {
                         interval_ms: 5_000,
@@ -906,8 +994,8 @@ mod tests {
                         path: "/".to_string(),
                     }),
                 },
-                running_tunnel: None,
-                pending_restart: None,
+                running_tunnels: HashMap::new(),
+                pending_restarts: HashMap::new(),
             }),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
@@ -940,6 +1028,8 @@ mod tests {
             .route("/v1/tunnel/status", get(get_tunnel_status))
             .route("/v1/tunnel/status/stream", get(stream_tunnel_status))
             .route("/v1/tunnels/workspace", get(get_tunnel_workspace))
+            .route("/v1/tunnel/start", post(start_tunnel))
+            .route("/v1/tunnel/stop", post(stop_tunnel))
             .route(
                 "/v1/settings/health-check",
                 get(get_health_check_settings).put(update_health_check_settings),
@@ -1096,7 +1186,11 @@ mod tests {
         let state = Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
-                    tunnel: default_tunnel_status(TunnelState::Idle),
+                    current_tunnel_id: Some("primary".to_string()),
+                    tunnels: vec![PersistedTunnelState {
+                        id: "primary".to_string(),
+                        status: default_tunnel_status(TunnelState::Idle),
+                    }],
                     routes: vec![RouteRule {
                         tunnel_id: "primary".to_string(),
                         id: "wss".to_string(),
@@ -1114,8 +1208,8 @@ mod tests {
                         path: "/".to_string(),
                     }),
                 },
-                running_tunnel: None,
-                pending_restart: None,
+                running_tunnels: HashMap::new(),
+                pending_restarts: HashMap::new(),
             }),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
@@ -1306,7 +1400,11 @@ mod tests {
         save_state_file(
             &state.data_file,
             &PersistedState {
-                tunnel: default_tunnel_status(TunnelState::Stopped),
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![PersistedTunnelState {
+                    id: "primary".to_string(),
+                    status: default_tunnel_status(TunnelState::Stopped),
+                }],
                 routes: vec![route(
                     "svc-state",
                     Some("state.local"),
@@ -1392,14 +1490,19 @@ mod tests {
         );
         {
             let mut runtime = state.runtime.lock().await;
-            runtime.persisted.tunnel = default_tunnel_status(TunnelState::Error);
-            runtime.persisted.tunnel.last_error = Some("keep current runtime state".to_string());
+            let tunnel = runtime.persisted.ensure_tunnel_status_mut("primary");
+            *tunnel = default_tunnel_status(TunnelState::Error);
+            tunnel.last_error = Some("keep current runtime state".to_string());
         }
 
         save_state_file(
             &state.data_file,
             &PersistedState {
-                tunnel: default_tunnel_status(TunnelState::Stopped),
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![PersistedTunnelState {
+                    id: "primary".to_string(),
+                    status: default_tunnel_status(TunnelState::Stopped),
+                }],
                 routes: vec![RouteRule {
                     tunnel_id: "primary".to_string(),
                     id: "svc-b".to_string(),
@@ -1466,9 +1569,19 @@ mod tests {
         let runtime = state.runtime.lock().await;
         assert_eq!(runtime.persisted.routes.len(), 1);
         assert_eq!(runtime.persisted.routes[0].id, "svc-b");
-        assert_eq!(runtime.persisted.tunnel.state, TunnelState::Error);
         assert_eq!(
-            runtime.persisted.tunnel.last_error.as_deref(),
+            runtime
+                .persisted
+                .tunnel_status("primary")
+                .expect("primary tunnel")
+                .state,
+            TunnelState::Error
+        );
+        assert_eq!(
+            runtime
+                .persisted
+                .tunnel_status("primary")
+                .and_then(|tunnel| tunnel.last_error.as_deref()),
             Some("keep current runtime state")
         );
         drop(runtime);
@@ -2200,6 +2313,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tunnel_status_endpoint_returns_requested_tunnel_status() {
+        let state = test_state_with_routes(
+            vec![
+                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
+                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+            ],
+            None,
+        );
+        {
+            let mut runtime = state.runtime.lock().await;
+            *runtime.persisted.ensure_tunnel_status_mut("primary") = TunnelStatus {
+                state: TunnelState::Running,
+                provider: Some(TunnelProvider::Cloudflared),
+                target_url: Some("http://127.0.0.1:48080".to_string()),
+                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+                started_at: Some("2026-03-07T00:00:00Z".to_string()),
+                updated_at: "2026-03-07T00:00:01Z".to_string(),
+                process_id: Some(12345),
+                auto_restart: true,
+                restart_count: 0,
+                last_error: None,
+            };
+        }
+
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let payload: tunnelmux_core::TunnelStatusResponse = client
+            .get(format!("{base_url}/v1/tunnel/status"))
+            .query(&[("tunnel_id", "tunnel-2")])
+            .send()
+            .await
+            .expect("status request should complete")
+            .json()
+            .await
+            .expect("status payload should decode");
+
+        assert_eq!(payload.tunnel_id, "tunnel-2");
+        assert_eq!(payload.tunnel.state, TunnelState::Idle);
+        assert_eq!(payload.tunnel.provider, None);
+        assert_eq!(payload.tunnel.public_base_url, None);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
     async fn tunnel_workspace_endpoint_returns_single_primary_tunnel() {
         let state = test_state_with_routes(
             vec![RouteRule {
@@ -2217,7 +2376,7 @@ mod tests {
         );
         {
             let mut runtime = state.runtime.lock().await;
-            runtime.persisted.tunnel = TunnelStatus {
+            *runtime.persisted.ensure_tunnel_status_mut("primary") = TunnelStatus {
                 state: TunnelState::Running,
                 provider: Some(TunnelProvider::Cloudflared),
                 target_url: Some("http://127.0.0.1:48080".to_string()),
@@ -2248,6 +2407,119 @@ mod tests {
         assert_eq!(workspace.tunnels[0].route_count, 1);
         assert_eq!(workspace.tunnels[0].enabled_route_count, 1);
         assert_eq!(workspace.tunnels[0].provider, Some(TunnelProvider::Cloudflared));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn tunnel_workspace_endpoint_returns_all_tunnels() {
+        let state = test_state_with_routes(
+            vec![
+                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
+                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+                route_for_tunnel("tunnel-2", "svc-c", Some("api.local"), Some("/admin"), None, false),
+            ],
+            None,
+        );
+        {
+            let mut runtime = state.runtime.lock().await;
+            *runtime.persisted.ensure_tunnel_status_mut("primary") = TunnelStatus {
+                state: TunnelState::Running,
+                provider: Some(TunnelProvider::Cloudflared),
+                target_url: Some("http://127.0.0.1:48080".to_string()),
+                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+                started_at: Some("2026-03-07T00:00:00Z".to_string()),
+                updated_at: "2026-03-07T00:00:01Z".to_string(),
+                process_id: Some(12345),
+                auto_restart: true,
+                restart_count: 0,
+                last_error: None,
+            };
+        }
+
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let workspace: tunnelmux_core::TunnelWorkspaceResponse = client
+            .get(format!("{base_url}/v1/tunnels/workspace"))
+            .send()
+            .await
+            .expect("workspace request should complete")
+            .json()
+            .await
+            .expect("workspace payload should decode");
+
+        assert_eq!(workspace.tunnels.len(), 2);
+        assert!(workspace.tunnels.iter().any(|tunnel| {
+            tunnel.id == "primary"
+                && tunnel.route_count == 1
+                && tunnel.enabled_route_count == 1
+                && tunnel.provider == Some(TunnelProvider::Cloudflared)
+        }));
+        assert!(workspace.tunnels.iter().any(|tunnel| {
+            tunnel.id == "tunnel-2"
+                && tunnel.route_count == 2
+                && tunnel.enabled_route_count == 1
+                && tunnel.provider.is_none()
+        }));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn stop_tunnel_endpoint_does_not_stop_other_tunnels() {
+        let state = test_state_with_routes(
+            vec![
+                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
+                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+            ],
+            None,
+        );
+        {
+            let mut runtime = state.runtime.lock().await;
+            *runtime.persisted.ensure_tunnel_status_mut("primary") = TunnelStatus {
+                state: TunnelState::Running,
+                provider: Some(TunnelProvider::Cloudflared),
+                target_url: Some("http://127.0.0.1:48080".to_string()),
+                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+                started_at: Some("2026-03-07T00:00:00Z".to_string()),
+                updated_at: "2026-03-07T00:00:01Z".to_string(),
+                process_id: None,
+                auto_restart: true,
+                restart_count: 0,
+                last_error: None,
+            };
+        }
+
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let stop_response = client
+            .post(format!("{base_url}/v1/tunnel/stop"))
+            .json(&tunnelmux_core::TunnelStopRequest {
+                tunnel_id: "tunnel-2".to_string(),
+            })
+            .send()
+            .await
+            .expect("stop request should complete");
+        assert_eq!(stop_response.status(), StatusCode::OK);
+
+        let primary_status: tunnelmux_core::TunnelStatusResponse = client
+            .get(format!("{base_url}/v1/tunnel/status"))
+            .query(&[("tunnel_id", "primary")])
+            .send()
+            .await
+            .expect("primary status request should complete")
+            .json()
+            .await
+            .expect("primary status payload should decode");
+
+        assert_eq!(primary_status.tunnel_id, "primary");
+        assert_eq!(primary_status.tunnel.state, TunnelState::Running);
+        assert_eq!(
+            primary_status.tunnel.public_base_url.as_deref(),
+            Some("https://demo.trycloudflare.com")
+        );
 
         server_task.abort();
     }
@@ -2587,8 +2859,9 @@ mod tests {
         let expected_provider_log_file = state.provider_log_file.display().to_string();
         {
             let mut runtime = state.runtime.lock().await;
-            runtime.persisted.tunnel = default_tunnel_status(TunnelState::Running);
-            runtime.pending_restart = Some(PendingRestart {
+            *runtime.persisted.ensure_tunnel_status_mut("primary") =
+                default_tunnel_status(TunnelState::Running);
+            runtime.pending_restarts.insert("primary".to_string(), PendingRestart {
                 provider: TunnelProvider::Cloudflared,
                 target_url: DEFAULT_GATEWAY_TARGET_URL.to_string(),
                 metadata: None,
@@ -2744,26 +3017,33 @@ mod tests {
 
         let mut runtime = RuntimeState {
             persisted: PersistedState::default(),
-            running_tunnel: Some(RunningTunnel {
-                child,
-                provider: TunnelProvider::Cloudflared,
-                target_url: "http://127.0.0.1:18080".to_string(),
-                metadata: None,
-                auto_restart: true,
-                restart_count: 0,
-                started_at: "2026-03-05T00:00:00Z".to_string(),
-                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
-                process_id: None,
-            }),
-            pending_restart: None,
+            running_tunnels: HashMap::from([(
+                "primary".to_string(),
+                RunningTunnel {
+                    child,
+                    provider: TunnelProvider::Cloudflared,
+                    target_url: "http://127.0.0.1:18080".to_string(),
+                    metadata: None,
+                    auto_restart: true,
+                    restart_count: 0,
+                    started_at: "2026-03-05T00:00:00Z".to_string(),
+                    public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+                    process_id: None,
+                },
+            )]),
+            pending_restarts: HashMap::new(),
         };
 
         let changed = reconcile_runtime_tunnel_state(&mut runtime, 5).expect("reconcile succeeds");
         assert!(changed);
-        assert!(runtime.running_tunnel.is_none());
-        assert!(runtime.pending_restart.is_some());
-        assert_eq!(runtime.persisted.tunnel.state, TunnelState::Starting);
-        assert_eq!(runtime.persisted.tunnel.restart_count, 1);
+        assert!(runtime.running_tunnels.is_empty());
+        assert!(runtime.pending_restarts.contains_key("primary"));
+        let status = runtime
+            .persisted
+            .tunnel_status("primary")
+            .expect("primary tunnel status");
+        assert_eq!(status.state, TunnelState::Starting);
+        assert_eq!(status.restart_count, 1);
     }
 
     #[tokio::test]
@@ -2777,25 +3057,32 @@ mod tests {
 
         let mut runtime = RuntimeState {
             persisted: PersistedState::default(),
-            running_tunnel: Some(RunningTunnel {
-                child,
-                provider: TunnelProvider::Cloudflared,
-                target_url: "http://127.0.0.1:18080".to_string(),
-                metadata: None,
-                auto_restart: true,
-                restart_count: 2,
-                started_at: "2026-03-05T00:00:00Z".to_string(),
-                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
-                process_id: None,
-            }),
-            pending_restart: None,
+            running_tunnels: HashMap::from([(
+                "primary".to_string(),
+                RunningTunnel {
+                    child,
+                    provider: TunnelProvider::Cloudflared,
+                    target_url: "http://127.0.0.1:18080".to_string(),
+                    metadata: None,
+                    auto_restart: true,
+                    restart_count: 2,
+                    started_at: "2026-03-05T00:00:00Z".to_string(),
+                    public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+                    process_id: None,
+                },
+            )]),
+            pending_restarts: HashMap::new(),
         };
 
         let changed = reconcile_runtime_tunnel_state(&mut runtime, 2).expect("reconcile succeeds");
         assert!(changed);
-        assert!(runtime.running_tunnel.is_none());
-        assert!(runtime.pending_restart.is_none());
-        assert_eq!(runtime.persisted.tunnel.state, TunnelState::Error);
+        assert!(runtime.running_tunnels.is_empty());
+        assert!(runtime.pending_restarts.is_empty());
+        let status = runtime
+            .persisted
+            .tunnel_status("primary")
+            .expect("primary tunnel status");
+        assert_eq!(status.state, TunnelState::Error);
     }
 
     #[test]

@@ -182,10 +182,7 @@ pub(super) async fn reload_settings(
             .map_err(|err| ApiError::internal(format!("failed to reload config file: {err}")))?;
         let (route_count, tunnel_state) = {
             let runtime = state.runtime.lock().await;
-            (
-                runtime.persisted.routes.len(),
-                runtime.persisted.tunnel.state.clone(),
-            )
+            (runtime.persisted.routes.len(), runtime.persisted.current_tunnel_status().state)
         };
         return Ok(Json(ReloadSettingsResponse {
             reloaded: true,
@@ -211,10 +208,7 @@ pub(super) async fn reload_settings(
         let mut runtime = state.runtime.lock().await;
         runtime.persisted.routes = reloaded.routes;
         runtime.persisted.health_check = Some(updated_health_check.clone());
-        (
-            runtime.persisted.routes.len(),
-            runtime.persisted.tunnel.state.clone(),
-        )
+        (runtime.persisted.routes.len(), runtime.persisted.current_tunnel_status().state)
     };
 
     Ok(Json(ReloadSettingsResponse {
@@ -328,18 +322,21 @@ pub(super) async fn start_tunnel(
     validate_target_url(&request.target_url)?;
     request.target_url = request.target_url.trim().to_string();
     let request_metadata = request.metadata.clone();
+    let tunnel_id = request.tunnel_id.clone();
 
-    stop_running_process(&state)
+    stop_running_process(&state, &tunnel_id)
         .await
         .map_err(|err| ApiError::internal(format!("failed to stop existing tunnel: {err}")))?;
 
     {
         let mut runtime = state.runtime.lock().await;
-        runtime.persisted.tunnel = default_tunnel_status(TunnelState::Starting);
-        runtime.persisted.tunnel.provider = Some(request.provider.clone());
-        runtime.persisted.tunnel.target_url = Some(request.target_url.clone());
-        runtime.persisted.tunnel.auto_restart = request.auto_restart.unwrap_or(true);
-        runtime.pending_restart = None;
+        runtime.persisted.current_tunnel_id = Some(tunnel_id.clone());
+        let tunnel = runtime.persisted.ensure_tunnel_status_mut(&tunnel_id);
+        *tunnel = default_tunnel_status(TunnelState::Starting);
+        tunnel.provider = Some(request.provider.clone());
+        tunnel.target_url = Some(request.target_url.clone());
+        tunnel.auto_restart = request.auto_restart.unwrap_or(true);
+        runtime.pending_restarts.remove(&tunnel_id);
     }
     persist_from_runtime(&state).await?;
 
@@ -348,10 +345,11 @@ pub(super) async fn start_tunnel(
         Err(err) => {
             {
                 let mut runtime = state.runtime.lock().await;
-                runtime.persisted.tunnel = default_tunnel_status(TunnelState::Error);
-                runtime.persisted.tunnel.provider = Some(request.provider);
-                runtime.persisted.tunnel.target_url = Some(request.target_url);
-                runtime.persisted.tunnel.last_error = Some(err.to_string());
+                let tunnel = runtime.persisted.ensure_tunnel_status_mut(&tunnel_id);
+                *tunnel = default_tunnel_status(TunnelState::Error);
+                tunnel.provider = Some(request.provider);
+                tunnel.target_url = Some(request.target_url);
+                tunnel.last_error = Some(err.to_string());
             }
             persist_from_runtime(&state).await?;
             return Err(ApiError::internal(err.to_string()));
@@ -374,25 +372,28 @@ pub(super) async fn start_tunnel(
             restart_count: 0,
             last_error: None,
         };
-        runtime.running_tunnel = Some(RunningTunnel {
-            child: spawned.child,
-            provider: request.provider,
-            target_url: request.target_url,
-            metadata: request_metadata,
-            auto_restart,
-            restart_count: 0,
-            started_at,
-            public_base_url: spawned.public_url,
-            process_id: spawned.process_id,
-        });
-        runtime.pending_restart = None;
-        runtime.persisted.tunnel = status.clone();
+        runtime.running_tunnels.insert(
+            tunnel_id.clone(),
+            RunningTunnel {
+                child: spawned.child,
+                provider: request.provider,
+                target_url: request.target_url,
+                metadata: request_metadata,
+                auto_restart,
+                restart_count: 0,
+                started_at,
+                public_base_url: spawned.public_url,
+                process_id: spawned.process_id,
+            },
+        );
+        runtime.pending_restarts.remove(&tunnel_id);
+        *runtime.persisted.ensure_tunnel_status_mut(&tunnel_id) = status.clone();
         status
     };
     persist_from_runtime(&state).await?;
 
     Ok(Json(TunnelStatusResponse {
-        tunnel_id: request.tunnel_id,
+        tunnel_id,
         tunnel: status,
     }))
 }
@@ -404,15 +405,28 @@ pub(super) async fn stop_tunnel(
     if request.tunnel_id.trim().is_empty() {
         return Err(ApiError::bad_request("tunnel_id is required"));
     }
-    stop_running_process(&state)
+    stop_running_process(&state, &request.tunnel_id)
         .await
         .map_err(|err| ApiError::internal(format!("failed to stop tunnel: {err}")))?;
 
     let status = {
         let mut runtime = state.runtime.lock().await;
-        runtime.persisted.tunnel = default_tunnel_status(TunnelState::Stopped);
-        runtime.pending_restart = None;
-        runtime.persisted.tunnel.clone()
+        runtime.persisted.current_tunnel_id = Some(request.tunnel_id.clone());
+        runtime.pending_restarts.remove(&request.tunnel_id);
+        let previous = runtime
+            .persisted
+            .tunnel_status(&request.tunnel_id)
+            .cloned()
+            .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle));
+        let tunnel = runtime.persisted.ensure_tunnel_status_mut(&request.tunnel_id);
+        *tunnel = default_tunnel_status(TunnelState::Stopped);
+        tunnel.provider = previous.provider;
+        tunnel.target_url = previous.target_url;
+        tunnel.started_at = previous.started_at;
+        tunnel.auto_restart = previous.auto_restart;
+        tunnel.restart_count = previous.restart_count;
+        tunnel.last_error = previous.last_error;
+        tunnel.clone()
     };
     persist_from_runtime(&state).await?;
 
@@ -713,10 +727,11 @@ pub(super) async fn stream_dashboard(
 pub(super) async fn build_diagnostics_snapshot(state: &Arc<AppState>) -> DiagnosticsResponse {
     let (routes, tunnel_state, pending_restart) = {
         let runtime = state.runtime.lock().await;
+        let current_tunnel_id = runtime.persisted.current_tunnel_id().to_string();
         (
             runtime.persisted.routes.clone(),
-            runtime.persisted.tunnel.state.clone(),
-            runtime.pending_restart.is_some(),
+            runtime.persisted.current_tunnel_status().state,
+            runtime.pending_restarts.contains_key(&current_tunnel_id),
         )
     };
     let (
@@ -756,10 +771,7 @@ pub(super) async fn build_dashboard_snapshot(
 
     let (tunnel, routes) = {
         let runtime = state.runtime.lock().await;
-        (
-            runtime.persisted.tunnel.clone(),
-            runtime.persisted.routes.clone(),
-        )
+        (runtime.persisted.current_tunnel_status(), runtime.persisted.routes.clone())
     };
     let metrics = build_metrics_snapshot(state).await;
     let health_check = metrics.health_check.clone();
@@ -830,7 +842,11 @@ pub(super) async fn build_tunnel_status_snapshot(
     reconcile_runtime_and_maybe_restart(state).await?;
     let snapshot = {
         let runtime = state.runtime.lock().await;
-        runtime.persisted.tunnel.clone()
+        runtime
+            .persisted
+            .tunnel_status(tunnel_id)
+            .cloned()
+            .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle))
     };
     Ok(TunnelStatusResponse {
         tunnel_id: tunnel_id.to_string(),
@@ -843,47 +859,70 @@ pub(super) async fn build_tunnel_workspace_snapshot(
 ) -> Result<TunnelWorkspaceResponse, ApiError> {
     reconcile_runtime_and_maybe_restart(state).await?;
 
-    let (tunnel, routes) = {
+    let (current_tunnel_id, routes, tunnel_summaries) = {
         let runtime = state.runtime.lock().await;
+        let routes = runtime.persisted.routes.clone();
+        let tunnel_summaries = runtime
+            .persisted
+            .known_tunnel_ids()
+            .into_iter()
+            .map(|tunnel_id| {
+                let tunnel = runtime
+                    .persisted
+                    .tunnel_status(&tunnel_id)
+                    .cloned()
+                    .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle));
+                let route_count = routes.iter().filter(|route| route.tunnel_id == tunnel_id).count();
+                let enabled_route_count = routes
+                    .iter()
+                    .filter(|route| route.tunnel_id == tunnel_id && route.enabled)
+                    .count();
+                TunnelProfileSummary {
+                    id: tunnel_id,
+                    name: None,
+                    provider: tunnel.provider,
+                    state: tunnel.state,
+                    target_url: tunnel.target_url,
+                    public_base_url: tunnel.public_base_url,
+                    route_count,
+                    enabled_route_count,
+                }
+            })
+            .collect::<Vec<_>>();
         (
-            runtime.persisted.tunnel.clone(),
-            runtime.persisted.routes.clone(),
+            runtime.persisted.current_tunnel_id.clone(),
+            routes,
+            tunnel_summaries,
         )
     };
 
-    if tunnel.provider.is_none() && routes.is_empty() {
+    if tunnel_summaries.is_empty() && routes.is_empty() {
         return Ok(TunnelWorkspaceResponse {
             tunnels: Vec::new(),
             current_tunnel_id: None,
         });
     }
 
-    let route_count = routes.len();
-    let enabled_route_count = routes.iter().filter(|route| route.enabled).count();
-    let summary = TunnelProfileSummary {
-        id: "primary".to_string(),
-        name: None,
-        provider: tunnel.provider,
-        state: tunnel.state,
-        target_url: tunnel.target_url,
-        public_base_url: tunnel.public_base_url,
-        route_count,
-        enabled_route_count,
-    };
-
     Ok(TunnelWorkspaceResponse {
-        tunnels: vec![summary],
-        current_tunnel_id: Some("primary".to_string()),
+        tunnels: tunnel_summaries,
+        current_tunnel_id: current_tunnel_id.or_else(|| {
+            routes
+                .iter()
+                .map(|route| route.tunnel_id.clone())
+                .next()
+                .or_else(|| Some("primary".to_string()))
+        }),
     })
 }
 
 pub(super) async fn build_metrics_snapshot(state: &Arc<AppState>) -> MetricsResponse {
     let (tunnel_state, running_tunnel, pending_restart, routes) = {
         let runtime = state.runtime.lock().await;
+        let current_tunnel_id = runtime.persisted.current_tunnel_id().to_string();
         (
-            runtime.persisted.tunnel.state.clone(),
-            runtime.running_tunnel.is_some(),
-            runtime.pending_restart.is_some(),
+            runtime.persisted.current_tunnel_status().state,
+            runtime.running_tunnels.contains_key(&current_tunnel_id),
+            runtime.pending_restarts.contains_key(&current_tunnel_id),
             runtime.persisted.routes.clone(),
         )
     };
