@@ -6,6 +6,7 @@ use tunnelmux_core::{
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteViewModel {
+    pub tunnel_id: String,
     pub id: String,
     pub match_host: Option<String>,
     pub match_path_prefix: Option<String>,
@@ -23,6 +24,7 @@ impl From<RouteRule> for RouteViewModel {
         let path = route.match_path_prefix.as_deref().unwrap_or("/");
         Self {
             display_match: format!("{host}{path}"),
+            tunnel_id: route.tunnel_id,
             id: route.id,
             match_host: route.match_host,
             match_path_prefix: route.match_path_prefix,
@@ -193,8 +195,9 @@ impl Default for RouteFormData {
 }
 
 impl RouteFormData {
-    pub fn into_create_request(&self) -> CreateRouteRequest {
+    pub fn into_create_request(&self, tunnel_id: &str) -> CreateRouteRequest {
         CreateRouteRequest {
+            tunnel_id: tunnel_id.to_string(),
             id: self.id.clone(),
             match_host: empty_to_none(&self.match_host),
             match_path_prefix: empty_to_none(&self.match_path_prefix),

@@ -485,8 +485,13 @@ fn normalize_route_request(request: CreateRouteRequest) -> Result<RouteRule, Api
     if let Some(fallback) = fallback_upstream_url.as_ref() {
         validate_target_url(fallback)?;
     }
+    let tunnel_id = request.tunnel_id.trim().to_string();
+    if tunnel_id.is_empty() {
+        return Err(ApiError::bad_request("tunnel_id is required"));
+    }
 
     Ok(RouteRule {
+        tunnel_id,
         id,
         match_host,
         match_path_prefix,
@@ -824,6 +829,7 @@ mod tests {
         enabled: bool,
     ) -> RouteRule {
         RouteRule {
+            tunnel_id: "primary".to_string(),
             id: id.to_string(),
             match_host: host.map(ToString::to_string),
             match_path_prefix: prefix.map(ToString::to_string),
@@ -1076,6 +1082,7 @@ mod tests {
                 persisted: PersistedState {
                     tunnel: default_tunnel_status(TunnelState::Idle),
                     routes: vec![RouteRule {
+                        tunnel_id: "primary".to_string(),
                         id: "wss".to_string(),
                         match_host: None,
                         match_path_prefix: Some("/".to_string()),
@@ -1305,6 +1312,7 @@ mod tests {
             &state.config_file,
             &DeclarativeConfigFile {
                 routes: vec![RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-config".to_string(),
                     match_host: Some("config.local".to_string()),
                     match_path_prefix: Some("/config".to_string()),
@@ -1377,6 +1385,7 @@ mod tests {
             &PersistedState {
                 tunnel: default_tunnel_status(TunnelState::Stopped),
                 routes: vec![RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-b".to_string(),
                     match_host: Some("new.local".to_string()),
                     match_path_prefix: Some("/new".to_string()),
@@ -1461,6 +1470,7 @@ mod tests {
     async fn update_route_endpoint_updates_existing_route() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -1478,6 +1488,7 @@ mod tests {
         let response = client
             .put(format!("{base_url}/v1/routes/svc-a"))
             .json(&CreateRouteRequest {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -1517,6 +1528,7 @@ mod tests {
     async fn update_route_endpoint_rejects_id_mismatch() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -1534,6 +1546,7 @@ mod tests {
         let response = client
             .put(format!("{base_url}/v1/routes/svc-a"))
             .json(&CreateRouteRequest {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -1560,6 +1573,7 @@ mod tests {
         let response = client
             .put(format!("{base_url}/v1/routes/svc-a"))
             .json(&CreateRouteRequest {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -1586,6 +1600,7 @@ mod tests {
         let response = client
             .put(format!("{base_url}/v1/routes/svc-a?upsert=true"))
             .json(&CreateRouteRequest {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -1622,6 +1637,7 @@ mod tests {
         let state = test_state_with_routes(
             vec![
                 RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-root".to_string(),
                     match_host: None,
                     match_path_prefix: Some("/".to_string()),
@@ -1632,6 +1648,7 @@ mod tests {
                     enabled: true,
                 },
                 RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-api".to_string(),
                     match_host: Some("demo.local".to_string()),
                     match_path_prefix: Some("/api".to_string()),
@@ -1715,6 +1732,7 @@ mod tests {
     async fn apply_routes_endpoint_dry_run_does_not_mutate_runtime() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -1733,6 +1751,7 @@ mod tests {
             .post(format!("{base_url}/v1/routes/apply"))
             .json(&ApplyRoutesRequest {
                 routes: vec![CreateRouteRequest {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-b".to_string(),
                     match_host: Some("demo.local".to_string()),
                     match_path_prefix: Some("/b".to_string()),
@@ -1774,6 +1793,7 @@ mod tests {
         let state = test_state_with_routes(
             vec![
                 RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-a".to_string(),
                     match_host: Some("demo.local".to_string()),
                     match_path_prefix: Some("/a".to_string()),
@@ -1784,6 +1804,7 @@ mod tests {
                     enabled: true,
                 },
                 RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-b".to_string(),
                     match_host: Some("demo.local".to_string()),
                     match_path_prefix: Some("/b".to_string()),
@@ -1804,6 +1825,7 @@ mod tests {
             .json(&ApplyRoutesRequest {
                 routes: vec![
                     CreateRouteRequest {
+                        tunnel_id: "primary".to_string(),
                         id: "svc-b".to_string(),
                         match_host: Some("demo.local".to_string()),
                         match_path_prefix: Some("/b".to_string()),
@@ -1814,6 +1836,7 @@ mod tests {
                         enabled: Some(false),
                     },
                     CreateRouteRequest {
+                        tunnel_id: "primary".to_string(),
                         id: "svc-c".to_string(),
                         match_host: Some("demo.local".to_string()),
                         match_path_prefix: Some("/c".to_string()),
@@ -1865,6 +1888,7 @@ mod tests {
     async fn apply_routes_endpoint_rejects_empty_replace_without_allow_empty() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -1899,6 +1923,7 @@ mod tests {
     async fn apply_routes_endpoint_reports_unchanged_routes() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -1917,6 +1942,7 @@ mod tests {
             .post(format!("{base_url}/v1/routes/apply"))
             .json(&ApplyRoutesRequest {
                 routes: vec![CreateRouteRequest {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-a".to_string(),
                     match_host: Some("demo.local".to_string()),
                     match_path_prefix: Some("/a".to_string()),
@@ -1950,6 +1976,7 @@ mod tests {
     async fn dashboard_endpoint_returns_composite_snapshot() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -2019,6 +2046,7 @@ mod tests {
     async fn tunnel_workspace_endpoint_returns_single_primary_tunnel() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/".to_string()),
@@ -2071,6 +2099,7 @@ mod tests {
     async fn dashboard_stream_endpoint_emits_snapshot_event() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -2151,6 +2180,7 @@ mod tests {
     async fn upstreams_health_stream_endpoint_emits_snapshot_event() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -2198,6 +2228,7 @@ mod tests {
     async fn routes_stream_endpoint_emits_snapshot_event() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -2243,6 +2274,7 @@ mod tests {
     async fn metrics_stream_endpoint_emits_snapshot_event() {
         let state = test_state_with_routes(
             vec![RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/a".to_string()),
@@ -2295,6 +2327,7 @@ mod tests {
             &state.config_file,
             &DeclarativeConfigFile {
                 routes: vec![RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-b".to_string(),
                     match_host: Some("new.local".to_string()),
                     match_path_prefix: Some("/new".to_string()),
@@ -2444,6 +2477,7 @@ mod tests {
         let state = test_state_with_routes(
             vec![
                 RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-a".to_string(),
                     match_host: None,
                     match_path_prefix: Some("/a".to_string()),
@@ -2454,6 +2488,7 @@ mod tests {
                     enabled: true,
                 },
                 RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-b".to_string(),
                     match_host: None,
                     match_path_prefix: Some("/b".to_string()),
@@ -2710,6 +2745,7 @@ mod tests {
     #[test]
     fn ordered_upstream_targets_prefers_primary_when_healthy() {
         let route = RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc".to_string(),
             match_host: None,
             match_path_prefix: Some("/".to_string()),
@@ -2745,6 +2781,7 @@ mod tests {
     #[test]
     fn ordered_upstream_targets_prefers_fallback_when_primary_unhealthy() {
         let route = RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc".to_string(),
             match_host: None,
             match_path_prefix: Some("/".to_string()),
@@ -2783,6 +2820,7 @@ mod tests {
     #[test]
     fn ordered_upstream_targets_keeps_primary_first_when_health_unknown() {
         let route = RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc".to_string(),
             match_host: None,
             match_path_prefix: Some("/".to_string()),
@@ -2807,6 +2845,7 @@ mod tests {
     #[test]
     fn ordered_upstream_targets_uses_route_health_check_path() {
         let route = RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc".to_string(),
             match_host: None,
             match_path_prefix: Some("/".to_string()),
@@ -2857,6 +2896,7 @@ mod tests {
     fn collect_upstream_health_entries_dedupes_and_sorts_urls() {
         let routes = vec![
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -2867,6 +2907,7 @@ mod tests {
                 enabled: true,
             },
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/b".to_string()),
@@ -2919,6 +2960,7 @@ mod tests {
     fn collect_upstream_health_entries_ignores_duplicate_urls() {
         let routes = vec![
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -2929,6 +2971,7 @@ mod tests {
                 enabled: true,
             },
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/b".to_string()),
@@ -2951,6 +2994,7 @@ mod tests {
     fn collect_upstream_health_entries_keeps_same_upstream_with_different_paths() {
         let routes = vec![
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -2961,6 +3005,7 @@ mod tests {
                 enabled: true,
             },
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/b".to_string()),
@@ -2984,6 +3029,7 @@ mod tests {
     #[test]
     fn normalize_route_request_accepts_fallback_upstream_url() {
         let route = normalize_route_request(CreateRouteRequest {
+            tunnel_id: "primary".to_string(),
             id: "service-a".to_string(),
             match_host: Some("demo.local".to_string()),
             match_path_prefix: Some("/".to_string()),
@@ -3003,6 +3049,7 @@ mod tests {
     #[test]
     fn normalize_route_request_rejects_invalid_fallback_upstream_url() {
         let err = normalize_route_request(CreateRouteRequest {
+            tunnel_id: "primary".to_string(),
             id: "service-a".to_string(),
             match_host: Some("demo.local".to_string()),
             match_path_prefix: Some("/".to_string()),
@@ -3019,6 +3066,7 @@ mod tests {
     #[test]
     fn normalize_route_request_accepts_health_check_path() {
         let route = normalize_route_request(CreateRouteRequest {
+            tunnel_id: "primary".to_string(),
             id: "service-a".to_string(),
             match_host: Some("demo.local".to_string()),
             match_path_prefix: Some("/".to_string()),
@@ -3035,6 +3083,7 @@ mod tests {
     #[test]
     fn normalize_route_request_rejects_invalid_health_check_path() {
         let err = normalize_route_request(CreateRouteRequest {
+            tunnel_id: "primary".to_string(),
             id: "service-a".to_string(),
             match_host: Some("demo.local".to_string()),
             match_path_prefix: Some("/".to_string()),
@@ -3058,6 +3107,7 @@ mod tests {
     fn replace_route_updates_existing_item() {
         let mut routes = vec![
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -3068,6 +3118,7 @@ mod tests {
                 enabled: true,
             },
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/b".to_string()),
@@ -3082,6 +3133,7 @@ mod tests {
         let updated = replace_route(
             &mut routes,
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/b".to_string()),
@@ -3102,6 +3154,7 @@ mod tests {
     #[test]
     fn replace_route_returns_false_when_missing() {
         let mut routes = vec![RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc-a".to_string(),
             match_host: None,
             match_path_prefix: Some("/a".to_string()),
@@ -3115,6 +3168,7 @@ mod tests {
         let updated = replace_route(
             &mut routes,
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/b".to_string()),
@@ -3132,6 +3186,7 @@ mod tests {
     fn ensure_unique_route_ids_rejects_duplicates() {
         let routes = vec![
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -3142,6 +3197,7 @@ mod tests {
                 enabled: true,
             },
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/b".to_string()),
@@ -3159,6 +3215,7 @@ mod tests {
     fn build_route_apply_plan_classifies_operations() {
         let existing = vec![
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/a".to_string()),
@@ -3169,6 +3226,7 @@ mod tests {
                 enabled: true,
             },
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/b".to_string()),
@@ -3181,6 +3239,7 @@ mod tests {
         ];
         let incoming = vec![
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/b".to_string()),
@@ -3191,6 +3250,7 @@ mod tests {
                 enabled: false,
             },
             RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-c".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/c".to_string()),
@@ -3212,6 +3272,7 @@ mod tests {
     #[test]
     fn apply_route_rules_replaces_when_enabled() {
         let existing = vec![RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc-a".to_string(),
             match_host: None,
             match_path_prefix: Some("/a".to_string()),
@@ -3222,6 +3283,7 @@ mod tests {
             enabled: true,
         }];
         let incoming = vec![RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc-b".to_string(),
             match_host: None,
             match_path_prefix: Some("/b".to_string()),

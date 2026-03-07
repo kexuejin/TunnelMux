@@ -355,9 +355,17 @@ pub async fn stop_tunnel_from_settings_dir(
 pub async fn list_routes_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<RouteWorkspaceSnapshot, String> {
-    let (_, client) = load_client(settings_dir)?;
+    let (settings, client) = load_client(settings_dir)?;
     let response = client.list_routes().await.map_err(command_error)?;
-    let message = if response.routes.is_empty() {
+    let all_routes = response.routes;
+    let current_tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str());
+    let routes = all_routes
+        .into_iter()
+        .filter(|route| Some(route.tunnel_id.as_str()) == current_tunnel_id)
+        .collect::<Vec<_>>();
+    let message = if routes.is_empty() {
         Some(
             "No services yet. Add your first local service to replace the default welcome page."
                 .to_string(),
@@ -365,15 +373,19 @@ pub async fn list_routes_from_settings_dir(
     } else {
         None
     };
-    Ok(RouteWorkspaceSnapshot::from_routes(response.routes, message))
+    Ok(RouteWorkspaceSnapshot::from_routes(routes, message))
 }
 
 pub async fn save_route_from_settings_dir(
     settings_dir: &Path,
     form: RouteFormData,
 ) -> Result<RouteWorkspaceSnapshot, String> {
-    let (_, client) = load_client(settings_dir)?;
-    let request = form.into_create_request();
+    let (settings, client) = load_client(settings_dir)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
+    let request = form.into_create_request(tunnel_id);
     if let Some(original_id) = form.original_id.as_deref() {
         client
             .update_route_with_options(original_id, &request, true)
@@ -384,8 +396,13 @@ pub async fn save_route_from_settings_dir(
     }
 
     let routes = client.list_routes().await.map_err(command_error)?;
+    let filtered = routes
+        .routes
+        .into_iter()
+        .filter(|route| route.tunnel_id == tunnel_id)
+        .collect();
     Ok(RouteWorkspaceSnapshot::from_routes(
-        routes.routes,
+        filtered,
         Some("Route saved.".to_string()),
     ))
 }
@@ -394,14 +411,23 @@ pub async fn delete_route_from_settings_dir(
     settings_dir: &Path,
     id: String,
 ) -> Result<RouteWorkspaceSnapshot, String> {
-    let (_, client) = load_client(settings_dir)?;
+    let (settings, client) = load_client(settings_dir)?;
     client
         .delete_route(&id, false)
         .await
         .map_err(command_error)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
     let routes = client.list_routes().await.map_err(command_error)?;
+    let filtered = routes
+        .routes
+        .into_iter()
+        .filter(|route| route.tunnel_id == tunnel_id)
+        .collect();
     Ok(RouteWorkspaceSnapshot::from_routes(
-        routes.routes,
+        filtered,
         Some("Route deleted.".to_string()),
     ))
 }
@@ -1118,6 +1144,7 @@ mod tests {
         let temp_dir = prepare_temp_dir();
         let routes = std::sync::Arc::new(tokio::sync::Mutex::new(vec![
             tunnelmux_core::RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/".to_string()),
@@ -1128,6 +1155,7 @@ mod tests {
                 enabled: true,
             },
             tunnelmux_core::RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-b".to_string(),
                 match_host: None,
                 match_path_prefix: Some("/api".to_string()),
@@ -1603,6 +1631,7 @@ mod tests {
         Json(request): Json<tunnelmux_core::CreateRouteRequest>,
     ) -> Json<tunnelmux_core::RouteRule> {
         let route = tunnelmux_core::RouteRule {
+            tunnel_id: request.tunnel_id,
             id: request.id,
             match_host: request.match_host,
             match_path_prefix: request.match_path_prefix,
@@ -1627,6 +1656,7 @@ mod tests {
         (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>),
     > {
         let route = tunnelmux_core::RouteRule {
+            tunnel_id: request.tunnel_id,
             id: request.id,
             match_host: request.match_host,
             match_path_prefix: request.match_path_prefix,
