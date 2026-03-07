@@ -862,21 +862,21 @@ fn load_route_request_from_file(path: &Path) -> anyhow::Result<CreateRouteReques
     Ok(requests.remove(0))
 }
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(untagged)]
-enum RoutePayloadFile {
-    Single(CreateRouteRequest),
-    Many(Vec<CreateRouteRequest>),
-}
-
 fn load_route_requests_from_file(path: &Path) -> anyhow::Result<Vec<CreateRouteRequest>> {
     let raw = read_route_payload_source(path)?;
-    let parsed: RoutePayloadFile = serde_json::from_str(&raw)
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse route json file: {}", path.display()))?;
-    match parsed {
-        RoutePayloadFile::Single(route) => Ok(vec![route]),
-        RoutePayloadFile::Many(routes) => Ok(routes),
+
+    let values = match parsed {
+        serde_json::Value::Array(items) => items,
+        value => vec![value],
+    };
+
+    let mut routes = Vec::with_capacity(values.len());
+    for value in values {
+        routes.push(parse_route_request_value(value)?);
     }
+    Ok(routes)
 }
 
 fn read_route_payload_source(path: &Path) -> anyhow::Result<String> {
@@ -892,6 +892,18 @@ fn read_route_payload_source(path: &Path) -> anyhow::Result<String> {
         .with_context(|| format!("failed to read route json file: {}", path.display()))
 }
 
+fn parse_route_request_value(value: serde_json::Value) -> anyhow::Result<CreateRouteRequest> {
+    let mut object = value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| anyhow!("route payload must be a JSON object"))?;
+    object
+        .entry("tunnel_id".to_string())
+        .or_insert_with(|| serde_json::Value::String("primary".to_string()));
+    serde_json::from_value(serde_json::Value::Object(object))
+        .context("route payload is not a valid route request")
+}
+
 fn ensure_unique_route_ids(routes: &[CreateRouteRequest]) -> anyhow::Result<()> {
     let mut ids = HashSet::new();
     for route in routes {
@@ -904,6 +916,7 @@ fn ensure_unique_route_ids(routes: &[CreateRouteRequest]) -> anyhow::Result<()> 
 
 fn route_rule_to_create_request(route: &tunnelmux_core::RouteRule) -> CreateRouteRequest {
     CreateRouteRequest {
+        tunnel_id: route.tunnel_id.clone(),
         id: route.id.clone(),
         match_host: route.match_host.clone(),
         match_path_prefix: route.match_path_prefix.clone(),
@@ -1365,6 +1378,7 @@ mod tests {
         let response = RoutesResponse {
             routes: vec![
                 tunnelmux_core::RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-a".to_string(),
                     match_host: Some("demo.local".to_string()),
                     match_path_prefix: Some("/api".to_string()),
@@ -1375,6 +1389,7 @@ mod tests {
                     enabled: true,
                 },
                 tunnelmux_core::RouteRule {
+                    tunnel_id: "primary".to_string(),
                     id: "svc-b".to_string(),
                     match_host: None,
                     match_path_prefix: None,
@@ -1404,6 +1419,7 @@ mod tests {
             path: "/api/v1/ping".to_string(),
             matched: true,
             route: Some(tunnelmux_core::RouteRule {
+                tunnel_id: "primary".to_string(),
                 id: "svc-api".to_string(),
                 match_host: Some("demo.local".to_string()),
                 match_path_prefix: Some("/api".to_string()),
@@ -1469,6 +1485,7 @@ mod tests {
         .expect("write route file");
         let route = load_route_request_from_file(&path).expect("load route file");
         assert_eq!(route.id, "svc-a");
+        assert_eq!(route.tunnel_id, "primary");
         assert_eq!(route.health_check_path.as_deref(), Some("/healthz"));
         let _ = fs::remove_file(path);
     }
@@ -1496,7 +1513,9 @@ mod tests {
         let routes = load_route_requests_from_file(&path).expect("load route file");
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[0].id, "svc-a");
+        assert_eq!(routes[0].tunnel_id, "primary");
         assert_eq!(routes[1].id, "svc-b");
+        assert_eq!(routes[1].tunnel_id, "primary");
         assert_eq!(routes[1].enabled, Some(false));
         let _ = fs::remove_file(path);
     }
@@ -1520,6 +1539,7 @@ mod tests {
     #[test]
     fn route_rule_to_create_request_preserves_fields() {
         let route = tunnelmux_core::RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc-a".to_string(),
             match_host: Some("demo.local".to_string()),
             match_path_prefix: Some("/".to_string()),
@@ -1560,6 +1580,7 @@ mod tests {
     fn ensure_unique_route_ids_rejects_duplicates() {
         let routes = vec![
             CreateRouteRequest {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: None,
@@ -1570,6 +1591,7 @@ mod tests {
                 enabled: Some(true),
             },
             CreateRouteRequest {
+                tunnel_id: "primary".to_string(),
                 id: "svc-a".to_string(),
                 match_host: None,
                 match_path_prefix: None,
@@ -1651,7 +1673,7 @@ mod tests {
     fn render_routes_stream_frame_accepts_snapshot_event() {
         let frame = SseFrame {
             event: "snapshot".to_string(),
-            data: r#"{"routes":[{"id":"svc-a","match_host":"demo.local","match_path_prefix":"/","strip_path_prefix":null,"upstream_url":"http://127.0.0.1:3000","fallback_upstream_url":null,"health_check_path":null,"enabled":true}]}"#.to_string(),
+            data: r#"{"routes":[{"tunnel_id":"primary","id":"svc-a","match_host":"demo.local","match_path_prefix":"/","strip_path_prefix":null,"upstream_url":"http://127.0.0.1:3000","fallback_upstream_url":null,"health_check_path":null,"enabled":true}]}"#.to_string(),
         };
         let result = render_routes_stream_frame(&frame, 2000, RoutesOutputFormat::Json);
         assert!(result.is_ok());
@@ -1885,6 +1907,7 @@ mod tests {
     #[test]
     fn infer_expose_route_action_classifies_create_update_and_unchanged() {
         let desired = CreateRouteRequest {
+            tunnel_id: "primary".to_string(),
             id: "svc-a".to_string(),
             match_host: Some("demo.local".to_string()),
             match_path_prefix: Some("/api".to_string()),
@@ -1901,6 +1924,7 @@ mod tests {
         );
 
         let unchanged = tunnelmux_core::RouteRule {
+            tunnel_id: "primary".to_string(),
             id: "svc-a".to_string(),
             match_host: Some("demo.local".to_string()),
             match_path_prefix: Some("/api".to_string()),

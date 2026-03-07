@@ -158,6 +158,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let provider: TunnelProvider = provider.into();
             let route_payload = CreateRouteRequest {
+                tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
                 id: id.clone(),
                 match_host: host,
                 match_path_prefix: path_prefix,
@@ -454,9 +455,11 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 let payload = if let Some(path) = from_json {
                     let mut loaded = load_route_request_from_file(Path::new(&path))?;
                     loaded.id = id.clone();
+                    loaded.tunnel_id = PRIMARY_TUNNEL_ID.to_string();
                     loaded
                 } else {
                     CreateRouteRequest {
+                        tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
                         id: id.clone(),
                         match_host: host,
                         match_path_prefix: path_prefix,

@@ -82,7 +82,14 @@ impl TunnelmuxControlClient {
         .await
     }
 
-    pub async fn diagnostics(&self, tunnel_id: &str) -> anyhow::Result<DiagnosticsResponse> {
+    pub async fn diagnostics(&self) -> anyhow::Result<DiagnosticsResponse> {
+        self.get("/v1/diagnostics").await
+    }
+
+    pub async fn diagnostics_for_tunnel(
+        &self,
+        tunnel_id: &str,
+    ) -> anyhow::Result<DiagnosticsResponse> {
         let url = self.url("/v1/diagnostics");
         let response = self
             .request_with_token(self.client.get(&url))
@@ -93,7 +100,18 @@ impl TunnelmuxControlClient {
         decode_response(response).await
     }
 
-    pub async fn tunnel_logs(
+    pub async fn tunnel_logs(&self, lines: usize) -> anyhow::Result<TunnelLogsResponse> {
+        let url = self.url("/v1/tunnel/logs");
+        let response = self
+            .request_with_token(self.client.get(&url))
+            .query(&[("lines", lines)])
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
+    }
+
+    pub async fn tunnel_logs_for_tunnel(
         &self,
         tunnel_id: &str,
         lines: usize,
@@ -208,6 +226,20 @@ impl TunnelmuxControlClient {
 
     pub async fn upstreams_health(&self) -> anyhow::Result<UpstreamsHealthResponse> {
         self.get("/v1/upstreams/health").await
+    }
+
+    pub async fn upstreams_health_for_tunnel(
+        &self,
+        tunnel_id: &str,
+    ) -> anyhow::Result<UpstreamsHealthResponse> {
+        let url = self.url("/v1/upstreams/health");
+        let response = self
+            .request_with_token(self.client.get(&url))
+            .query(&[("tunnel_id", tunnel_id)])
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
     }
 
     pub async fn get_health_check_settings(&self) -> anyhow::Result<HealthCheckSettingsResponse> {
@@ -390,7 +422,7 @@ mod tests {
         ));
 
         let response = client
-            .tunnel_logs("primary", 50)
+            .tunnel_logs_for_tunnel("primary", 50)
             .await
             .expect("logs request should succeed");
 
@@ -424,7 +456,7 @@ mod tests {
         let client = TunnelmuxControlClient::new(ControlClientConfig::new(base_url, None));
 
         let err = client
-            .tunnel_logs("primary", 100)
+            .tunnel_logs_for_tunnel("primary", 100)
             .await
             .expect_err("logs request should fail");
 
@@ -444,11 +476,31 @@ mod tests {
         let client = TunnelmuxControlClient::new(ControlClientConfig::new(base_url, None));
 
         let response = client
-            .diagnostics("tunnel-2")
+            .diagnostics_for_tunnel("tunnel-2")
             .await
             .expect("diagnostics request should succeed");
 
         assert_eq!(response.route_count, 2);
+
+        let tunnel_queries = state.tunnel_queries.lock().await;
+        assert_eq!(tunnel_queries.as_slice(), &[Some("tunnel-2".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn upstreams_health_includes_tunnel_id_query() {
+        let state = Arc::new(TestState::default());
+        let app = Router::new()
+            .route("/v1/upstreams/health", get(upstreams_health_handler))
+            .with_state(state.clone());
+        let base_url = spawn_test_server(app).await;
+        let client = TunnelmuxControlClient::new(ControlClientConfig::new(base_url, None));
+
+        let response = client
+            .upstreams_health_for_tunnel("tunnel-2")
+            .await
+            .expect("upstreams health request should succeed");
+
+        assert_eq!(response.upstreams.len(), 1);
 
         let tunnel_queries = state.tunnel_queries.lock().await;
         assert_eq!(tunnel_queries.as_slice(), &[Some("tunnel-2".to_string())]);
@@ -561,6 +613,27 @@ mod tests {
             config_reload_interval_ms: 1_000,
             last_config_reload_at: None,
             last_config_reload_error: None,
+        })
+    }
+
+    async fn upstreams_health_handler(
+        State(state): State<Arc<TestState>>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<UpstreamsHealthResponse> {
+        state
+            .tunnel_queries
+            .lock()
+            .await
+            .push(query.get("tunnel_id").cloned());
+
+        Json(UpstreamsHealthResponse {
+            upstreams: vec![tunnelmux_core::UpstreamHealthEntry {
+                upstream_url: "http://127.0.0.1:4000".to_string(),
+                health_check_path: "/ready".to_string(),
+                healthy: Some(true),
+                last_checked_at: Some("2026-03-06T00:00:00Z".to_string()),
+                last_error: None,
+            }],
         })
     }
 
