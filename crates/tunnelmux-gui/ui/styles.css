@@ -78,6 +78,12 @@ select:disabled {
   gap: 18px;
 }
 
+.brand > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
 .brand-icon {
   width: 56px;
   height: 56px;
@@ -91,6 +97,8 @@ select:disabled {
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .settings-button {
@@ -291,9 +299,10 @@ h1 {
 
 .status-row {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-start;
+  gap: 14px;
   flex-wrap: wrap;
+  max-width: 720px;
 }
 
 .inline-action {
@@ -301,6 +310,12 @@ h1 {
   border-radius: 999px;
   min-height: auto;
   font-size: 0.84rem;
+  flex-shrink: 0;
+}
+
+.status-row .subtle {
+  flex: 1 1 420px;
+  min-width: 240px;
 }
 
 .subtle.error,
