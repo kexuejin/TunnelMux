@@ -107,6 +107,8 @@ function bindElements() {
   elements.settingsAdvanced = document.getElementById('settings-advanced');
   elements.settingsGatewayTargetUrl = document.getElementById('settings-gateway-target-url');
   elements.settingsAutoRestart = document.getElementById('settings-auto-restart');
+  elements.settingsCloudflaredFields = document.getElementById('settings-cloudflared-fields');
+  elements.settingsCloudflaredTunnelToken = document.getElementById('settings-cloudflared-tunnel-token');
   elements.settingsCloudflaredNote = document.getElementById('settings-cloudflared-note');
   elements.settingsNgrokFields = document.getElementById('settings-ngrok-fields');
   elements.settingsNgrokAuthtoken = document.getElementById('settings-ngrok-authtoken');
@@ -253,6 +255,7 @@ function collectSettingsForm() {
     default_provider: elements.settingsDefaultProvider.value,
     gateway_target_url: elements.settingsGatewayTargetUrl.value,
     auto_restart: elements.settingsAutoRestart.checked,
+    cloudflared_tunnel_token: elements.settingsCloudflaredTunnelToken.value || null,
     ngrok_authtoken: elements.settingsNgrokAuthtoken.value || null,
     ngrok_domain: elements.settingsNgrokDomain.value || null,
   };
@@ -264,9 +267,11 @@ function populateSettingsFields(settings) {
   elements.settingsDefaultProvider.value = settings.default_provider ?? 'cloudflared';
   elements.settingsGatewayTargetUrl.value = settings.gateway_target_url ?? 'http://127.0.0.1:48080';
   elements.settingsAutoRestart.checked = Boolean(settings.auto_restart);
+  elements.settingsCloudflaredTunnelToken.value = settings.cloudflared_tunnel_token ?? '';
   elements.settingsNgrokAuthtoken.value = settings.ngrok_authtoken ?? '';
   elements.settingsNgrokDomain.value = settings.ngrok_domain ?? '';
   const shouldOpenAdvanced =
+    Boolean(elements.settingsCloudflaredTunnelToken.value) ||
     elements.settingsDefaultProvider.value === 'ngrok' ||
     Boolean(elements.settingsNgrokAuthtoken.value) ||
     Boolean(elements.settingsNgrokDomain.value);
@@ -280,11 +285,19 @@ function syncProviderHints() {
   const provider = elements.settingsDefaultProvider.value || 'cloudflared';
   const gatewayTarget = elements.settingsGatewayTargetUrl.value || 'http://127.0.0.1:48080';
   const restartLabel = elements.settingsAutoRestart.checked ? 'enabled' : 'disabled';
+  const cloudflaredMode = elements.settingsCloudflaredTunnelToken?.value ? 'named tunnel' : 'quick tunnel';
+  if (elements.settingsCloudflaredFields) {
+    elements.settingsCloudflaredFields.hidden = provider !== 'cloudflared';
+  }
   if (elements.settingsNgrokFields) {
     elements.settingsNgrokFields.hidden = provider !== 'ngrok';
   }
   if (elements.settingsCloudflaredNote) {
     elements.settingsCloudflaredNote.hidden = provider !== 'cloudflared';
+  }
+  if (provider === 'cloudflared') {
+    elements.homeProviderHint.textContent = `${provider} ${cloudflaredMode} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
+    return;
   }
   elements.homeProviderHint.textContent = `${provider} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
 }
