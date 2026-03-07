@@ -506,19 +506,70 @@ pub(super) async fn spawn_provider_process(
         TunnelProvider::Ngrok => state.ngrok_bin.as_str(),
     };
 
+    let mut command = build_provider_command(&state.cloudflared_bin, &state.ngrok_bin, request)?;
+
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| provider_spawn_error(&request.provider, provider_binary, error))?;
+    let process_id = child.id();
+    let public_url = wait_for_public_url(
+        &mut child,
+        request.provider.clone(),
+        Duration::from_millis(state.ready_timeout_ms),
+        state.provider_log_file.clone(),
+    )
+    .await
+    .inspect_err(|err| warn!("provider startup failed: {err}"))?;
+
+    Ok(SpawnedTunnel {
+        child,
+        public_url,
+        process_id,
+    })
+}
+
+fn build_provider_command(
+    cloudflared_bin: &str,
+    ngrok_bin: &str,
+    request: &TunnelStartRequest,
+) -> anyhow::Result<Command> {
     let mut command = match request.provider {
         TunnelProvider::Cloudflared => {
-            let mut cmd = Command::new(&state.cloudflared_bin);
-            cmd.args([
-                "tunnel",
-                "--no-autoupdate",
-                "--url",
-                request.target_url.as_str(),
-            ]);
+            let mut cmd = Command::new(cloudflared_bin);
+            if let Some(token) = request
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("cloudflaredTunnelToken"))
+                .map(|item| item.trim())
+                .filter(|item| !item.is_empty())
+            {
+                cmd.args([
+                    "tunnel",
+                    "--no-autoupdate",
+                    "run",
+                    "--token",
+                    token,
+                    "--url",
+                    request.target_url.as_str(),
+                ]);
+            } else {
+                cmd.args([
+                    "tunnel",
+                    "--no-autoupdate",
+                    "--url",
+                    request.target_url.as_str(),
+                ]);
+            }
             cmd
         }
         TunnelProvider::Ngrok => {
-            let mut cmd = Command::new(&state.ngrok_bin);
+            let mut cmd = Command::new(ngrok_bin);
             cmd.args([
                 "http",
                 request.target_url.as_str(),
@@ -558,24 +609,7 @@ pub(super) async fn spawn_provider_process(
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| provider_spawn_error(&request.provider, provider_binary, error))?;
-    let process_id = child.id();
-    let public_url = wait_for_public_url(
-        &mut child,
-        request.provider.clone(),
-        Duration::from_millis(state.ready_timeout_ms),
-        state.provider_log_file.clone(),
-    )
-    .await
-    .inspect_err(|err| warn!("provider startup failed: {err}"))?;
-
-    Ok(SpawnedTunnel {
-        child,
-        public_url,
-        process_id,
-    })
+    Ok(command)
 }
 
 pub(super) fn provider_spawn_error(
@@ -810,6 +844,45 @@ mod runtime_tests {
                 .to_string()
                 .contains("provider executable not found: /missing/cloudflared"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn cloudflared_command_uses_named_tunnel_token_when_present() {
+        let request = TunnelStartRequest {
+            provider: TunnelProvider::Cloudflared,
+            target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: Some(true),
+            metadata: Some(HashMap::from([(
+                "cloudflaredTunnelToken".to_string(),
+                "cf-token".to_string(),
+            )])),
+        };
+
+        let command = build_provider_command(
+            "/opt/homebrew/bin/cloudflared",
+            "/opt/homebrew/bin/ngrok",
+            &request,
+        )
+        .expect("command should build");
+
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            vec![
+                "tunnel",
+                "--no-autoupdate",
+                "run",
+                "--token",
+                "cf-token",
+                "--url",
+                "http://127.0.0.1:48080",
+            ]
         );
     }
 }

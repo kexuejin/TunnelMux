@@ -235,9 +235,15 @@
               <input id="settings-auto-restart" type="checkbox" checked />
               <span>Auto restart tunnel</span>
             </label>
-            <p id="settings-cloudflared-note" class="panel-subtle">
-              cloudflared currently uses quick tunnel mode in the GUI. Named tunnels, Access, and custom hostnames are not exposed here yet.
-            </p>
+            <div id="settings-cloudflared-fields">
+              <label class="field">
+                <span>Cloudflare Tunnel Token</span>
+                <input id="settings-cloudflared-tunnel-token" type="password" placeholder="Optional" />
+              </label>
+              <p id="settings-cloudflared-note" class="panel-subtle">
+                Leave this empty for a quick tunnel. Add a tunnel token to run a stable named tunnel. Hostname and Access are still managed in Cloudflare.
+              </p>
+            </div>
             <div id="settings-ngrok-fields" hidden>
               <label class="field">
                 <span>ngrok Authtoken</span>

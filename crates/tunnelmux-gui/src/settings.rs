@@ -13,6 +13,7 @@ pub struct GuiSettings {
     pub default_provider: TunnelProvider,
     pub gateway_target_url: String,
     pub auto_restart: bool,
+    pub cloudflared_tunnel_token: Option<String>,
     pub ngrok_authtoken: Option<String>,
     pub ngrok_domain: Option<String>,
 }
@@ -25,6 +26,7 @@ impl Default for GuiSettings {
             default_provider: TunnelProvider::Cloudflared,
             gateway_target_url: DEFAULT_GUI_GATEWAY_TARGET_URL.to_string(),
             auto_restart: true,
+            cloudflared_tunnel_token: None,
             ngrok_authtoken: None,
             ngrok_domain: None,
         }
@@ -53,6 +55,7 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
     settings.base_url = normalize_base_url(&settings.base_url);
     settings.gateway_target_url = normalize_base_url(&settings.gateway_target_url);
     settings.token = normalize_token(settings.token);
+    settings.cloudflared_tunnel_token = normalize_token(settings.cloudflared_tunnel_token);
     settings.ngrok_authtoken = normalize_token(settings.ngrok_authtoken);
     settings.ngrok_domain = normalize_token(settings.ngrok_domain);
     Ok(settings)
@@ -70,6 +73,7 @@ pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow
     normalized.base_url = normalize_base_url(&normalized.base_url);
     normalized.gateway_target_url = normalize_base_url(&normalized.gateway_target_url);
     normalized.token = normalize_token(normalized.token);
+    normalized.cloudflared_tunnel_token = normalize_token(normalized.cloudflared_tunnel_token);
     normalized.ngrok_authtoken = normalize_token(normalized.ngrok_authtoken);
     normalized.ngrok_domain = normalize_token(normalized.ngrok_domain);
 
@@ -115,6 +119,7 @@ mod tests {
         assert_eq!(settings.default_provider, TunnelProvider::Cloudflared);
         assert_eq!(settings.gateway_target_url, DEFAULT_GUI_GATEWAY_TARGET_URL);
         assert!(settings.auto_restart);
+        assert_eq!(settings.cloudflared_tunnel_token, None);
         assert_eq!(settings.ngrok_authtoken, None);
         assert_eq!(settings.ngrok_domain, None);
     }
@@ -128,6 +133,7 @@ mod tests {
             default_provider: TunnelProvider::Ngrok,
             gateway_target_url: "127.0.0.1:28080".to_string(),
             auto_restart: false,
+            cloudflared_tunnel_token: Some("cf-token".to_string()),
             ngrok_authtoken: Some("ngrok-token".to_string()),
             ngrok_domain: Some("demo.ngrok.app".to_string()),
         };
@@ -161,6 +167,7 @@ mod tests {
         assert_eq!(loaded.default_provider, TunnelProvider::Cloudflared);
         assert_eq!(loaded.gateway_target_url, DEFAULT_GUI_GATEWAY_TARGET_URL);
         assert!(loaded.auto_restart);
+        assert_eq!(loaded.cloudflared_tunnel_token, None);
         assert_eq!(loaded.ngrok_authtoken, None);
         assert_eq!(loaded.ngrok_domain, None);
     }

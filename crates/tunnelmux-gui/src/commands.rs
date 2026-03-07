@@ -241,12 +241,13 @@ pub async fn start_tunnel_from_settings_dir(
     input: StartTunnelInput,
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
+    let metadata = build_tunnel_metadata(&settings, &input.provider);
     let response = client
         .start_tunnel(&TunnelStartRequest {
             provider: input.provider,
             target_url: input.target_url,
             auto_restart: Some(input.auto_restart),
-            metadata: build_tunnel_metadata(&settings),
+            metadata,
         })
         .await
         .map_err(command_error)?;
@@ -389,14 +390,26 @@ fn command_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-fn build_tunnel_metadata(settings: &GuiSettings) -> Option<HashMap<String, String>> {
+fn build_tunnel_metadata(
+    settings: &GuiSettings,
+    provider: &TunnelProvider,
+) -> Option<HashMap<String, String>> {
     let mut metadata = HashMap::new();
 
-    if let Some(value) = settings.ngrok_authtoken.as_deref() {
-        metadata.insert("ngrokAuthtoken".to_string(), value.to_string());
-    }
-    if let Some(value) = settings.ngrok_domain.as_deref() {
-        metadata.insert("ngrokDomain".to_string(), value.to_string());
+    match provider {
+        TunnelProvider::Cloudflared => {
+            if let Some(value) = settings.cloudflared_tunnel_token.as_deref() {
+                metadata.insert("cloudflaredTunnelToken".to_string(), value.to_string());
+            }
+        }
+        TunnelProvider::Ngrok => {
+            if let Some(value) = settings.ngrok_authtoken.as_deref() {
+                metadata.insert("ngrokAuthtoken".to_string(), value.to_string());
+            }
+            if let Some(value) = settings.ngrok_domain.as_deref() {
+                metadata.insert("ngrokDomain".to_string(), value.to_string());
+            }
+        }
     }
 
     (!metadata.is_empty()).then_some(metadata)
@@ -504,6 +517,7 @@ mod tests {
                 default_provider: TunnelProvider::Ngrok,
                 gateway_target_url: "http://127.0.0.1:28080".to_string(),
                 auto_restart: false,
+                cloudflared_tunnel_token: None,
                 ngrok_authtoken: Some("ngrok-token".to_string()),
                 ngrok_domain: Some("demo.ngrok.app".to_string()),
             },
@@ -546,6 +560,63 @@ mod tests {
                 .and_then(|value| value.get("ngrokDomain"))
                 .map(String::as_str),
             Some("demo.ngrok.app")
+        );
+    }
+
+    #[tokio::test]
+    async fn start_tunnel_uses_saved_cloudflared_tunnel_token() {
+        let temp_dir = prepare_temp_dir();
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<TunnelStartRequest>));
+        let base_url = spawn_test_server(
+            Router::new().route(
+                "/v1/tunnel/start",
+                axum::routing::post({
+                    let captured = captured.clone();
+                    move |payload| start_tunnel_handler(captured.clone(), payload)
+                }),
+            ),
+        )
+        .await;
+
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                default_provider: TunnelProvider::Cloudflared,
+                gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: true,
+                cloudflared_tunnel_token: Some("cf-token".to_string()),
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let snapshot = start_tunnel_from_settings_dir(
+            &temp_dir,
+            StartTunnelInput {
+                provider: TunnelProvider::Cloudflared,
+                target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: true,
+            },
+        )
+        .await
+        .expect("start tunnel should succeed");
+
+        assert!(snapshot.connected);
+
+        let payload = captured
+            .lock()
+            .await
+            .clone()
+            .expect("start request should be captured");
+        assert_eq!(
+            payload
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("cloudflaredTunnelToken"))
+                .map(String::as_str),
+            Some("cf-token")
         );
     }
 
