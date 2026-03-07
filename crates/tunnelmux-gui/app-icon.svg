@@ -9,16 +9,16 @@
       <stop offset="0.55" stop-color="#2563EB" stop-opacity="0.08"/>
       <stop offset="1" stop-color="#0B1220" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="portal" x1="362" y1="292" x2="692" y2="760" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#67E8F9"/>
+    <linearGradient id="portal" x1="330" y1="280" x2="724" y2="782" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7DD3FC"/>
       <stop offset="0.52" stop-color="#3B82F6"/>
       <stop offset="1" stop-color="#2563EB"/>
     </linearGradient>
-    <linearGradient id="lane" x1="520" y1="356" x2="520" y2="744" gradientUnits="userSpaceOnUse">
+    <linearGradient id="lane" x1="512" y1="366" x2="512" y2="772" gradientUnits="userSpaceOnUse">
       <stop stop-color="#F8FAFC"/>
-      <stop offset="1" stop-color="#BFDBFE"/>
+      <stop offset="1" stop-color="#DCEAFE"/>
     </linearGradient>
-    <filter id="soft" x="210" y="178" width="604" height="670" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <filter id="soft" x="220" y="176" width="584" height="680" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
       <feFlood flood-opacity="0" result="BackgroundImageFix"/>
       <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
       <feOffset dy="18"/>
@@ -34,8 +34,9 @@
   <rect x="64" y="64" width="896" height="896" rx="232" fill="url(#halo)"/>
 
   <g filter="url(#soft)">
-    <path d="M352 724V438C352 354 420 286 504 286H520C604 286 672 354 672 438V724" stroke="url(#portal)" stroke-width="92" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M520 438V724" stroke="url(#lane)" stroke-width="74" stroke-linecap="round"/>
-    <path d="M456 382L520 438L584 382" stroke="url(#lane)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M344 736V456C344 350 420 274 526 274" stroke="url(#portal)" stroke-width="92" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M680 736V456C680 350 604 274 498 274" stroke="url(#portal)" stroke-width="92" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M512 430V744" stroke="url(#lane)" stroke-width="74" stroke-linecap="round"/>
+    <path d="M462 352H562" stroke="url(#lane)" stroke-width="34" stroke-linecap="round"/>
   </g>
 </svg>
