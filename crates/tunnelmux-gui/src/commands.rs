@@ -220,13 +220,16 @@ pub async fn refresh_dashboard_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
+    let current_tunnel = settings.current_tunnel();
     match client.health().await {
         Ok(health) => match client.tunnel_status().await {
             Ok(tunnel) => {
                 let message = if tunnel.tunnel.state == tunnelmux_core::TunnelState::Running
                     && tunnel.tunnel.provider == Some(TunnelProvider::Cloudflared)
                     && tunnel.tunnel.public_base_url.is_none()
-                    && settings.cloudflared_tunnel_token.is_some()
+                    && current_tunnel
+                        .and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_ref())
+                        .is_some()
                 {
                     Some(
                         "Cloudflared named tunnel is running. Public hostname is managed in Cloudflare."
@@ -272,7 +275,7 @@ pub async fn start_tunnel_from_settings_dir(
     input: StartTunnelInput,
 ) -> Result<DashboardSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
-    let metadata = build_tunnel_metadata(&settings, &input.provider);
+    let metadata = build_tunnel_metadata(settings.current_tunnel(), &input.provider);
     let response = client
         .start_tunnel(&TunnelStartRequest {
             provider: input.provider,
@@ -415,25 +418,29 @@ pub fn load_tunnel_workspace_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<TunnelWorkspaceVm, String> {
     let settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
-    let Some(name) = settings.tunnel_name.clone() else {
+    if settings.tunnels.is_empty() {
         return Ok(TunnelWorkspaceVm {
             tunnels: Vec::new(),
             current_tunnel_id: None,
         });
-    };
+    }
 
-    let tunnel = TunnelProfileVm {
-        id: "primary".to_string(),
-        name,
-        provider: match settings.default_provider {
-            TunnelProvider::Cloudflared => "cloudflared".to_string(),
-            TunnelProvider::Ngrok => "ngrok".to_string(),
-        },
-    };
+    let tunnels = settings
+        .tunnels
+        .iter()
+        .map(|tunnel| TunnelProfileVm {
+            id: tunnel.id.clone(),
+            name: tunnel.name.clone(),
+            provider: match tunnel.provider {
+                TunnelProvider::Cloudflared => "cloudflared".to_string(),
+                TunnelProvider::Ngrok => "ngrok".to_string(),
+            },
+        })
+        .collect();
 
     Ok(TunnelWorkspaceVm {
-        tunnels: vec![tunnel],
-        current_tunnel_id: Some("primary".to_string()),
+        tunnels,
+        current_tunnel_id: settings.current_tunnel_id.clone(),
     })
 }
 
@@ -443,15 +450,19 @@ fn derive_provider_status_summary(
     log_lines: &[String],
 ) -> Option<ProviderStatusVm> {
     let tunnel = tunnel?;
+    let current_tunnel = settings.current_tunnel();
     let provider = tunnel
         .provider
         .clone()
-        .unwrap_or(settings.default_provider.clone());
+        .or_else(|| current_tunnel.map(|tunnel| tunnel.provider.clone()))
+        .unwrap_or(TunnelProvider::Cloudflared);
 
     if provider == TunnelProvider::Cloudflared
         && tunnel.state == tunnelmux_core::TunnelState::Running
         && tunnel.public_base_url.is_none()
-        && settings.cloudflared_tunnel_token.is_some()
+        && current_tunnel
+            .and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_ref())
+            .is_some()
     {
         return Some(ProviderStatusVm::new(
             "warning",
@@ -549,22 +560,22 @@ fn command_error(error: impl std::fmt::Display) -> String {
 }
 
 fn build_tunnel_metadata(
-    settings: &GuiSettings,
+    tunnel: Option<&crate::settings::TunnelProfileSettings>,
     provider: &TunnelProvider,
 ) -> Option<HashMap<String, String>> {
     let mut metadata = HashMap::new();
 
     match provider {
         TunnelProvider::Cloudflared => {
-            if let Some(value) = settings.cloudflared_tunnel_token.as_deref() {
+            if let Some(value) = tunnel.and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_deref()) {
                 metadata.insert("cloudflaredTunnelToken".to_string(), value.to_string());
             }
         }
         TunnelProvider::Ngrok => {
-            if let Some(value) = settings.ngrok_authtoken.as_deref() {
+            if let Some(value) = tunnel.and_then(|tunnel| tunnel.ngrok_authtoken.as_deref()) {
                 metadata.insert("ngrokAuthtoken".to_string(), value.to_string());
             }
-            if let Some(value) = settings.ngrok_domain.as_deref() {
+            if let Some(value) = tunnel.and_then(|tunnel| tunnel.ngrok_domain.as_deref()) {
                 metadata.insert("ngrokDomain".to_string(), value.to_string());
             }
         }
@@ -672,13 +683,17 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
-                tunnel_name: Some("Main Tunnel".to_string()),
-                default_provider: TunnelProvider::Ngrok,
-                gateway_target_url: "http://127.0.0.1:28080".to_string(),
-                auto_restart: false,
-                cloudflared_tunnel_token: None,
-                ngrok_authtoken: Some("ngrok-token".to_string()),
-                ngrok_domain: Some("demo.ngrok.app".to_string()),
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    gateway_target_url: "http://127.0.0.1:28080".to_string(),
+                    auto_restart: false,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: Some("ngrok-token".to_string()),
+                    ngrok_domain: Some("demo.ngrok.app".to_string()),
+                }],
             },
         )
         .expect("settings should save");
@@ -742,10 +757,17 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
-                default_provider: TunnelProvider::Cloudflared,
-                gateway_target_url: "http://127.0.0.1:48080".to_string(),
-                auto_restart: true,
-                cloudflared_tunnel_token: Some("cf-token".to_string()),
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Cloudflared,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: Some("cf-token".to_string()),
+                    ngrok_authtoken: None,
+                    ngrok_domain: None,
+                }],
                 ..GuiSettings::default()
             },
         )
@@ -823,10 +845,17 @@ mod tests {
             &GuiSettings {
                 base_url,
                 token: None,
-                default_provider: TunnelProvider::Cloudflared,
-                gateway_target_url: "http://127.0.0.1:48080".to_string(),
-                auto_restart: true,
-                cloudflared_tunnel_token: Some("cf-token".to_string()),
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Cloudflared,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: Some("cf-token".to_string()),
+                    ngrok_authtoken: None,
+                    ngrok_domain: None,
+                }],
                 ..GuiSettings::default()
             },
         )
@@ -1112,8 +1141,13 @@ mod tests {
         save_settings_to_dir(
             &temp_dir,
             &GuiSettings {
-                tunnel_name: Some("Main Tunnel".to_string()),
-                default_provider: TunnelProvider::Cloudflared,
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Cloudflared,
+                    ..crate::settings::TunnelProfileSettings::default()
+                }],
                 ..GuiSettings::default()
             },
         )
@@ -1131,7 +1165,14 @@ mod tests {
     #[test]
     fn provider_status_summary_identifies_named_cloudflared_setup() {
         let settings = GuiSettings {
-            cloudflared_tunnel_token: Some("cf-token".to_string()),
+            current_tunnel_id: Some("primary".to_string()),
+            tunnels: vec![crate::settings::TunnelProfileSettings {
+                id: "primary".to_string(),
+                name: "Main Tunnel".to_string(),
+                provider: TunnelProvider::Cloudflared,
+                cloudflared_tunnel_token: Some("cf-token".to_string()),
+                ..crate::settings::TunnelProfileSettings::default()
+            }],
             ..GuiSettings::default()
         };
         let tunnel = TunnelStatus {
@@ -1173,7 +1214,13 @@ mod tests {
 
         let summary = derive_provider_status_summary(
             &GuiSettings {
-                default_provider: TunnelProvider::Ngrok,
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    ..crate::settings::TunnelProfileSettings::default()
+                }],
                 ..GuiSettings::default()
             },
             Some(&tunnel),
