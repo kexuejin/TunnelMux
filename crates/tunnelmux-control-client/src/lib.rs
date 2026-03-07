@@ -105,8 +105,15 @@ impl TunnelmuxControlClient {
         self.get("/v1/metrics").await
     }
 
-    pub async fn list_routes(&self) -> anyhow::Result<RoutesResponse> {
-        self.get("/v1/routes").await
+    pub async fn list_routes(&self, tunnel_id: &str) -> anyhow::Result<RoutesResponse> {
+        let url = self.url("/v1/routes");
+        let response = self
+            .request_with_token(self.client.get(&url))
+            .query(&[("tunnel_id", tunnel_id)])
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
     }
 
     pub async fn create_route(&self, payload: &CreateRouteRequest) -> anyhow::Result<RouteRule> {
@@ -134,12 +141,14 @@ impl TunnelmuxControlClient {
     pub async fn delete_route(
         &self,
         id: &str,
+        tunnel_id: &str,
         ignore_missing: bool,
     ) -> anyhow::Result<DeleteRouteResponse> {
         let path = format!("/v1/routes/{id}");
         let url = self.url(&path);
         let response = self
             .request_with_token(self.client.delete(&url))
+            .query(&[("tunnel_id", tunnel_id)])
             .send()
             .await
             .with_context(|| format!("request failed: {url}"))?;
@@ -160,11 +169,13 @@ impl TunnelmuxControlClient {
 
     pub async fn match_route(
         &self,
+        tunnel_id: &str,
         path: &str,
         host: Option<&str>,
     ) -> anyhow::Result<RouteMatchResponse> {
         let url = self.url("/v1/routes/match");
         let mut request = self.request_with_token(self.client.get(&url));
+        request = request.query(&[("tunnel_id", tunnel_id)]);
         request = request.query(&[("path", path)]);
         if let Some(host) = host.map(str::trim).filter(|value| !value.is_empty()) {
             request = request.query(&[("host", host)]);

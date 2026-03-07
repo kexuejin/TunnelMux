@@ -368,15 +368,15 @@ pub async fn list_routes_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<RouteWorkspaceSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
-    let response = client.list_routes().await.map_err(command_error)?;
-    let all_routes = response.routes;
     let current_tunnel_id = settings
         .current_tunnel()
-        .map(|tunnel| tunnel.id.as_str());
-    let routes = all_routes
-        .into_iter()
-        .filter(|route| Some(route.tunnel_id.as_str()) == current_tunnel_id)
-        .collect::<Vec<_>>();
+        .map(|tunnel| tunnel.id.as_str())
+        .ok_or_else(|| "no tunnel selected".to_string())?;
+    let response = client
+        .list_routes(current_tunnel_id)
+        .await
+        .map_err(command_error)?;
+    let routes = response.routes;
     let message = if routes.is_empty() {
         Some(
             "No services yet. Add your first local service to replace the default welcome page."
@@ -407,12 +407,8 @@ pub async fn save_route_from_settings_dir(
         client.create_route(&request).await.map_err(command_error)?;
     }
 
-    let routes = client.list_routes().await.map_err(command_error)?;
-    let filtered = routes
-        .routes
-        .into_iter()
-        .filter(|route| route.tunnel_id == tunnel_id)
-        .collect();
+    let routes = client.list_routes(tunnel_id).await.map_err(command_error)?;
+    let filtered = routes.routes;
     Ok(RouteWorkspaceSnapshot::from_routes(
         filtered,
         Some("Route saved.".to_string()),
@@ -424,20 +420,16 @@ pub async fn delete_route_from_settings_dir(
     id: String,
 ) -> Result<RouteWorkspaceSnapshot, String> {
     let (settings, client) = load_client(settings_dir)?;
-    client
-        .delete_route(&id, false)
-        .await
-        .map_err(command_error)?;
     let tunnel_id = settings
         .current_tunnel()
         .map(|tunnel| tunnel.id.as_str())
         .ok_or_else(|| "no tunnel selected".to_string())?;
-    let routes = client.list_routes().await.map_err(command_error)?;
-    let filtered = routes
-        .routes
-        .into_iter()
-        .filter(|route| route.tunnel_id == tunnel_id)
-        .collect();
+    client
+        .delete_route(&id, tunnel_id, false)
+        .await
+        .map_err(command_error)?;
+    let routes = client.list_routes(tunnel_id).await.map_err(command_error)?;
+    let filtered = routes.routes;
     Ok(RouteWorkspaceSnapshot::from_routes(
         filtered,
         Some("Route deleted.".to_string()),

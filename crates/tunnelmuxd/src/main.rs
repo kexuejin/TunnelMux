@@ -276,8 +276,14 @@ struct StreamIntervalQuery {
 
 #[derive(Debug, Deserialize)]
 struct RouteMatchQuery {
+    tunnel_id: Option<String>,
     host: Option<String>,
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TunnelRouteQuery {
+    tunnel_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -520,7 +526,10 @@ fn ensure_route_id_matches(path_id: &str, body_id: &str) -> Result<(), ApiError>
 }
 
 fn replace_route(routes: &mut [RouteRule], route: RouteRule) -> bool {
-    if let Some(index) = routes.iter().position(|item| item.id == route.id) {
+    if let Some(index) = routes
+        .iter()
+        .position(|item| item.id == route.id && item.tunnel_id == route.tunnel_id)
+    {
         routes[index] = route;
         return true;
     }
@@ -538,10 +547,11 @@ struct RouteApplyPlan {
 fn ensure_unique_route_ids(routes: &[RouteRule]) -> Result<(), ApiError> {
     let mut ids = HashSet::new();
     for route in routes {
-        if !ids.insert(route.id.as_str()) {
+        if !ids.insert((route.tunnel_id.as_str(), route.id.as_str())) {
             return Err(ApiError::bad_request(format!(
-                "duplicate route id in payload: {}",
-                route.id
+                "duplicate route id in payload: {} ({})",
+                route.id,
+                route.tunnel_id
             )));
         }
     }
@@ -568,7 +578,7 @@ fn build_route_apply_plan(
 ) -> RouteApplyPlan {
     let existing_by_id = existing
         .iter()
-        .map(|route| (route.id.as_str(), route))
+        .map(|route| ((route.tunnel_id.as_str(), route.id.as_str()), route))
         .collect::<HashMap<_, _>>();
     let mut incoming_ids = HashSet::new();
     let mut created = Vec::new();
@@ -576,16 +586,16 @@ fn build_route_apply_plan(
     let mut unchanged = Vec::new();
 
     for route in incoming {
-        incoming_ids.insert(route.id.as_str());
-        match existing_by_id.get(route.id.as_str()) {
+        incoming_ids.insert((route.tunnel_id.as_str(), route.id.as_str()));
+        match existing_by_id.get(&(route.tunnel_id.as_str(), route.id.as_str())) {
             Some(current) if *current == route => {
-                unchanged.push(route.id.clone());
+                unchanged.push(format!("{}:{}", route.tunnel_id, route.id));
             }
             Some(_) => {
-                updated.push(route.id.clone());
+                updated.push(format!("{}:{}", route.tunnel_id, route.id));
             }
             None => {
-                created.push(route.id.clone());
+                created.push(format!("{}:{}", route.tunnel_id, route.id));
             }
         }
     }
@@ -593,8 +603,8 @@ fn build_route_apply_plan(
     let removed = if replace {
         existing
             .iter()
-            .filter(|route| !incoming_ids.contains(route.id.as_str()))
-            .map(|route| route.id.clone())
+            .filter(|route| !incoming_ids.contains(&(route.tunnel_id.as_str(), route.id.as_str())))
+            .map(|route| format!("{}:{}", route.tunnel_id, route.id))
             .collect::<Vec<_>>()
     } else {
         Vec::new()
@@ -619,7 +629,10 @@ fn apply_route_rules(
 
     let mut next = existing.to_vec();
     for route in incoming {
-        if let Some(index) = next.iter().position(|item| item.id == route.id) {
+        if let Some(index) = next
+            .iter()
+            .position(|item| item.id == route.id && item.tunnel_id == route.tunnel_id)
+        {
             if next[index] != route {
                 next[index] = route;
             }
@@ -939,11 +952,14 @@ mod tests {
             .route("/v1/diagnostics", get(get_diagnostics))
             .route("/v1/upstreams/health", get(get_upstreams_health))
             .route("/v1/upstreams/health/stream", get(stream_upstreams_health))
-            .route("/v1/routes", get(list_routes))
+            .route("/v1/routes", get(list_routes).post(add_route))
             .route("/v1/routes/match", get(match_route))
             .route("/v1/routes/stream", get(stream_routes))
             .route("/v1/routes/apply", post(apply_routes))
-            .route("/v1/routes/{id}", axum::routing::put(update_route))
+            .route(
+                "/v1/routes/{id}",
+                axum::routing::delete(delete_route).put(update_route),
+            )
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 control_auth_middleware,
@@ -1633,6 +1649,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_route_allows_same_id_in_different_tunnels() {
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                tunnel_id: "primary".to_string(),
+                id: "svc-a".to_string(),
+                match_host: Some("demo.local".to_string()),
+                match_path_prefix: Some("/".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .post(format!("{base_url}/v1/routes"))
+            .json(&CreateRouteRequest {
+                tunnel_id: "tunnel-2".to_string(),
+                id: "svc-a".to_string(),
+                match_host: Some("api.local".to_string()),
+                match_path_prefix: Some("/".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:4000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: Some(true),
+            })
+            .send()
+            .await
+            .expect("create route request should complete");
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let runtime = state.runtime.lock().await;
+        assert_eq!(runtime.persisted.routes.len(), 2);
+        drop(runtime);
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn list_routes_endpoint_filters_by_tunnel_id() {
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    tunnel_id: "primary".to_string(),
+                    id: "svc-a".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    tunnel_id: "tunnel-2".to_string(),
+                    id: "svc-a".to_string(),
+                    match_host: Some("api.local".to_string()),
+                    match_path_prefix: Some("/".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+            ],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let payload: RoutesResponse = client
+            .get(format!("{base_url}/v1/routes"))
+            .query(&[("tunnel_id", "tunnel-2")])
+            .send()
+            .await
+            .expect("routes request should complete")
+            .json()
+            .await
+            .expect("routes response should decode");
+
+        assert_eq!(payload.routes.len(), 1);
+        assert_eq!(payload.routes[0].tunnel_id, "tunnel-2");
+        assert_eq!(payload.routes[0].upstream_url, "http://127.0.0.1:4000");
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_route_endpoint_uses_tunnel_scope() {
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    tunnel_id: "primary".to_string(),
+                    id: "svc-a".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    tunnel_id: "tunnel-2".to_string(),
+                    id: "svc-a".to_string(),
+                    match_host: Some("api.local".to_string()),
+                    match_path_prefix: Some("/".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+            ],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .delete(format!("{base_url}/v1/routes/svc-a"))
+            .query(&[("tunnel_id", "tunnel-2")])
+            .send()
+            .await
+            .expect("delete request should complete");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let runtime = state.runtime.lock().await;
+        assert_eq!(runtime.persisted.routes.len(), 1);
+        assert_eq!(runtime.persisted.routes[0].tunnel_id, "primary");
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
     async fn routes_match_endpoint_returns_selected_route_and_targets() {
         let state = test_state_with_routes(
             vec![
@@ -1773,10 +1930,10 @@ mod tests {
         let payload: ApplyRoutesResponse =
             response.json().await.expect("apply response should decode");
         assert_eq!(payload.applied, 1);
-        assert_eq!(payload.created, vec!["svc-b".to_string()]);
+        assert_eq!(payload.created, vec!["primary:svc-b".to_string()]);
         assert_eq!(payload.updated, Vec::<String>::new());
         assert_eq!(payload.unchanged, Vec::<String>::new());
-        assert_eq!(payload.removed, vec!["svc-a".to_string()]);
+        assert_eq!(payload.removed, vec!["primary:svc-a".to_string()]);
         assert!(payload.replace);
         assert!(payload.dry_run);
 
@@ -1859,10 +2016,10 @@ mod tests {
         let payload: ApplyRoutesResponse =
             response.json().await.expect("apply response should decode");
         assert_eq!(payload.applied, 2);
-        assert_eq!(payload.created, vec!["svc-c".to_string()]);
-        assert_eq!(payload.updated, vec!["svc-b".to_string()]);
+        assert_eq!(payload.created, vec!["primary:svc-c".to_string()]);
+        assert_eq!(payload.updated, vec!["primary:svc-b".to_string()]);
         assert_eq!(payload.unchanged, Vec::<String>::new());
-        assert_eq!(payload.removed, vec!["svc-a".to_string()]);
+        assert_eq!(payload.removed, vec!["primary:svc-a".to_string()]);
         assert!(payload.replace);
         assert!(!payload.dry_run);
 
@@ -1966,7 +2123,7 @@ mod tests {
         assert_eq!(payload.applied, 1);
         assert_eq!(payload.created, Vec::<String>::new());
         assert_eq!(payload.updated, Vec::<String>::new());
-        assert_eq!(payload.unchanged, vec!["svc-a".to_string()]);
+        assert_eq!(payload.unchanged, vec!["primary:svc-a".to_string()]);
         assert_eq!(payload.removed, Vec::<String>::new());
 
         server_task.abort();
@@ -3263,10 +3420,10 @@ mod tests {
         ];
 
         let plan = build_route_apply_plan(&existing, &incoming, true);
-        assert_eq!(plan.created, vec!["svc-c".to_string()]);
-        assert_eq!(plan.updated, vec!["svc-b".to_string()]);
+        assert_eq!(plan.created, vec!["primary:svc-c".to_string()]);
+        assert_eq!(plan.updated, vec!["primary:svc-b".to_string()]);
         assert_eq!(plan.unchanged, Vec::<String>::new());
-        assert_eq!(plan.removed, vec!["svc-a".to_string()]);
+        assert_eq!(plan.removed, vec!["primary:svc-a".to_string()]);
     }
 
     #[test]
