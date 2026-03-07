@@ -424,6 +424,10 @@ select {
   min-width: auto;
 }
 
+.provider-actions {
+  justify-content: flex-start;
+}
+
 .action-chip {
   padding: 8px 12px;
   border-radius: 999px;

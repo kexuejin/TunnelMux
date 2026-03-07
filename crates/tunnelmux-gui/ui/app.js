@@ -6,6 +6,9 @@ const invoke = (command, payload = {}) => {
   return window.__TAURI__.core.invoke(command, payload);
 };
 
+const CLOUDFLARE_DASHBOARD_URL = 'https://one.dash.cloudflare.com/';
+const CLOUDFLARE_TUNNEL_DOCS_URL = 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/';
+
 const elements = {};
 const state = {
   busy: false,
@@ -72,6 +75,7 @@ function bindElements() {
   elements.stopTunnel = document.getElementById('stop-tunnel');
   elements.copyPublicUrl = document.getElementById('copy-public-url');
   elements.openPublicUrl = document.getElementById('open-public-url');
+  elements.manageProvider = document.getElementById('manage-provider');
 
   elements.routesMessage = document.getElementById('routes-message');
   elements.routesEmpty = document.getElementById('routes-empty');
@@ -110,6 +114,8 @@ function bindElements() {
   elements.settingsCloudflaredFields = document.getElementById('settings-cloudflared-fields');
   elements.settingsCloudflaredTunnelToken = document.getElementById('settings-cloudflared-tunnel-token');
   elements.settingsCloudflaredNote = document.getElementById('settings-cloudflared-note');
+  elements.openCloudflareDashboard = document.getElementById('open-cloudflare-dashboard');
+  elements.openCloudflareDocs = document.getElementById('open-cloudflare-docs');
   elements.settingsNgrokFields = document.getElementById('settings-ngrok-fields');
   elements.settingsNgrokAuthtoken = document.getElementById('settings-ngrok-authtoken');
   elements.settingsNgrokDomain = document.getElementById('settings-ngrok-domain');
@@ -148,6 +154,7 @@ function bindEvents() {
   elements.stopTunnel?.addEventListener('click', () => withBusy(stopTunnel));
   elements.copyPublicUrl?.addEventListener('click', () => withBusy(copyPublicUrl));
   elements.openPublicUrl?.addEventListener('click', () => withBusy(openPublicUrl));
+  elements.manageProvider?.addEventListener('click', openCloudflareDashboard);
 
   elements.newRoute?.addEventListener('click', () => {
     resetRouteForm();
@@ -164,6 +171,8 @@ function bindEvents() {
 
   elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
   elements.settingsDefaultProvider?.addEventListener('change', syncProviderHints);
+  elements.openCloudflareDashboard?.addEventListener('click', openCloudflareDashboard);
+  elements.openCloudflareDocs?.addEventListener('click', openCloudflareDocs);
 
   elements.refreshDiagnostics?.addEventListener('click', () => withBusy(() => refreshDiagnosticsWorkspace({ manual: true })));
   elements.refreshLogs?.addEventListener('click', () => withBusy(() => refreshRecentLogs({ manual: true })));
@@ -496,6 +505,7 @@ function renderDashboard(snapshot) {
   elements.servicesEnabledCount.textContent = `${enabledServices} enabled`;
   elements.copyPublicUrl.disabled = !publicUrl;
   elements.openPublicUrl.disabled = !publicUrl;
+  elements.manageProvider.disabled = !namedCloudflared;
   elements.stopTunnel.disabled = tunnelState !== 'running';
   elements.startTunnel.textContent = tunnelState === 'stopped' || tunnelState === 'error'
     ? 'Restart Tunnel'
@@ -503,6 +513,7 @@ function renderDashboard(snapshot) {
   elements.startTunnel.hidden = tunnelState === 'running';
   elements.copyPublicUrl.hidden = !publicUrl;
   elements.openPublicUrl.hidden = !publicUrl;
+  elements.manageProvider.hidden = !(tunnelState === 'running' && namedCloudflared && !publicUrl);
   elements.stopTunnel.hidden = tunnelState !== 'running';
 
   elements.stateBadge.textContent = titleCase(tunnelState);
@@ -863,6 +874,14 @@ async function openPublicUrl() {
     return;
   }
   window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function openCloudflareDashboard() {
+  window.open(CLOUDFLARE_DASHBOARD_URL, '_blank', 'noopener,noreferrer');
+}
+
+function openCloudflareDocs() {
+  window.open(CLOUDFLARE_TUNNEL_DOCS_URL, '_blank', 'noopener,noreferrer');
 }
 
 function describeRouteExposure(route) {

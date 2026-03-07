@@ -48,6 +48,7 @@
               <button id="start-tunnel" type="button">Start Tunnel</button>
               <button id="copy-public-url" type="button" class="secondary">Copy URL</button>
               <button id="open-public-url" type="button" class="secondary">Open</button>
+              <button id="manage-provider" type="button" class="secondary" hidden>Open Cloudflare</button>
               <button id="stop-tunnel" type="button" class="secondary">Stop Tunnel</button>
             </div>
             <p id="home-provider-hint" class="message muted">No tunnel data yet.</p>
@@ -243,6 +244,10 @@
               <p id="settings-cloudflared-note" class="panel-subtle">
                 Leave this empty for a quick tunnel. Add a tunnel token to run a stable named tunnel. Hostname and Access are still managed in Cloudflare.
               </p>
+              <div class="actions compact-actions provider-actions">
+                <button id="open-cloudflare-dashboard" type="button" class="secondary">Cloudflare Dashboard</button>
+                <button id="open-cloudflare-docs" type="button" class="secondary">Tunnel Docs</button>
+              </div>
             </div>
             <div id="settings-ngrok-fields" hidden>
               <label class="field">
