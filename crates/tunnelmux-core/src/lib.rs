@@ -50,6 +50,24 @@ pub struct TunnelStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TunnelProfileSummary {
+    pub id: String,
+    pub name: Option<String>,
+    pub provider: Option<TunnelProvider>,
+    pub state: TunnelState,
+    pub target_url: Option<String>,
+    pub public_base_url: Option<String>,
+    pub route_count: usize,
+    pub enabled_route_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TunnelWorkspaceResponse {
+    pub tunnels: Vec<TunnelProfileSummary>,
+    pub current_tunnel_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TunnelLogsResponse {
     pub lines: Vec<String>,
 }

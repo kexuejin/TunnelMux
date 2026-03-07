@@ -4,6 +4,7 @@ use tunnelmux_core::TunnelProvider;
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:4765";
 pub const DEFAULT_GUI_GATEWAY_TARGET_URL: &str = "http://127.0.0.1:48080";
+pub const DEFAULT_TUNNEL_NAME: &str = "Main Tunnel";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -61,6 +62,9 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
     settings.cloudflared_tunnel_token = normalize_token(settings.cloudflared_tunnel_token);
     settings.ngrok_authtoken = normalize_token(settings.ngrok_authtoken);
     settings.ngrok_domain = normalize_token(settings.ngrok_domain);
+    if settings.tunnel_name.is_none() {
+        settings.tunnel_name = Some(DEFAULT_TUNNEL_NAME.to_string());
+    }
     Ok(settings)
 }
 
@@ -170,7 +174,7 @@ mod tests {
 
         assert_eq!(loaded.base_url, "http://127.0.0.1:8765");
         assert_eq!(loaded.token.as_deref(), Some("legacy-token"));
-        assert_eq!(loaded.tunnel_name, None);
+        assert_eq!(loaded.tunnel_name.as_deref(), Some(DEFAULT_TUNNEL_NAME));
         assert_eq!(loaded.default_provider, TunnelProvider::Cloudflared);
         assert_eq!(loaded.gateway_target_url, DEFAULT_GUI_GATEWAY_TARGET_URL);
         assert!(loaded.auto_restart);
