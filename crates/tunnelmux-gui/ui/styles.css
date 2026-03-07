@@ -170,6 +170,21 @@ select:disabled {
   background: rgba(30, 41, 59, 0.88);
 }
 
+.tunnel-picker-item.running {
+  border-color: rgba(74, 222, 128, 0.28);
+  background: rgba(20, 83, 45, 0.16);
+}
+
+.tunnel-picker-item.starting {
+  border-color: rgba(251, 191, 36, 0.28);
+  background: rgba(120, 53, 15, 0.18);
+}
+
+.tunnel-picker-item.error {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(127, 29, 29, 0.18);
+}
+
 .picker-item-copy {
   display: grid;
   gap: 4px;

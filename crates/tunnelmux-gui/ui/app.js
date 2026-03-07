@@ -1,3 +1,11 @@
+import {
+  formatCurrentTunnelMeta,
+  formatCurrentTunnelUrl,
+  formatTunnelOptionLabel,
+  titleCase,
+  tunnelPickerRowClass,
+} from './tunnel-picker-helpers.mjs';
+
 const isTauri = typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.core;
 const invoke = (command, payload = {}) => {
   if (!isTauri) {
@@ -419,19 +427,13 @@ function renderTunnelWorkspace(workspace) {
 
   elements.currentTunnelName.textContent = currentTunnel.name;
   const tunnelState = currentTunnel.state ?? 'idle';
-  const routeCount = Number(currentTunnel.route_count ?? 0);
-  const enabledRouteCount = Number(currentTunnel.enabled_route_count ?? 0);
-  const publicBaseUrl = currentTunnel.public_base_url ?? '';
   elements.currentTunnelBadge.textContent = titleCase(tunnelState);
   elements.currentTunnelBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
-  elements.currentTunnelMeta.textContent = [
-    currentTunnel.provider,
-    titleCase(tunnelState),
-    `${enabledRouteCount}/${routeCount} services live`,
-  ].join(' • ');
-  elements.currentTunnelUrl.hidden = !publicBaseUrl;
-  if (publicBaseUrl) {
-    elements.currentTunnelUrl.textContent = publicBaseUrl;
+  elements.currentTunnelMeta.textContent = formatCurrentTunnelMeta(currentTunnel);
+  const currentTunnelUrl = formatCurrentTunnelUrl(currentTunnel);
+  elements.currentTunnelUrl.hidden = !currentTunnelUrl;
+  if (currentTunnelUrl) {
+    elements.currentTunnelUrl.textContent = currentTunnelUrl;
   }
   renderTunnelPicker(workspace, currentTunnel);
 }
@@ -471,7 +473,7 @@ function renderTunnelPicker(workspace, currentTunnel) {
   tunnels.forEach((tunnel) => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `tunnel-picker-item${tunnel.id === workspace.current_tunnel_id ? ' selected' : ''}`;
+    button.className = tunnelPickerRowClass(tunnel, tunnel.id === workspace.current_tunnel_id);
     button.innerHTML = `
       <div class="picker-item-copy">
         <span class="picker-item-name">${escapeHtml(tunnel.name)}</span>
@@ -1291,13 +1293,6 @@ function closeConfirmDialog(confirmed) {
   resolve(Boolean(confirmed));
 }
 
-function formatTunnelOptionLabel(tunnel) {
-  const stateLabel = titleCase(tunnel.state ?? 'idle');
-  const routeCount = Number(tunnel.route_count ?? 0);
-  const enabledRouteCount = Number(tunnel.enabled_route_count ?? 0);
-  return `${tunnel.name} • ${stateLabel} • ${enabledRouteCount}/${routeCount}`;
-}
-
 function formatYesNo(value) {
   return value ? 'Yes' : 'No';
 }
@@ -1326,12 +1321,6 @@ function formatError(error) {
     return error;
   }
   return error?.message ?? String(error);
-}
-
-function titleCase(value) {
-  return String(value)
-    .replaceAll('_', ' ')
-    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function escapeHtml(value) {
