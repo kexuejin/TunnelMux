@@ -15,7 +15,10 @@
           <div>
             <p class="eyebrow">TunnelMux</p>
             <h1>Expose local services instantly</h1>
-            <p id="app-status" class="subtle">Loading your current tunnel and services…</p>
+            <div class="status-row">
+              <p id="app-status" class="subtle">Loading your current tunnel and services…</p>
+              <button id="status-error-details" type="button" class="secondary inline-action" hidden>View Error Details</button>
+            </div>
           </div>
         </div>
         <div class="header-actions">
@@ -130,58 +133,6 @@
           <p id="dashboard-message" class="message muted">No service data yet.</p>
         </section>
 
-        <details id="troubleshooting-details" class="panel diagnostics-shell">
-          <summary>View Details</summary>
-          <p id="diagnostics-overview" class="panel-subtle">
-            Hidden by default so the app stays focused on start, copy, and service management.
-          </p>
-          <div class="actions compact-actions">
-            <button id="refresh-diagnostics" type="button">Refresh Details</button>
-            <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
-            <button id="clear-logs" type="button" class="secondary">Clear Logs</button>
-          </div>
-
-          <section class="drawer-section diagnostics-panel">
-            <h3>Runtime Summary</h3>
-            <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
-            <dl class="stats-list diagnostics-stats">
-              <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
-              <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
-              <div><dt>Services</dt><dd id="diagnostics-route-count">—</dd></div>
-              <div><dt>Enabled Services</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
-              <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
-              <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
-              <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
-              <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
-              <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
-            </dl>
-          </section>
-
-          <section class="drawer-section diagnostics-panel">
-            <h3>Upstream Health</h3>
-            <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
-            <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
-            <div id="upstreams-list" class="diagnostics-list"></div>
-          </section>
-
-          <section class="drawer-section diagnostics-panel">
-            <div class="panel-header">
-              <div>
-                <h3>Recent Logs</h3>
-                <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
-              </div>
-              <label class="inline-field">
-                <span>Tail Size</span>
-                <select id="log-lines-select">
-                  <option value="50">50</option>
-                  <option value="100" selected>100</option>
-                  <option value="200">200</option>
-                </select>
-              </label>
-            </div>
-            <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
-          </section>
-        </details>
       </section>
 
       <div id="service-backdrop" class="drawer-backdrop" hidden></div>
@@ -355,6 +306,66 @@
         <div class="drawer-footer confirm-dialog-footer">
           <button id="confirm-cancel" type="button" class="secondary">Cancel</button>
           <button id="confirm-confirm" type="button" class="danger-solid">Delete</button>
+        </div>
+      </aside>
+
+      <div id="error-details-backdrop" class="drawer-backdrop" hidden></div>
+      <aside id="error-details-dialog" class="drawer error-details-dialog" hidden aria-label="Error details" aria-modal="true" role="dialog">
+        <div class="drawer-header">
+          <div>
+            <p class="eyebrow">Diagnostics</p>
+            <h2>Error Details</h2>
+            <p id="diagnostics-overview" class="panel-subtle">Not loaded yet.</p>
+          </div>
+          <button id="close-error-details" type="button" class="secondary">Close</button>
+        </div>
+        <div class="drawer-body">
+          <div class="actions compact-actions">
+            <button id="refresh-diagnostics" type="button">Refresh Details</button>
+            <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
+            <button id="clear-logs" type="button" class="secondary">Clear Logs</button>
+          </div>
+
+          <section class="drawer-section diagnostics-panel">
+            <h3>Runtime Summary</h3>
+            <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
+            <dl class="stats-list diagnostics-stats">
+              <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
+              <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
+              <div><dt>Services</dt><dd id="diagnostics-route-count">—</dd></div>
+              <div><dt>Enabled Services</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
+              <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
+              <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
+              <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
+              <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
+              <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
+            </dl>
+          </section>
+
+          <section class="drawer-section diagnostics-panel">
+            <h3>Upstream Health</h3>
+            <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
+            <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
+            <div id="upstreams-list" class="diagnostics-list"></div>
+          </section>
+
+          <section class="drawer-section diagnostics-panel">
+            <div class="panel-header">
+              <div>
+                <h3>Recent Logs</h3>
+                <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
+              </div>
+              <label class="inline-field">
+                <span>Tail Size</span>
+                <select id="log-lines-select">
+                  <option value="50">50</option>
+                  <option value="100" selected>100</option>
+                  <option value="200">200</option>
+                </select>
+              </label>
+            </div>
+            <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
+          </section>
         </div>
       </aside>
     </main>

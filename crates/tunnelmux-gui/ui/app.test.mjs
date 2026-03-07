@@ -6,6 +6,7 @@ import {
   formatCurrentTunnelUrl,
   formatTunnelOptionLabel,
   resolveDashboardStatus,
+  shouldShowErrorDetailsAction,
   tunnelPickerRowClass,
 } from './tunnel-picker-helpers.mjs';
 
@@ -77,4 +78,9 @@ test('resolveDashboardStatus only surfaces daemon errors for passive refresh', (
       isError: true,
     },
   );
+});
+
+test('shouldShowErrorDetailsAction only enables the action for error states', () => {
+  assert.equal(shouldShowErrorDetailsAction({ isError: true }), true);
+  assert.equal(shouldShowErrorDetailsAction({ isError: false }), false);
 });
