@@ -94,7 +94,6 @@ window.addEventListener('DOMContentLoaded', async () => {
 function bindElements() {
   elements.status = document.getElementById('app-status');
   elements.statusErrorDetails = document.getElementById('status-error-details');
-  elements.retryConnection = document.getElementById('retry-connection');
   elements.openSettings = document.getElementById('open-settings');
   elements.tunnelEmptyState = document.getElementById('tunnel-empty-state');
   elements.createTunnelEmpty = document.getElementById('create-tunnel-empty');
@@ -214,7 +213,6 @@ function bindElements() {
 }
 
 function bindEvents() {
-  elements.retryConnection?.addEventListener('click', () => withBusy(ensureLocalDaemonAndRefresh));
   elements.openSettings?.addEventListener('click', () => openSettingsDrawer());
   elements.closeSettings?.addEventListener('click', closeSettingsDrawer);
   elements.settingsBackdrop?.addEventListener('click', closeSettingsDrawer);
@@ -350,7 +348,6 @@ async function withBusy(fn) {
 
 function setBusyState(nextBusy) {
   const controls = [
-    elements.retryConnection,
     elements.openSettings,
     elements.startTunnel,
     elements.stopTunnel,

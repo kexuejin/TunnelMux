@@ -74,7 +74,13 @@ impl TunnelmuxControlClient {
         &self,
         payload: &TunnelStartRequest,
     ) -> anyhow::Result<TunnelStatusResponse> {
-        self.post("/v1/tunnel/start", payload).await
+        let url = self.url("/v1/tunnel/start");
+        let response = self
+            .request_with_token(self.client.post(&url).json(payload))
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_tunnel_status_response(response, &payload.tunnel_id).await
     }
 
     pub async fn stop_tunnel(&self, tunnel_id: &str) -> anyhow::Result<TunnelStatusResponse> {
@@ -345,6 +351,39 @@ pub async fn decode_response<T: DeserializeOwned>(response: Response) -> anyhow:
         .with_context(|| format!("failed to parse successful response body: {body}"))
 }
 
+async fn decode_tunnel_status_response(
+    response: Response,
+    fallback_tunnel_id: &str,
+) -> anyhow::Result<TunnelStatusResponse> {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read response body")?;
+
+    if !status.is_success() {
+        return Err(anyhow!("HTTP {}: {}", status, extract_error_message(&body)));
+    }
+
+    if let Ok(decoded) = serde_json::from_str::<TunnelStatusResponse>(&body) {
+        return Ok(decoded);
+    }
+
+    let legacy = serde_json::from_str::<serde_json::Value>(&body)
+        .with_context(|| format!("failed to parse successful response body: {body}"))?;
+    let tunnel = legacy
+        .get("tunnel")
+        .cloned()
+        .ok_or_else(|| anyhow!("failed to parse successful response body: {body}"))?;
+    let tunnel = serde_json::from_value(tunnel)
+        .with_context(|| format!("failed to parse successful response body: {body}"))?;
+
+    Ok(TunnelStatusResponse {
+        tunnel_id: fallback_tunnel_id.to_string(),
+        tunnel,
+    })
+}
+
 pub fn extract_error_message(body: &str) -> String {
     serde_json::from_str::<ErrorResponse>(body)
         .map(|error| error.error)
@@ -536,6 +575,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn start_tunnel_decodes_legacy_payload_without_tunnel_id() {
+        let app = Router::new().route("/v1/tunnel/start", post(legacy_start_tunnel_handler));
+        let base_url = spawn_test_server(app).await;
+        let client = TunnelmuxControlClient::new(ControlClientConfig::new(base_url, None));
+
+        let response = client
+            .start_tunnel(&TunnelStartRequest {
+                tunnel_id: "primary".to_string(),
+                provider: TunnelProvider::Cloudflared,
+                target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: Some(true),
+                metadata: None,
+            })
+            .await
+            .expect("legacy start tunnel payload should decode");
+
+        assert_eq!(response.tunnel_id, "primary");
+        assert_eq!(response.tunnel.state, TunnelState::Running);
+        assert_eq!(
+            response.tunnel.public_base_url.as_deref(),
+            Some("https://demo.trycloudflare.com")
+        );
+    }
+
+    #[tokio::test]
     async fn create_route_surfaces_structured_error_message() {
         let app = Router::new().route("/v1/routes", post(route_error_handler));
         let base_url = spawn_test_server(app).await;
@@ -686,6 +750,23 @@ mod tests {
 
     async fn delete_tunnel_handler() -> Json<DeleteTunnelResponse> {
         Json(DeleteTunnelResponse { removed: true })
+    }
+
+    async fn legacy_start_tunnel_handler() -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "tunnel": {
+                "state": "running",
+                "provider": "cloudflared",
+                "target_url": "http://127.0.0.1:48080",
+                "public_base_url": "https://demo.trycloudflare.com",
+                "started_at": "2026-03-07T00:00:00Z",
+                "updated_at": "2026-03-07T00:00:01Z",
+                "process_id": 12345,
+                "auto_restart": true,
+                "restart_count": 0,
+                "last_error": null
+            }
+        }))
     }
 
     async fn spawn_test_server(app: Router) -> String {
