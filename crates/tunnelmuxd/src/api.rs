@@ -568,21 +568,24 @@ pub(super) async fn stream_routes(
 
 pub(super) async fn get_upstreams_health(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<TunnelQuery>,
 ) -> Json<UpstreamsHealthResponse> {
-    Json(build_upstreams_health_snapshot(&state).await)
+    Json(build_upstreams_health_snapshot(&state, query.tunnel_id.as_deref()).await)
 }
 
 pub(super) async fn stream_upstreams_health(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<StreamIntervalQuery>,
+    Query(query): Query<TunnelStreamQuery>,
 ) -> Result<Response, ApiError> {
     let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     let state_for_task = state.clone();
+    let tunnel_id = query.tunnel_id.clone();
 
     tokio::spawn(async move {
         loop {
-            let snapshot = build_upstreams_health_snapshot(&state_for_task).await;
+            let snapshot =
+                build_upstreams_health_snapshot(&state_for_task, tunnel_id.as_deref()).await;
             let payload = match serde_json::to_string(&snapshot) {
                 Ok(value) => value,
                 Err(err) => {
@@ -614,21 +617,25 @@ pub(super) async fn stream_upstreams_health(
         .into_response())
 }
 
-pub(super) async fn get_metrics(State(state): State<Arc<AppState>>) -> Json<MetricsResponse> {
-    Json(build_metrics_snapshot(&state).await)
+pub(super) async fn get_metrics(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TunnelQuery>,
+) -> Json<MetricsResponse> {
+    Json(build_metrics_snapshot(&state, query.tunnel_id.as_deref()).await)
 }
 
 pub(super) async fn stream_metrics(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<StreamIntervalQuery>,
+    Query(query): Query<TunnelStreamQuery>,
 ) -> Result<Response, ApiError> {
     let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     let state_for_task = state.clone();
+    let tunnel_id = query.tunnel_id.clone();
 
     tokio::spawn(async move {
         loop {
-            let snapshot = build_metrics_snapshot(&state_for_task).await;
+            let snapshot = build_metrics_snapshot(&state_for_task, tunnel_id.as_deref()).await;
             let payload = match serde_json::to_string(&snapshot) {
                 Ok(value) => value,
                 Err(err) => {
@@ -669,22 +676,24 @@ pub(super) async fn get_diagnostics(
 
 pub(super) async fn get_dashboard(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<TunnelQuery>,
 ) -> Result<Json<DashboardResponse>, ApiError> {
-    let snapshot = build_dashboard_snapshot(&state).await?;
+    let snapshot = build_dashboard_snapshot(&state, query.tunnel_id.as_deref()).await?;
     Ok(Json(snapshot))
 }
 
 pub(super) async fn stream_dashboard(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<StreamIntervalQuery>,
+    Query(query): Query<TunnelStreamQuery>,
 ) -> Result<Response, ApiError> {
     let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     let state_for_task = state.clone();
+    let tunnel_id = query.tunnel_id.clone();
 
     tokio::spawn(async move {
         loop {
-            match build_dashboard_snapshot(&state_for_task).await {
+            match build_dashboard_snapshot(&state_for_task, tunnel_id.as_deref()).await {
                 Ok(snapshot) => {
                     let payload = match serde_json::to_string(&snapshot) {
                         Ok(value) => value,
@@ -788,14 +797,30 @@ pub(super) async fn build_diagnostics_snapshot(
 
 pub(super) async fn build_dashboard_snapshot(
     state: &Arc<AppState>,
+    tunnel_id: Option<&str>,
 ) -> Result<DashboardResponse, ApiError> {
     reconcile_runtime_and_maybe_restart(state).await?;
 
     let (tunnel, routes) = {
         let runtime = state.runtime.lock().await;
-        (runtime.persisted.current_tunnel_status(), runtime.persisted.routes.clone())
+        let tunnel_id = tunnel_id
+            .map(ToString::to_string)
+            .unwrap_or_else(|| runtime.persisted.current_tunnel_id().to_string());
+        let routes = runtime
+            .persisted
+            .routes
+            .iter()
+            .filter(|route| route.tunnel_id == tunnel_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let tunnel = runtime
+            .persisted
+            .tunnel_status(&tunnel_id)
+            .cloned()
+            .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle));
+        (tunnel, routes)
     };
-    let metrics = build_metrics_snapshot(state).await;
+    let metrics = build_metrics_snapshot(state, tunnel_id).await;
     let health_check = metrics.health_check.clone();
     let health_map = {
         let map = state.upstream_health.lock().await;
@@ -814,10 +839,20 @@ pub(super) async fn build_dashboard_snapshot(
 
 pub(super) async fn build_upstreams_health_snapshot(
     state: &Arc<AppState>,
+    tunnel_id: Option<&str>,
 ) -> UpstreamsHealthResponse {
     let routes = {
         let runtime = state.runtime.lock().await;
-        runtime.persisted.routes.clone()
+        let tunnel_id = tunnel_id
+            .map(ToString::to_string)
+            .unwrap_or_else(|| runtime.persisted.current_tunnel_id().to_string());
+        runtime
+            .persisted
+            .routes
+            .iter()
+            .filter(|route| route.tunnel_id == tunnel_id)
+            .cloned()
+            .collect::<Vec<_>>()
     };
     let health_map = {
         let upstream_health = state.upstream_health.lock().await;
@@ -937,20 +972,40 @@ pub(super) async fn build_tunnel_workspace_snapshot(
     })
 }
 
-pub(super) async fn build_metrics_snapshot(state: &Arc<AppState>) -> MetricsResponse {
+pub(super) async fn build_metrics_snapshot(
+    state: &Arc<AppState>,
+    tunnel_id: Option<&str>,
+) -> MetricsResponse {
     let (tunnel_state, running_tunnel, pending_restart, routes) = {
         let runtime = state.runtime.lock().await;
-        let current_tunnel_id = runtime.persisted.current_tunnel_id().to_string();
+        let current_tunnel_id = tunnel_id
+            .map(ToString::to_string)
+            .unwrap_or_else(|| runtime.persisted.current_tunnel_id().to_string());
         (
-            runtime.persisted.current_tunnel_status().state,
+            runtime
+                .persisted
+                .tunnel_status(&current_tunnel_id)
+                .cloned()
+                .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle))
+                .state,
             runtime.running_tunnels.contains_key(&current_tunnel_id),
             runtime.pending_restarts.contains_key(&current_tunnel_id),
-            runtime.persisted.routes.clone(),
+            runtime
+                .persisted
+                .routes
+                .iter()
+                .filter(|route| route.tunnel_id == current_tunnel_id)
+                .cloned()
+                .collect::<Vec<_>>(),
         )
+    };
+    let default_health_check_path = {
+        let settings = state.health_check_settings.read().await;
+        settings.path.clone()
     };
     let upstream_health_entries = {
         let health_map = state.upstream_health.lock().await;
-        health_map.len()
+        collect_upstream_health_entries(&routes, &default_health_check_path, &health_map).len()
     };
     let health_check = {
         let settings = state.health_check_settings.read().await;

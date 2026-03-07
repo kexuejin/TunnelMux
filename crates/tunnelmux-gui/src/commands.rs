@@ -445,7 +445,7 @@ pub async fn load_diagnostics_summary_from_settings_dir(
         .map(|tunnel| tunnel.id.as_str())
         .unwrap_or("primary");
     let response = client
-        .diagnostics(tunnel_id)
+        .diagnostics_for_tunnel(tunnel_id)
         .await
         .map_err(command_error)?;
     Ok(DiagnosticsSummaryVm::from(response))
@@ -454,8 +454,15 @@ pub async fn load_diagnostics_summary_from_settings_dir(
 pub async fn load_upstreams_health_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<Vec<UpstreamHealthVm>, String> {
-    let (_, client) = load_client(settings_dir)?;
-    let response = client.upstreams_health().await.map_err(command_error)?;
+    let (settings, client) = load_client(settings_dir)?;
+    let tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .unwrap_or("primary");
+    let response = client
+        .upstreams_health_for_tunnel(tunnel_id)
+        .await
+        .map_err(command_error)?;
     Ok(response
         .upstreams
         .into_iter()
@@ -477,7 +484,7 @@ pub async fn load_recent_logs_from_settings_dir(
         .map(|tunnel| tunnel.id.as_str())
         .unwrap_or("primary");
     let response = client
-        .tunnel_logs(tunnel_id, lines)
+        .tunnel_logs_for_tunnel(tunnel_id, lines)
         .await
         .map_err(command_error)?;
     Ok(LogTailVm::from_response(lines, response))
@@ -497,7 +504,7 @@ pub async fn load_provider_status_summary_from_settings_dir(
         .ok()
         .map(|response| response.tunnel);
     let log_lines = client
-        .tunnel_logs(&tunnel_id, 40)
+        .tunnel_logs_for_tunnel(&tunnel_id, 40)
         .await
         .map(|response| response.lines)
         .unwrap_or_default();
@@ -1265,15 +1272,31 @@ mod tests {
     #[tokio::test]
     async fn load_upstreams_health_maps_mixed_health_states() {
         let temp_dir = prepare_temp_dir();
-        let base_url = spawn_test_server(
-            Router::new().route("/v1/upstreams/health", get(upstreams_health_handler)),
-        )
+        let captured_query = std::sync::Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let base_url = spawn_test_server(Router::new().route(
+            "/v1/upstreams/health",
+            get({
+                let captured_query = captured_query.clone();
+                move |query| upstreams_health_handler(captured_query.clone(), query)
+            }),
+        ))
         .await;
         save_settings_to_dir(
             &temp_dir,
             &GuiSettings {
                 base_url,
                 token: None,
+                current_tunnel_id: Some("tunnel-2".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "tunnel-2".to_string(),
+                    name: "API Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    gateway_target_url: "http://127.0.0.1:58080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: None,
+                    ngrok_domain: None,
+                }],
                 ..GuiSettings::default()
             },
         )
@@ -1287,6 +1310,10 @@ mod tests {
         assert_eq!(upstreams[0].health_label, "healthy");
         assert_eq!(upstreams[1].health_label, "unhealthy");
         assert_eq!(upstreams[2].health_label, "unknown");
+        assert_eq!(
+            captured_query.lock().await.as_deref(),
+            Some("tunnel-2")
+        );
     }
 
     #[tokio::test]
@@ -1608,7 +1635,11 @@ mod tests {
         })
     }
 
-    async fn upstreams_health_handler() -> Json<tunnelmux_core::UpstreamsHealthResponse> {
+    async fn upstreams_health_handler(
+        captured_query: std::sync::Arc<tokio::sync::Mutex<Option<String>>>,
+        Query(query): Query<std::collections::HashMap<String, String>>,
+    ) -> Json<tunnelmux_core::UpstreamsHealthResponse> {
+        *captured_query.lock().await = query.get("tunnel_id").cloned();
         Json(tunnelmux_core::UpstreamsHealthResponse {
             upstreams: vec![
                 tunnelmux_core::UpstreamHealthEntry {

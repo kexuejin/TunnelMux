@@ -349,6 +349,12 @@ struct StreamIntervalQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct TunnelStreamQuery {
+    tunnel_id: Option<String>,
+    interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RouteMatchQuery {
     tunnel_id: Option<String>,
     host: Option<String>,
@@ -2494,6 +2500,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_endpoint_filters_by_tunnel_id() {
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    tunnel_id: "primary".to_string(),
+                    id: "svc-a".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/a".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    tunnel_id: "tunnel-2".to_string(),
+                    id: "svc-b".to_string(),
+                    match_host: Some("api.local".to_string()),
+                    match_path_prefix: Some("/b".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+            ],
+            None,
+        );
+        {
+            let mut runtime = state.runtime.lock().await;
+            *runtime.persisted.ensure_tunnel_status_mut("primary") =
+                default_tunnel_status(TunnelState::Running);
+            *runtime.persisted.ensure_tunnel_status_mut("tunnel-2") =
+                default_tunnel_status(TunnelState::Starting);
+        }
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let dashboard: DashboardResponse = client
+            .get(format!("{base_url}/v1/dashboard"))
+            .query(&[("tunnel_id", "tunnel-2")])
+            .send()
+            .await
+            .expect("dashboard request should complete")
+            .json()
+            .await
+            .expect("dashboard payload should decode");
+
+        assert_eq!(dashboard.tunnel.state, TunnelState::Starting);
+        assert_eq!(dashboard.routes.len(), 1);
+        assert_eq!(dashboard.routes[0].id, "svc-b");
+        assert_eq!(dashboard.metrics.route_count, 1);
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
     async fn tunnel_workspace_endpoint_returns_empty_when_unconfigured() {
         let state = test_state_with_routes(vec![], None);
         let (base_url, server_task) = spawn_control_test_server(state).await;
@@ -2773,6 +2836,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_stream_endpoint_filters_by_tunnel_id() {
+        let state = test_state_with_routes(
+            vec![
+                route_for_tunnel("primary", "svc-a", Some("demo.local"), Some("/"), None, true),
+                route_for_tunnel("tunnel-2", "svc-b", Some("api.local"), Some("/"), None, true),
+            ],
+            None,
+        );
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let response = client
+            .get(format!(
+                "{base_url}/v1/dashboard/stream?interval_ms=200&tunnel_id=tunnel-2"
+            ))
+            .send()
+            .await
+            .expect("dashboard stream request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut stream = response.bytes_stream();
+        let first_chunk = timeout(Duration::from_secs(3), stream.next())
+            .await
+            .expect("stream should emit within timeout")
+            .expect("stream should produce chunk")
+            .expect("chunk should decode");
+        let body = String::from_utf8_lossy(&first_chunk);
+        assert!(body.contains("svc-b"));
+        assert!(!body.contains("svc-a"));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
     async fn tunnel_status_stream_endpoint_emits_snapshot_event() {
         let state = test_state_with_routes(vec![], None);
         let (base_url, server_task) = spawn_control_test_server(state).await;
@@ -2851,6 +2948,65 @@ mod tests {
         let body = String::from_utf8_lossy(&first_chunk);
         assert!(body.contains("event: snapshot"));
         assert!(body.contains("data: "));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn upstreams_health_endpoint_filters_by_tunnel_id() {
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    tunnel_id: "primary".to_string(),
+                    id: "svc-a".to_string(),
+                    match_host: Some("demo.local".to_string()),
+                    match_path_prefix: Some("/a".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: Some("/ready".to_string()),
+                    enabled: true,
+                },
+                RouteRule {
+                    tunnel_id: "tunnel-2".to_string(),
+                    id: "svc-b".to_string(),
+                    match_host: Some("api.local".to_string()),
+                    match_path_prefix: Some("/b".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: Some("/ready".to_string()),
+                    enabled: true,
+                },
+            ],
+            None,
+        );
+        {
+            let mut health_map = state.upstream_health.lock().await;
+            health_map.insert(
+                test_health_key("http://127.0.0.1:3000", "/ready"),
+                test_health(true),
+            );
+            health_map.insert(
+                test_health_key("http://127.0.0.1:4000", "/ready"),
+                test_health(false),
+            );
+        }
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+
+        let payload: tunnelmux_core::UpstreamsHealthResponse = client
+            .get(format!("{base_url}/v1/upstreams/health"))
+            .query(&[("tunnel_id", "tunnel-2")])
+            .send()
+            .await
+            .expect("upstreams request should complete")
+            .json()
+            .await
+            .expect("upstreams payload should decode");
+
+        assert_eq!(payload.upstreams.len(), 1);
+        assert_eq!(payload.upstreams[0].upstream_url, "http://127.0.0.1:4000");
 
         server_task.abort();
     }
@@ -3243,7 +3399,7 @@ mod tests {
 
         assert_eq!(metrics.route_count, 2);
         assert_eq!(metrics.enabled_route_count, 1);
-        assert_eq!(metrics.upstream_health_entries, 1);
+        assert_eq!(metrics.upstream_health_entries, 2);
         assert_eq!(metrics.tunnel_state, TunnelState::Idle);
         assert!(!metrics.running_tunnel);
         assert!(!metrics.pending_restart);
@@ -3255,6 +3411,89 @@ mod tests {
                 path: "/ready".to_string(),
             }
         );
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_filters_by_tunnel_id() {
+        let state = test_state_with_routes(
+            vec![
+                RouteRule {
+                    tunnel_id: "primary".to_string(),
+                    id: "svc-a".to_string(),
+                    match_host: None,
+                    match_path_prefix: Some("/a".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    tunnel_id: "tunnel-2".to_string(),
+                    id: "svc-b".to_string(),
+                    match_host: None,
+                    match_path_prefix: Some("/b".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4000".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: true,
+                },
+                RouteRule {
+                    tunnel_id: "tunnel-2".to_string(),
+                    id: "svc-c".to_string(),
+                    match_host: None,
+                    match_path_prefix: Some("/c".to_string()),
+                    strip_path_prefix: None,
+                    upstream_url: "http://127.0.0.1:4001".to_string(),
+                    fallback_upstream_url: None,
+                    health_check_path: None,
+                    enabled: false,
+                },
+            ],
+            None,
+        );
+        {
+            let mut runtime = state.runtime.lock().await;
+            *runtime.persisted.ensure_tunnel_status_mut("primary") =
+                default_tunnel_status(TunnelState::Running);
+            *runtime.persisted.ensure_tunnel_status_mut("tunnel-2") =
+                default_tunnel_status(TunnelState::Stopped);
+        }
+        {
+            let mut health_map = state.upstream_health.lock().await;
+            health_map.insert(
+                test_health_key("http://127.0.0.1:3000", "/"),
+                test_health(true),
+            );
+            health_map.insert(
+                test_health_key("http://127.0.0.1:4000", "/"),
+                test_health(false),
+            );
+            health_map.insert(
+                test_health_key("http://127.0.0.1:4001", "/"),
+                test_health(true),
+            );
+        }
+
+        let (base_url, server_task) = spawn_control_test_server(state).await;
+        let client = ReqwestClient::new();
+        let metrics: MetricsResponse = client
+            .get(format!("{base_url}/v1/metrics"))
+            .query(&[("tunnel_id", "tunnel-2")])
+            .send()
+            .await
+            .expect("metrics request should complete")
+            .json()
+            .await
+            .expect("metrics payload should decode");
+
+        assert_eq!(metrics.tunnel_state, TunnelState::Stopped);
+        assert_eq!(metrics.route_count, 2);
+        assert_eq!(metrics.enabled_route_count, 1);
+        assert_eq!(metrics.upstream_health_entries, 2);
 
         server_task.abort();
     }
