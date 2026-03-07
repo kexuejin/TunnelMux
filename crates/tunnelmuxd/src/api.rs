@@ -412,6 +412,7 @@ pub(super) async fn stop_tunnel(
     stop_running_process(&state, &request.tunnel_id)
         .await
         .map_err(|err| ApiError::internal(format!("failed to stop tunnel: {err}")))?;
+    release_tunnel_gateway_listener(&state, &request.tunnel_id).await;
 
     let status = {
         let mut runtime = state.runtime.lock().await;

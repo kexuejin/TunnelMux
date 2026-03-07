@@ -583,6 +583,18 @@ async fn ensure_tunnel_gateway_listener(
     Ok(listen_addr)
 }
 
+async fn release_tunnel_gateway_listener(state: &Arc<AppState>, tunnel_id: &str) -> bool {
+    let binding = {
+        let mut bindings = state.gateway_bindings.lock().await;
+        bindings.remove(tunnel_id)
+    };
+    if let Some(binding) = binding {
+        binding.abort_handle.abort();
+        return true;
+    }
+    false
+}
+
 fn gateway_socket_addr_from_target_url(target_url: &str) -> anyhow::Result<SocketAddr> {
     let parsed = Url::parse(target_url.trim())
         .with_context(|| format!("invalid gateway target URL: {}", target_url.trim()))?;
@@ -2785,6 +2797,44 @@ mod tests {
             primary_status.tunnel.public_base_url.as_deref(),
             Some("https://demo.trycloudflare.com")
         );
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn stop_tunnel_releases_gateway_binding() {
+        let state = test_state_with_routes(vec![], None);
+        let target_url = "http://127.0.0.1:58991".to_string();
+        let listen_addr = ensure_tunnel_gateway_listener(&state, "primary", &target_url)
+            .await
+            .expect("gateway listener should start");
+
+        {
+            let bindings = state.gateway_bindings.lock().await;
+            assert!(bindings.contains_key("primary"));
+        }
+
+        let (base_url, server_task) = spawn_control_test_server(state.clone()).await;
+        let client = ReqwestClient::new();
+        let response = client
+            .post(format!("{base_url}/v1/tunnel/stop"))
+            .json(&tunnelmux_core::TunnelStopRequest {
+                tunnel_id: "primary".to_string(),
+            })
+            .send()
+            .await
+            .expect("stop request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        {
+            let bindings = state.gateway_bindings.lock().await;
+            assert!(!bindings.contains_key("primary"));
+        }
+
+        let rebound = TcpListener::bind(listen_addr)
+            .await
+            .expect("stopped tunnel should release gateway port");
+        drop(rebound);
 
         server_task.abort();
     }
