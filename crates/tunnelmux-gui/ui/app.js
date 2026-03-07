@@ -12,10 +12,16 @@ const CLOUDFLARE_TUNNEL_DOCS_URL = 'https://developers.cloudflare.com/cloudflare
 const elements = {};
 const state = {
   busy: false,
+  settings: null,
+  tunnelWorkspace: {
+    tunnels: [],
+    current_tunnel_id: null,
+  },
   routeCache: [],
   editingOriginalId: null,
   settingsDrawerOpen: false,
   serviceDrawerOpen: false,
+  tunnelDrawerOpen: false,
   providerStatusAction: null,
   diagnostics: {
     logLines: 100,
@@ -40,6 +46,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   if (!isTauri) {
     renderStatus('Preview shell loaded outside Tauri. Open the desktop app to enable commands.', true);
+    renderTunnelWorkspace({ tunnels: [], current_tunnel_id: null });
     renderDashboard({
       connected: false,
       tunnel: null,
@@ -56,13 +63,35 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   await loadSettings();
-  await ensureLocalDaemonAndRefresh();
+  await refreshTunnelWorkspace();
+  if (state.tunnelWorkspace.tunnels.length) {
+    await ensureLocalDaemonAndRefresh();
+  } else {
+    renderStatus('No tunnel configured yet. Create a tunnel to get started.');
+    renderDashboard({
+      connected: false,
+      tunnel: null,
+      message: 'No tunnel configured yet.',
+    });
+    renderRoutes({ routes: [], message: 'Create a tunnel before adding services.' });
+    renderProviderStatusSummary(null);
+  }
 });
 
 function bindElements() {
   elements.status = document.getElementById('app-status');
   elements.retryConnection = document.getElementById('retry-connection');
   elements.openSettings = document.getElementById('open-settings');
+  elements.tunnelEmptyState = document.getElementById('tunnel-empty-state');
+  elements.createTunnelEmpty = document.getElementById('create-tunnel-empty');
+  elements.tunnelContextBar = document.getElementById('tunnel-context-bar');
+  elements.currentTunnelName = document.getElementById('current-tunnel-name');
+  elements.currentTunnelMeta = document.getElementById('current-tunnel-meta');
+  elements.tunnelSwitcherShell = document.getElementById('tunnel-switcher-shell');
+  elements.tunnelSwitcher = document.getElementById('tunnel-switcher');
+  elements.newTunnel = document.getElementById('new-tunnel');
+  elements.editTunnel = document.getElementById('edit-tunnel');
+  elements.homeGrid = document.getElementById('home-grid');
 
   elements.publicUrl = document.getElementById('dashboard-public-url');
   elements.stateBadge = document.getElementById('dashboard-state-badge');
@@ -108,6 +137,23 @@ function bindElements() {
   elements.serviceExposureMode = document.getElementById('service-exposure-mode');
   elements.serviceHostField = document.getElementById('service-host-field');
   elements.saveRoute = document.getElementById('save-route');
+
+  elements.tunnelBackdrop = document.getElementById('tunnel-backdrop');
+  elements.tunnelDrawer = document.getElementById('tunnel-drawer');
+  elements.closeTunnel = document.getElementById('close-tunnel');
+  elements.tunnelFormTitle = document.getElementById('tunnel-form-title');
+  elements.tunnelName = document.getElementById('tunnel-name');
+  elements.tunnelProvider = document.getElementById('tunnel-provider');
+  elements.tunnelAdvanced = document.getElementById('tunnel-advanced');
+  elements.tunnelGatewayTargetUrl = document.getElementById('tunnel-gateway-target-url');
+  elements.tunnelAutoRestart = document.getElementById('tunnel-auto-restart');
+  elements.tunnelCloudflaredFields = document.getElementById('tunnel-cloudflared-fields');
+  elements.tunnelCloudflaredTunnelToken = document.getElementById('tunnel-cloudflared-tunnel-token');
+  elements.tunnelNgrokFields = document.getElementById('tunnel-ngrok-fields');
+  elements.tunnelNgrokAuthtoken = document.getElementById('tunnel-ngrok-authtoken');
+  elements.tunnelNgrokDomain = document.getElementById('tunnel-ngrok-domain');
+  elements.saveTunnel = document.getElementById('save-tunnel');
+  elements.saveAndStartTunnel = document.getElementById('save-and-start-tunnel');
 
   elements.settingsBackdrop = document.getElementById('settings-backdrop');
   elements.settingsDrawer = document.getElementById('settings-drawer');
@@ -156,6 +202,14 @@ function bindEvents() {
   elements.openSettings?.addEventListener('click', () => openSettingsDrawer());
   elements.closeSettings?.addEventListener('click', closeSettingsDrawer);
   elements.settingsBackdrop?.addEventListener('click', closeSettingsDrawer);
+  elements.createTunnelEmpty?.addEventListener('click', () => openTunnelDrawer({ mode: 'create' }));
+  elements.newTunnel?.addEventListener('click', () => openTunnelDrawer({ mode: 'create' }));
+  elements.editTunnel?.addEventListener('click', () => openTunnelDrawer({ mode: 'edit' }));
+  elements.closeTunnel?.addEventListener('click', closeTunnelDrawer);
+  elements.tunnelBackdrop?.addEventListener('click', closeTunnelDrawer);
+  elements.tunnelProvider?.addEventListener('change', syncTunnelProviderFields);
+  elements.saveTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: false })));
+  elements.saveAndStartTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: true })));
 
   elements.startTunnel?.addEventListener('click', () => withBusy(startTunnel));
   elements.stopTunnel?.addEventListener('click', () => withBusy(stopTunnel));
@@ -208,6 +262,20 @@ function closeSettingsDrawer() {
   state.settingsDrawerOpen = false;
   elements.settingsBackdrop.hidden = true;
   elements.settingsDrawer.hidden = true;
+}
+
+function openTunnelDrawer({ mode }) {
+  state.tunnelDrawerOpen = true;
+  elements.tunnelBackdrop.hidden = false;
+  elements.tunnelDrawer.hidden = false;
+  elements.tunnelFormTitle.textContent = mode === 'edit' ? 'Edit Tunnel' : 'Create Tunnel';
+  populateTunnelFields(mode === 'edit' ? state.settings : null);
+}
+
+function closeTunnelDrawer() {
+  state.tunnelDrawerOpen = false;
+  elements.tunnelBackdrop.hidden = true;
+  elements.tunnelDrawer.hidden = true;
 }
 
 function openServiceDrawer() {
@@ -269,54 +337,127 @@ function collectSettingsForm() {
   return {
     base_url: elements.baseUrl.value,
     token: elements.token.value || null,
-    default_provider: elements.settingsDefaultProvider.value,
-    gateway_target_url: elements.settingsGatewayTargetUrl.value,
-    auto_restart: elements.settingsAutoRestart.checked,
-    cloudflared_tunnel_token: elements.settingsCloudflaredTunnelToken.value || null,
-    ngrok_authtoken: elements.settingsNgrokAuthtoken.value || null,
-    ngrok_domain: elements.settingsNgrokDomain.value || null,
+    tunnel_name: state.settings?.tunnel_name ?? null,
+    default_provider: state.settings?.default_provider ?? 'cloudflared',
+    gateway_target_url: state.settings?.gateway_target_url ?? 'http://127.0.0.1:48080',
+    auto_restart: state.settings?.auto_restart ?? true,
+    cloudflared_tunnel_token: state.settings?.cloudflared_tunnel_token ?? null,
+    ngrok_authtoken: state.settings?.ngrok_authtoken ?? null,
+    ngrok_domain: state.settings?.ngrok_domain ?? null,
   };
 }
 
 function populateSettingsFields(settings) {
+  state.settings = settings;
   elements.baseUrl.value = settings.base_url ?? '';
   elements.token.value = settings.token ?? '';
-  elements.settingsDefaultProvider.value = settings.default_provider ?? 'cloudflared';
-  elements.settingsGatewayTargetUrl.value = settings.gateway_target_url ?? 'http://127.0.0.1:48080';
-  elements.settingsAutoRestart.checked = Boolean(settings.auto_restart);
-  elements.settingsCloudflaredTunnelToken.value = settings.cloudflared_tunnel_token ?? '';
-  elements.settingsNgrokAuthtoken.value = settings.ngrok_authtoken ?? '';
-  elements.settingsNgrokDomain.value = settings.ngrok_domain ?? '';
-  const shouldOpenAdvanced =
-    Boolean(elements.settingsCloudflaredTunnelToken.value) ||
-    elements.settingsDefaultProvider.value === 'ngrok' ||
-    Boolean(elements.settingsNgrokAuthtoken.value) ||
-    Boolean(elements.settingsNgrokDomain.value);
-  if (elements.settingsAdvanced) {
-    elements.settingsAdvanced.open = shouldOpenAdvanced;
-  }
   syncProviderHints();
 }
 
 function syncProviderHints() {
-  const provider = elements.settingsDefaultProvider.value || 'cloudflared';
-  const gatewayTarget = elements.settingsGatewayTargetUrl.value || 'http://127.0.0.1:48080';
-  const restartLabel = elements.settingsAutoRestart.checked ? 'enabled' : 'disabled';
-  const cloudflaredMode = elements.settingsCloudflaredTunnelToken?.value ? 'named tunnel' : 'quick tunnel';
-  if (elements.settingsCloudflaredFields) {
-    elements.settingsCloudflaredFields.hidden = provider !== 'cloudflared';
-  }
-  if (elements.settingsNgrokFields) {
-    elements.settingsNgrokFields.hidden = provider !== 'ngrok';
-  }
-  if (elements.settingsCloudflaredNote) {
-    elements.settingsCloudflaredNote.hidden = provider !== 'cloudflared';
-  }
+  const provider = state.settings?.default_provider ?? 'cloudflared';
+  const gatewayTarget = state.settings?.gateway_target_url ?? 'http://127.0.0.1:48080';
+  const restartLabel = state.settings?.auto_restart ? 'enabled' : 'disabled';
+  const cloudflaredMode = state.settings?.cloudflared_tunnel_token ? 'named tunnel' : 'quick tunnel';
   if (provider === 'cloudflared') {
     elements.homeProviderHint.textContent = `${provider} ${cloudflaredMode} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
     return;
   }
   elements.homeProviderHint.textContent = `${provider} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
+}
+
+async function refreshTunnelWorkspace() {
+  try {
+    const workspace = await invoke('load_tunnel_workspace');
+    state.tunnelWorkspace = workspace;
+    renderTunnelWorkspace(workspace);
+  } catch (error) {
+    renderStatus(`Failed to load tunnels: ${formatError(error)}`, true);
+    renderTunnelWorkspace({ tunnels: [], current_tunnel_id: null });
+  }
+}
+
+function renderTunnelWorkspace(workspace) {
+  const tunnels = workspace?.tunnels ?? [];
+  const hasCurrentTunnel = tunnels.length > 0;
+  const currentTunnel = hasCurrentTunnel ? tunnels[0] : null;
+
+  elements.tunnelEmptyState.hidden = hasCurrentTunnel;
+  elements.tunnelContextBar.hidden = !hasCurrentTunnel;
+  elements.homeGrid.hidden = !hasCurrentTunnel;
+  elements.servicesShell.hidden = !hasCurrentTunnel;
+  elements.troubleshootingDetails.hidden = !hasCurrentTunnel;
+
+  if (!hasCurrentTunnel) {
+    return;
+  }
+
+  elements.currentTunnelName.textContent = currentTunnel.name;
+  elements.currentTunnelMeta.textContent = currentTunnel.provider;
+  elements.tunnelSwitcherShell.hidden = tunnels.length <= 1;
+  if (elements.tunnelSwitcher) {
+    elements.tunnelSwitcher.innerHTML = '';
+    tunnels.forEach((tunnel) => {
+      const option = document.createElement('option');
+      option.value = tunnel.id;
+      option.textContent = tunnel.name;
+      option.selected = tunnel.id === workspace.current_tunnel_id;
+      elements.tunnelSwitcher.appendChild(option);
+    });
+  }
+}
+
+function populateTunnelFields(settings) {
+  elements.tunnelName.value = settings?.tunnel_name ?? '';
+  elements.tunnelProvider.value = settings?.default_provider ?? 'cloudflared';
+  elements.tunnelGatewayTargetUrl.value = settings?.gateway_target_url ?? 'http://127.0.0.1:48080';
+  elements.tunnelAutoRestart.checked = Boolean(settings?.auto_restart ?? true);
+  elements.tunnelCloudflaredTunnelToken.value = settings?.cloudflared_tunnel_token ?? '';
+  elements.tunnelNgrokAuthtoken.value = settings?.ngrok_authtoken ?? '';
+  elements.tunnelNgrokDomain.value = settings?.ngrok_domain ?? '';
+  const shouldOpenAdvanced =
+    Boolean(elements.tunnelCloudflaredTunnelToken.value) ||
+    elements.tunnelProvider.value === 'ngrok' ||
+    Boolean(elements.tunnelNgrokAuthtoken.value) ||
+    Boolean(elements.tunnelNgrokDomain.value);
+  elements.tunnelAdvanced.open = shouldOpenAdvanced;
+  syncTunnelProviderFields();
+}
+
+function syncTunnelProviderFields() {
+  const provider = elements.tunnelProvider.value || 'cloudflared';
+  elements.tunnelCloudflaredFields.hidden = provider !== 'cloudflared';
+  elements.tunnelNgrokFields.hidden = provider !== 'ngrok';
+}
+
+function collectTunnelForm() {
+  return {
+    ...collectSettingsForm(),
+    tunnel_name: elements.tunnelName.value.trim() || null,
+    default_provider: elements.tunnelProvider.value,
+    gateway_target_url: elements.tunnelGatewayTargetUrl.value,
+    auto_restart: elements.tunnelAutoRestart.checked,
+    cloudflared_tunnel_token: elements.tunnelCloudflaredTunnelToken.value || null,
+    ngrok_authtoken: elements.tunnelNgrokAuthtoken.value || null,
+    ngrok_domain: elements.tunnelNgrokDomain.value || null,
+  };
+}
+
+async function saveTunnel({ startNow }) {
+  try {
+    const settings = await invoke('save_settings', { settings: collectTunnelForm() });
+    populateSettingsFields(settings);
+    await refreshTunnelWorkspace();
+    closeTunnelDrawer();
+    if (startNow) {
+      await ensureLocalDaemonAndRefresh();
+      await startTunnel();
+      return;
+    }
+    renderStatus('Tunnel saved. Start it when you are ready.');
+  } catch (error) {
+    renderStatus(`Failed to save tunnel: ${formatError(error)}`, true);
+  }
 }
 
 async function loadSettings() {
@@ -332,8 +473,7 @@ async function saveSettings() {
   try {
     const settings = await invoke('save_settings', { settings: collectSettingsForm() });
     populateSettingsFields(settings);
-    renderStatus('Settings saved. Reconnecting to local TunnelMux…');
-    await ensureLocalDaemonAndRefresh();
+    renderStatus('App settings saved.');
     closeSettingsDrawer();
   } catch (error) {
     renderStatus(`Failed to save settings: ${formatError(error)}`, true);

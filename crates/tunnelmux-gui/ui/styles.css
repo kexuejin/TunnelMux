@@ -96,6 +96,20 @@ select:disabled {
   gap: 22px;
 }
 
+.tunnel-empty-state,
+.tunnel-context-bar {
+  display: block;
+}
+
+.tunnel-switcher-shell {
+  min-width: 180px;
+  margin: 0;
+}
+
+.tunnel-drawer-footer {
+  gap: 12px;
+}
+
 .home-grid {
   display: grid;
   gap: 20px;

@@ -151,6 +151,19 @@ impl ProviderStatusVm {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TunnelProfileVm {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TunnelWorkspaceVm {
+    pub tunnels: Vec<TunnelProfileVm>,
+    pub current_tunnel_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteFormData {
     pub original_id: Option<String>,
     pub id: String,
