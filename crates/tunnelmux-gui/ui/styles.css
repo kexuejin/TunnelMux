@@ -45,6 +45,12 @@ button.secondary {
   border: 1px solid rgba(148, 163, 184, 0.16);
 }
 
+button.danger-solid {
+  background: linear-gradient(180deg, #dc2626 0%, #b91c1c 100%);
+  color: #fff1f2;
+  box-shadow: 0 10px 24px rgba(185, 28, 28, 0.24);
+}
+
 button:disabled,
 input:disabled,
 select:disabled {
@@ -562,6 +568,29 @@ select {
   display: grid;
   grid-template-rows: auto 1fr auto;
   gap: 16px;
+}
+
+.confirm-dialog {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px));
+  padding: 24px 22px;
+  background: rgba(9, 17, 31, 0.98);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 22px;
+  box-shadow: 0 24px 72px rgba(2, 6, 23, 0.56);
+  z-index: 50;
+}
+
+.confirm-dialog .panel-subtle {
+  white-space: pre-line;
+}
+
+.confirm-dialog-footer {
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 .drawer-body {
