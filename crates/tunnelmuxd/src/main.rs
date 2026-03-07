@@ -188,7 +188,7 @@ struct RunningTunnel {
     auto_restart: bool,
     restart_count: u32,
     started_at: String,
-    public_base_url: String,
+    public_base_url: Option<String>,
     process_id: Option<u32>,
 }
 
@@ -254,7 +254,7 @@ struct UpstreamHealthKey {
 #[derive(Debug)]
 struct SpawnedTunnel {
     child: Child,
-    public_url: String,
+    public_url: Option<String>,
     process_id: Option<u32>,
 }
 
@@ -2485,7 +2485,7 @@ mod tests {
                 auto_restart: true,
                 restart_count: 0,
                 started_at: "2026-03-05T00:00:00Z".to_string(),
-                public_base_url: "https://demo.trycloudflare.com".to_string(),
+                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
                 process_id: None,
             }),
             pending_restart: None,
@@ -2518,7 +2518,7 @@ mod tests {
                 auto_restart: true,
                 restart_count: 2,
                 started_at: "2026-03-05T00:00:00Z".to_string(),
-                public_base_url: "https://demo.trycloudflare.com".to_string(),
+                public_base_url: Some("https://demo.trycloudflare.com".to_string()),
                 process_id: None,
             }),
             pending_restart: None,

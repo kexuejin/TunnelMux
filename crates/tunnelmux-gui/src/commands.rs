@@ -204,12 +204,24 @@ pub async fn refresh_dashboard_from_settings_dir(
     match client.health().await {
         Ok(health) => match client.tunnel_status().await {
             Ok(tunnel) => {
-                let message = tunnel.tunnel.last_error.clone().filter(|value| {
-                    matches!(
-                        tunnel.tunnel.state,
-                        tunnelmux_core::TunnelState::Stopped | tunnelmux_core::TunnelState::Error
-                    ) && !value.trim().is_empty()
-                });
+                let message = if tunnel.tunnel.state == tunnelmux_core::TunnelState::Running
+                    && tunnel.tunnel.provider == Some(TunnelProvider::Cloudflared)
+                    && tunnel.tunnel.public_base_url.is_none()
+                    && settings.cloudflared_tunnel_token.is_some()
+                {
+                    Some(
+                        "Cloudflared named tunnel is running. Public hostname is managed in Cloudflare."
+                            .to_string(),
+                    )
+                } else {
+                    tunnel.tunnel.last_error.clone().filter(|value| {
+                        matches!(
+                            tunnel.tunnel.state,
+                            tunnelmux_core::TunnelState::Stopped
+                                | tunnelmux_core::TunnelState::Error
+                        ) && !value.trim().is_empty()
+                    })
+                };
                 Ok(DashboardSnapshot {
                     connected: true,
                     settings,
@@ -651,6 +663,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_dashboard_reports_running_cloudflared_named_tunnel_without_public_url() {
+        let temp_dir = prepare_temp_dir();
+        let base_url = spawn_test_server(
+            Router::new()
+                .route("/v1/health", get(health_handler))
+                .route("/v1/tunnel/status", get(running_named_tunnel_status_handler)),
+        )
+        .await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                default_provider: TunnelProvider::Cloudflared,
+                gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: true,
+                cloudflared_tunnel_token: Some("cf-token".to_string()),
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let snapshot = refresh_dashboard_from_settings_dir(&temp_dir)
+            .await
+            .expect("dashboard refresh should succeed");
+
+        assert!(snapshot.connected);
+        assert_eq!(
+            snapshot.message.as_deref(),
+            Some("Cloudflared named tunnel is running. Public hostname is managed in Cloudflare.")
+        );
+    }
+
+    #[tokio::test]
     async fn list_routes_returns_onboarding_message_when_empty() {
         let temp_dir = prepare_temp_dir();
         let routes = std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -716,6 +762,23 @@ mod tests {
                 auto_restart: true,
                 restart_count: 0,
                 last_error: Some("daemon restarted; previous tunnel process was detached".to_string()),
+            },
+        })
+    }
+
+    async fn running_named_tunnel_status_handler() -> Json<TunnelStatusResponse> {
+        Json(TunnelStatusResponse {
+            tunnel: TunnelStatus {
+                state: tunnelmux_core::TunnelState::Running,
+                provider: Some(TunnelProvider::Cloudflared),
+                target_url: Some("http://127.0.0.1:48080".to_string()),
+                public_base_url: None,
+                started_at: Some("2026-03-07T00:00:00Z".to_string()),
+                updated_at: "2026-03-07T00:00:01Z".to_string(),
+                process_id: Some(12345),
+                auto_restart: true,
+                restart_count: 0,
+                last_error: None,
             },
         })
     }
