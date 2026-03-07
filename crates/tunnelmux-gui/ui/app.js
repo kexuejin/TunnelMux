@@ -23,6 +23,7 @@ const state = {
   serviceDrawerOpen: false,
   tunnelDrawerOpen: false,
   tunnelEditorMode: 'create',
+  confirmResolver: null,
   providerStatusAction: null,
   diagnostics: {
     logLines: 100,
@@ -157,6 +158,12 @@ function bindElements() {
   elements.deleteTunnel = document.getElementById('delete-tunnel');
   elements.saveTunnel = document.getElementById('save-tunnel');
   elements.saveAndStartTunnel = document.getElementById('save-and-start-tunnel');
+  elements.confirmBackdrop = document.getElementById('confirm-backdrop');
+  elements.confirmDialog = document.getElementById('confirm-dialog');
+  elements.confirmTitle = document.getElementById('confirm-title');
+  elements.confirmMessage = document.getElementById('confirm-message');
+  elements.confirmCancel = document.getElementById('confirm-cancel');
+  elements.confirmConfirm = document.getElementById('confirm-confirm');
 
   elements.settingsBackdrop = document.getElementById('settings-backdrop');
   elements.settingsDrawer = document.getElementById('settings-drawer');
@@ -200,9 +207,17 @@ function bindEvents() {
   elements.tunnelBackdrop?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelProvider?.addEventListener('change', syncTunnelProviderFields);
   elements.tunnelSwitcher?.addEventListener('change', () => withBusy(switchTunnel));
-  elements.deleteTunnel?.addEventListener('click', () => withBusy(deleteTunnelProfile));
+  elements.deleteTunnel?.addEventListener('click', deleteTunnelProfile);
   elements.saveTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: false })));
   elements.saveAndStartTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: true })));
+  elements.confirmBackdrop?.addEventListener('click', () => closeConfirmDialog(false));
+  elements.confirmCancel?.addEventListener('click', () => closeConfirmDialog(false));
+  elements.confirmConfirm?.addEventListener('click', () => closeConfirmDialog(true));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.confirmResolver) {
+      closeConfirmDialog(false);
+    }
+  });
 
   elements.startTunnel?.addEventListener('click', () => withBusy(startTunnel));
   elements.stopTunnel?.addEventListener('click', () => withBusy(stopTunnel));
@@ -504,20 +519,26 @@ async function deleteTunnelProfile() {
   const currentSummary = (state.tunnelWorkspace?.tunnels ?? []).find((tunnel) => tunnel.id === current.id);
   const serviceCount = Number(currentSummary?.route_count ?? 0);
   const stateLabel = titleCase(currentSummary?.state ?? 'idle');
-  const confirmMessage = serviceCount > 0
-    ? `Delete tunnel '${current.name}'?\n\nState: ${stateLabel}\nServices removed from daemon: ${serviceCount}`
-    : `Delete tunnel '${current.name}'?\n\nState: ${stateLabel}`;
-  if (!window.confirm(confirmMessage)) {
+  const confirmed = await requestConfirmation({
+    title: `Delete ${current.name}?`,
+    message: serviceCount > 0
+      ? `State: ${stateLabel}\nServices removed from daemon: ${serviceCount}`
+      : `State: ${stateLabel}`,
+    confirmLabel: 'Delete Tunnel',
+  });
+  if (!confirmed) {
     return;
   }
 
-  const workspace = await invoke('delete_tunnel_profile', { id: current.id });
-  state.tunnelWorkspace = workspace;
-  await loadSettings();
-  renderTunnelWorkspace(workspace);
-  closeTunnelDrawer();
-  await ensureLocalDaemonAndRefresh();
-  renderStatus(`Deleted tunnel ${current.name}.`);
+  await withBusy(async () => {
+    const workspace = await invoke('delete_tunnel_profile', { id: current.id });
+    state.tunnelWorkspace = workspace;
+    await loadSettings();
+    renderTunnelWorkspace(workspace);
+    closeTunnelDrawer();
+    await ensureLocalDaemonAndRefresh();
+    renderStatus(`Deleted tunnel ${current.name}.`);
+  });
 }
 
 async function loadSettings() {
@@ -667,22 +688,33 @@ async function saveRoute() {
 }
 
 async function deleteRoute(id) {
-  if (!window.confirm(`Delete service '${id}'?`)) {
+  const route = state.routeCache.find((item) => item.id === id);
+  const confirmed = await requestConfirmation({
+    title: `Delete ${id}?`,
+    message: [
+      route ? `Exposure: ${describeRouteExposure(route)}` : null,
+      route?.upstream_url ? `Local URL: ${route.upstream_url}` : null,
+    ].filter(Boolean).join('\n'),
+    confirmLabel: 'Delete Service',
+  });
+  if (!confirmed) {
     return;
   }
 
-  try {
-    const snapshot = await invoke('delete_route', { id });
-    renderRoutes(snapshot);
-    await refreshTunnelWorkspace();
-    renderStatus(snapshot.message ?? 'Service deleted.');
-    if (state.editingOriginalId === id) {
-      resetRouteForm();
-      closeServiceDrawer();
+  await withBusy(async () => {
+    try {
+      const snapshot = await invoke('delete_route', { id });
+      renderRoutes(snapshot);
+      await refreshTunnelWorkspace();
+      renderStatus(snapshot.message ?? 'Service deleted.');
+      if (state.editingOriginalId === id) {
+        resetRouteForm();
+        closeServiceDrawer();
+      }
+    } catch (error) {
+      renderStatus(`Failed to delete service: ${formatError(error)}`, true);
     }
-  } catch (error) {
-    renderStatus(`Failed to delete service: ${formatError(error)}`, true);
-  }
+  });
 }
 
 async function toggleRouteEnabled(id) {
@@ -1051,7 +1083,7 @@ function bindRouteActionButtons() {
   });
 
   document.querySelectorAll('[data-route-action="delete"]').forEach((button) => {
-    button.addEventListener('click', () => withBusy(() => deleteRoute(button.dataset.routeId)));
+    button.addEventListener('click', () => deleteRoute(button.dataset.routeId));
   });
 }
 
@@ -1162,6 +1194,30 @@ function ensurePath(value) {
 function renderStatus(message, isError = false) {
   elements.status.textContent = message;
   elements.status.classList.toggle('error', isError);
+}
+
+async function requestConfirmation({ title, message, confirmLabel }) {
+  elements.confirmTitle.textContent = title;
+  elements.confirmMessage.textContent = message || 'Please confirm this action.';
+  elements.confirmConfirm.textContent = confirmLabel || 'Confirm';
+  elements.confirmBackdrop.hidden = false;
+  elements.confirmDialog.hidden = false;
+
+  return new Promise((resolve) => {
+    state.confirmResolver = resolve;
+  });
+}
+
+function closeConfirmDialog(confirmed) {
+  if (!state.confirmResolver) {
+    return;
+  }
+
+  const resolve = state.confirmResolver;
+  state.confirmResolver = null;
+  elements.confirmBackdrop.hidden = true;
+  elements.confirmDialog.hidden = true;
+  resolve(Boolean(confirmed));
 }
 
 function formatTunnelOptionLabel(tunnel) {
