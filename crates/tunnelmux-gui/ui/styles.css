@@ -289,6 +289,20 @@ h1 {
   max-width: 720px;
 }
 
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.inline-action {
+  padding: 7px 12px;
+  border-radius: 999px;
+  min-height: auto;
+  font-size: 0.84rem;
+}
+
 .subtle.error,
 .panel-subtle.error {
   color: #fecaca;
@@ -657,6 +671,10 @@ select {
   display: grid;
   grid-template-rows: auto 1fr auto;
   gap: 16px;
+}
+
+.error-details-dialog {
+  width: min(760px, 100vw);
 }
 
 .confirm-dialog {

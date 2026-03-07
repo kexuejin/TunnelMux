@@ -3,6 +3,7 @@ import {
   formatCurrentTunnelUrl,
   formatTunnelOptionLabel,
   resolveDashboardStatus,
+  shouldShowErrorDetailsAction,
   titleCase,
   tunnelPickerRowClass,
 } from './tunnel-picker-helpers.mjs';
@@ -92,6 +93,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 function bindElements() {
   elements.status = document.getElementById('app-status');
+  elements.statusErrorDetails = document.getElementById('status-error-details');
   elements.retryConnection = document.getElementById('retry-connection');
   elements.openSettings = document.getElementById('open-settings');
   elements.tunnelEmptyState = document.getElementById('tunnel-empty-state');
@@ -186,6 +188,9 @@ function bindElements() {
   elements.saveSettings = document.getElementById('save-settings');
 
   elements.troubleshootingDetails = document.getElementById('troubleshooting-details');
+  elements.errorDetailsBackdrop = document.getElementById('error-details-backdrop');
+  elements.errorDetailsDialog = document.getElementById('error-details-dialog');
+  elements.closeErrorDetails = document.getElementById('close-error-details');
   elements.refreshDiagnostics = document.getElementById('refresh-diagnostics');
   elements.refreshLogs = document.getElementById('refresh-logs');
   elements.clearLogs = document.getElementById('clear-logs');
@@ -226,6 +231,9 @@ function bindEvents() {
   elements.confirmBackdrop?.addEventListener('click', () => closeConfirmDialog(false));
   elements.confirmCancel?.addEventListener('click', () => closeConfirmDialog(false));
   elements.confirmConfirm?.addEventListener('click', () => closeConfirmDialog(true));
+  elements.statusErrorDetails?.addEventListener('click', () => void openErrorDetailsDialog());
+  elements.errorDetailsBackdrop?.addEventListener('click', closeErrorDetailsDialog);
+  elements.closeErrorDetails?.addEventListener('click', closeErrorDetailsDialog);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && state.confirmResolver) {
       closeConfirmDialog(false);
@@ -233,6 +241,10 @@ function bindEvents() {
     }
     if (event.key === 'Escape' && state.tunnelPickerOpen) {
       closeTunnelPicker();
+      return;
+    }
+    if (event.key === 'Escape' && !elements.errorDetailsDialog?.hidden) {
+      closeErrorDetailsDialog();
     }
   });
   document.addEventListener('click', (event) => {
@@ -276,13 +288,8 @@ function bindEvents() {
   elements.clearLogs?.addEventListener('click', clearDisplayedLogs);
   elements.logLinesSelect?.addEventListener('change', () => {
     state.diagnostics.logLines = Number(elements.logLinesSelect.value) || 100;
-    if (elements.troubleshootingDetails?.open) {
+    if (!elements.errorDetailsDialog?.hidden) {
       void refreshRecentLogs({ manual: false });
-    }
-  });
-  elements.troubleshootingDetails?.addEventListener('toggle', () => {
-    if (elements.troubleshootingDetails.open) {
-      void refreshDiagnosticsWorkspace({ manual: false });
     }
   });
 }
@@ -419,10 +426,10 @@ function renderTunnelWorkspace(workspace) {
   elements.tunnelContextBar.hidden = !hasCurrentTunnel;
   elements.homeGrid.hidden = !hasCurrentTunnel;
   elements.servicesShell.hidden = !hasCurrentTunnel;
-  elements.troubleshootingDetails.hidden = !hasCurrentTunnel;
 
   if (!hasCurrentTunnel) {
     closeTunnelPicker();
+    closeErrorDetailsDialog();
     return;
   }
 
@@ -1267,6 +1274,32 @@ function ensurePath(value) {
 function renderStatus(message, isError = false) {
   elements.status.textContent = message;
   elements.status.classList.toggle('error', isError);
+  if (elements.statusErrorDetails) {
+    elements.statusErrorDetails.hidden = !shouldShowErrorDetailsAction({ isError });
+  }
+}
+
+async function openErrorDetailsDialog() {
+  if (elements.errorDetailsBackdrop) {
+    elements.errorDetailsBackdrop.hidden = false;
+  }
+  if (elements.errorDetailsDialog) {
+    elements.errorDetailsDialog.hidden = false;
+  }
+  if (elements.diagnosticsOverview) {
+    elements.diagnosticsOverview.textContent = elements.status.textContent || 'Error details';
+    elements.diagnosticsOverview.classList.add('error');
+  }
+  await refreshDiagnosticsWorkspace({ manual: false });
+}
+
+function closeErrorDetailsDialog() {
+  if (elements.errorDetailsBackdrop) {
+    elements.errorDetailsBackdrop.hidden = true;
+  }
+  if (elements.errorDetailsDialog) {
+    elements.errorDetailsDialog.hidden = true;
+  }
 }
 
 async function requestConfirmation({ title, message, confirmLabel }) {

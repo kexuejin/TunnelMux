@@ -49,3 +49,7 @@ export function resolveDashboardStatus(snapshot) {
     isError: true,
   };
 }
+
+export function shouldShowErrorDetailsAction({ isError }) {
+  return Boolean(isError);
+}
