@@ -160,6 +160,7 @@ pub struct TunnelProfileVm {
     pub state: String,
     pub route_count: usize,
     pub enabled_route_count: usize,
+    pub public_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

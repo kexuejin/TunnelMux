@@ -555,6 +555,7 @@ pub async fn load_tunnel_workspace_from_settings_dir(
                     .unwrap_or_else(|| "idle".to_string()),
                 route_count: summary.map(|item| item.route_count).unwrap_or(0),
                 enabled_route_count: summary.map(|item| item.enabled_route_count).unwrap_or(0),
+                public_base_url: summary.and_then(|item| item.public_base_url.clone()),
             }
         })
         .collect();
@@ -662,6 +663,7 @@ fn load_tunnel_workspace_from_settings_dir_without_daemon(
             state: "idle".to_string(),
             route_count: 0,
             enabled_route_count: 0,
+            public_base_url: None,
         })
         .collect();
 
@@ -1515,7 +1517,12 @@ mod tests {
         assert_eq!(workspace.tunnels.len(), 2);
         assert_eq!(workspace.tunnels[0].state, "running");
         assert_eq!(workspace.tunnels[0].route_count, 3);
+        assert_eq!(
+            workspace.tunnels[0].public_base_url.as_deref(),
+            Some("https://demo.trycloudflare.com")
+        );
         assert_eq!(workspace.tunnels[1].state, "stopped");
+        assert_eq!(workspace.tunnels[1].public_base_url, None);
         assert_eq!(workspace.tunnels[1].enabled_route_count, 1);
     }
 

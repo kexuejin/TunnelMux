@@ -31,7 +31,7 @@
           <p class="eyebrow card-eyebrow">Get Started</p>
           <h2>No tunnel yet</h2>
           <p class="panel-subtle">
-            Create your first tunnel, choose a provider, and then start attaching local services to it.
+            Create a tunnel, start it, then add your first local service.
           </p>
           <div class="actions">
             <button id="create-tunnel-empty" type="button">Create Tunnel</button>
@@ -47,6 +47,7 @@
                 <span id="current-tunnel-badge" class="status-pill idle">Idle</span>
               </div>
               <p id="current-tunnel-meta" class="panel-subtle">cloudflared • quick tunnel</p>
+              <p id="current-tunnel-url" class="panel-subtle" hidden>Public URL not active.</p>
             </div>
             <div class="actions">
               <label id="tunnel-switcher-shell" class="field tunnel-switcher-shell" hidden>
@@ -114,7 +115,7 @@
           <div id="routes-empty" class="empty-state">
             <p id="routes-empty-title" class="empty-title">No services yet.</p>
             <p id="routes-empty-copy" class="panel-subtle">
-              Add your first local service to replace the default welcome page.
+              Add one local URL to replace the default welcome page.
             </p>
             <div class="actions">
               <button id="new-route-empty" type="button">Add Service</button>
