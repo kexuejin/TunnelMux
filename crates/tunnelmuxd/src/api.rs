@@ -346,7 +346,7 @@ pub(super) async fn start_tunnel(
             state: TunnelState::Running,
             provider: Some(request.provider.clone()),
             target_url: Some(request.target_url.clone()),
-            public_base_url: Some(spawned.public_url.clone()),
+            public_base_url: spawned.public_url.clone(),
             started_at: Some(started_at.clone()),
             updated_at: now_iso(),
             process_id: spawned.process_id,

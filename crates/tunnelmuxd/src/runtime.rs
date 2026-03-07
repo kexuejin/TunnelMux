@@ -282,7 +282,7 @@ pub(super) fn reconcile_runtime_tunnel_state(
                         runtime.persisted.tunnel = default_tunnel_status(TunnelState::Stopped);
                         runtime.persisted.tunnel.provider = Some(provider);
                         runtime.persisted.tunnel.target_url = Some(target_url);
-                        runtime.persisted.tunnel.public_base_url = Some(public_base_url);
+                        runtime.persisted.tunnel.public_base_url = public_base_url.clone();
                         runtime.persisted.tunnel.started_at = Some(started_at);
                         runtime.persisted.tunnel.auto_restart = auto_restart;
                         runtime.persisted.tunnel.restart_count = restart_count;
@@ -324,7 +324,7 @@ pub(super) fn reconcile_runtime_tunnel_state(
                         runtime.persisted.tunnel = default_tunnel_status(TunnelState::Error);
                         runtime.persisted.tunnel.provider = Some(provider);
                         runtime.persisted.tunnel.target_url = Some(target_url);
-                        runtime.persisted.tunnel.public_base_url = Some(public_base_url);
+                        runtime.persisted.tunnel.public_base_url = public_base_url.clone();
                         runtime.persisted.tunnel.started_at = Some(started_at);
                         runtime.persisted.tunnel.auto_restart = auto_restart;
                         runtime.persisted.tunnel.restart_count = restart_count;
@@ -339,8 +339,7 @@ pub(super) fn reconcile_runtime_tunnel_state(
                 let should_update = runtime.persisted.tunnel.state != TunnelState::Running
                     || runtime.persisted.tunnel.provider != Some(running.provider.clone())
                     || runtime.persisted.tunnel.target_url != Some(running.target_url.clone())
-                    || runtime.persisted.tunnel.public_base_url
-                        != Some(running.public_base_url.clone())
+                    || runtime.persisted.tunnel.public_base_url != running.public_base_url
                     || runtime.persisted.tunnel.started_at != Some(running.started_at.clone())
                     || runtime.persisted.tunnel.process_id != running.process_id
                     || runtime.persisted.tunnel.auto_restart != running.auto_restart
@@ -351,7 +350,7 @@ pub(super) fn reconcile_runtime_tunnel_state(
                         state: TunnelState::Running,
                         provider: Some(running.provider.clone()),
                         target_url: Some(running.target_url.clone()),
-                        public_base_url: Some(running.public_base_url.clone()),
+                        public_base_url: running.public_base_url.clone(),
                         started_at: Some(running.started_at.clone()),
                         updated_at: now_iso(),
                         process_id: running.process_id,
@@ -415,7 +414,7 @@ pub(super) async fn process_pending_restart(state: &Arc<AppState>) -> Result<boo
                 state: TunnelState::Running,
                 provider: Some(pending.provider.clone()),
                 target_url: Some(pending.target_url.clone()),
-                public_base_url: Some(spawned.public_url.clone()),
+                public_base_url: spawned.public_url.clone(),
                 started_at: Some(pending.started_at.clone()),
                 updated_at: now_iso(),
                 process_id: spawned.process_id,
@@ -518,9 +517,9 @@ pub(super) async fn spawn_provider_process(
         .spawn()
         .map_err(|error| provider_spawn_error(&request.provider, provider_binary, error))?;
     let process_id = child.id();
-    let public_url = wait_for_public_url(
+    let public_url = wait_for_provider_startup(
         &mut child,
-        request.provider.clone(),
+        request,
         Duration::from_millis(state.ready_timeout_ms),
         state.provider_log_file.clone(),
     )
@@ -628,12 +627,34 @@ pub(super) fn provider_spawn_error(
     anyhow!(error).context(format!("failed to spawn provider command: {:?}", provider))
 }
 
-pub(super) async fn wait_for_public_url(
+fn cloudflared_uses_named_tunnel_token(request: &TunnelStartRequest) -> bool {
+    request.provider == TunnelProvider::Cloudflared
+        && request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("cloudflaredTunnelToken"))
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+            .is_some()
+}
+
+fn provider_requires_public_url(request: &TunnelStartRequest) -> bool {
+    !cloudflared_uses_named_tunnel_token(request)
+}
+
+pub(super) async fn wait_for_provider_startup(
     child: &mut Child,
-    provider: TunnelProvider,
+    request: &TunnelStartRequest,
     timeout_duration: Duration,
     provider_log_file: PathBuf,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Option<String>> {
+    let provider = request.provider.clone();
+    let require_public_url = provider_requires_public_url(request);
+    let ready_after = if require_public_url {
+        timeout_duration
+    } else {
+        timeout_duration.min(Duration::from_secs(5))
+    };
     let stdout = child
         .stdout
         .take()
@@ -660,41 +681,70 @@ pub(super) async fn wait_for_public_url(
     ));
 
     let start = Instant::now();
+    let mut discovered_url = None;
     loop {
         if let Some(status) = child.try_wait()? {
             return Err(anyhow!(
-                "provider exited before publishing public URL: {status}"
+                "{}: {status}",
+                if require_public_url {
+                    "provider exited before publishing public URL"
+                } else {
+                    "provider exited before startup completed"
+                }
             ));
         }
 
         let elapsed = start.elapsed();
+        if !require_public_url && elapsed >= ready_after {
+            return Ok(discovered_url);
+        }
+
         if elapsed >= timeout_duration {
             let _ = terminate_child(child).await;
             return Err(anyhow!(
-                "provider did not report public URL within {} ms",
+                "{} within {} ms",
+                if require_public_url {
+                    "provider did not report public URL"
+                } else {
+                    "provider did not stay up long enough to confirm startup"
+                },
                 timeout_duration.as_millis()
             ));
         }
 
-        let remaining = timeout_duration.saturating_sub(elapsed);
+        let deadline = if require_public_url {
+            timeout_duration
+        } else {
+            ready_after
+        };
+        let remaining = deadline.saturating_sub(elapsed);
         match timeout(remaining, rx.recv()).await {
             Ok(Some(line)) => {
                 if let Some(url) = extract_public_url(&provider, &line) {
-                    return Ok(url);
+                    discovered_url = Some(url);
+                    if require_public_url {
+                        return Ok(discovered_url);
+                    }
                 }
             }
             Ok(None) => {
-                let _ = terminate_child(child).await;
-                return Err(anyhow!(
-                    "provider log stream closed before URL was discovered"
-                ));
+                return if require_public_url {
+                    let _ = terminate_child(child).await;
+                    Err(anyhow!("provider log stream closed before URL was discovered"))
+                } else {
+                    Ok(discovered_url)
+                };
             }
             Err(_) => {
-                let _ = terminate_child(child).await;
-                return Err(anyhow!(
-                    "provider did not report public URL within {} ms",
-                    timeout_duration.as_millis()
-                ));
+                return if require_public_url {
+                    let _ = terminate_child(child).await;
+                    Err(anyhow!(
+                        "provider did not report public URL within {} ms",
+                        timeout_duration.as_millis()
+                    ))
+                } else {
+                    Ok(discovered_url)
+                };
             }
         }
     }
@@ -845,6 +895,21 @@ mod runtime_tests {
                 .contains("provider executable not found: /missing/cloudflared"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn cloudflared_named_tunnel_does_not_require_public_url() {
+        let request = TunnelStartRequest {
+            provider: TunnelProvider::Cloudflared,
+            target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: Some(true),
+            metadata: Some(HashMap::from([(
+                "cloudflaredTunnelToken".to_string(),
+                "cf-token".to_string(),
+            )])),
+        };
+
+        assert!(!provider_requires_public_url(&request));
     }
 
     #[test]

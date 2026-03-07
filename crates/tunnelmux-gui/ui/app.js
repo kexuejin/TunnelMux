@@ -482,21 +482,28 @@ function renderDashboard(snapshot) {
   const publicUrl = tunnel?.public_base_url ?? '';
   const tunnelState = tunnel?.state ?? (connected ? 'idle' : 'offline');
   const enabledServices = state.routeCache.filter((route) => route.enabled).length;
+  const namedCloudflared =
+    tunnel?.provider === 'cloudflared' &&
+    Boolean(snapshot?.settings?.cloudflared_tunnel_token);
 
-  elements.publicUrl.textContent = publicUrl || 'Not running';
+  elements.publicUrl.textContent = publicUrl || (
+    tunnelState === 'running' && namedCloudflared
+      ? 'Managed in Cloudflare'
+      : 'Not running'
+  );
   elements.dashboardConnected.textContent = connected ? 'Yes' : 'No';
   elements.dashboardProvider.textContent = tunnel?.provider ?? collectSettingsForm().default_provider ?? '—';
   elements.servicesEnabledCount.textContent = `${enabledServices} enabled`;
   elements.copyPublicUrl.disabled = !publicUrl;
   elements.openPublicUrl.disabled = !publicUrl;
-  elements.stopTunnel.disabled = !publicUrl;
+  elements.stopTunnel.disabled = tunnelState !== 'running';
   elements.startTunnel.textContent = tunnelState === 'stopped' || tunnelState === 'error'
     ? 'Restart Tunnel'
     : 'Start Tunnel';
-  elements.startTunnel.hidden = Boolean(publicUrl);
+  elements.startTunnel.hidden = tunnelState === 'running';
   elements.copyPublicUrl.hidden = !publicUrl;
   elements.openPublicUrl.hidden = !publicUrl;
-  elements.stopTunnel.hidden = !publicUrl;
+  elements.stopTunnel.hidden = tunnelState !== 'running';
 
   elements.stateBadge.textContent = titleCase(tunnelState);
   elements.stateBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
@@ -515,6 +522,13 @@ function renderDashboard(snapshot) {
     elements.dashboardMessage.textContent = enabledServices > 0
       ? 'Live now.'
       : 'No services configured yet.';
+    renderStatus('Dashboard refreshed.');
+    return;
+  }
+
+  if (tunnelState === 'running' && namedCloudflared) {
+    elements.homePublicUrlMeta.textContent = 'Your named Cloudflare tunnel is connected. Public hostname and Access are managed in Cloudflare.';
+    elements.dashboardMessage.textContent = snapshot?.message ?? 'Named tunnel running.';
     renderStatus('Dashboard refreshed.');
     return;
   }
