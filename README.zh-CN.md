@@ -113,6 +113,8 @@ cargo run -p tunnelmux-gui
 
 GUI 会优先连接已有的本地 `tunnelmuxd`。如果当前不可用，它也可以为桌面应用自动拉起一个本地 daemon。
 
+如果当前所选 provider 还没有安装，TunnelMux 现在会在启动前先拦截这个问题，在主界面给出对应 provider 的提示，并提供 `Copy Install Command` 操作，避免直接落到原始的进程启动报错。
+
 ### CLI 路径
 
 ```bash

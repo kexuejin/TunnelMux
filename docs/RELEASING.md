@@ -81,13 +81,148 @@ If you build the GUI locally on Linux, install the equivalent packages first.
 On a machine with Tauri bundling prerequisites installed, you can build a local native installer with:
 
 ```bash
+cargo build --release -p tunnelmuxd -p tunnelmux-cli -p tunnelmux-gui
+
 cd crates/tunnelmux-gui
 cargo tauri build --bundles dmg -c tauri.conf.json
 ```
 
+Build the release binaries first if you want the local raw archive and GUI bundle validation to reflect the current workspace version. `cargo tauri build` only guarantees the GUI bundle path; it does not replace a stale local `target/release/tunnelmuxd` or `target/release/tunnelmux-cli`.
+
 Adjust `--bundles` for your platform (`msi` on Windows, `deb` on Linux). On headless macOS shells, prefix `CI=true` to skip Finder prettification during DMG creation.
 
+After a local GUI bundle build, verify the actual bundle files on disk instead of carrying forward a prior filename. The release workflow checks `target/<target>/release/bundle` first and then `target/release/bundle`, so use `scripts/collect-gui-bundles.sh` against whichever directory actually contains the host-platform bundle you just built.
+
 During local macOS smoke checks, `cargo tauri build` may also normalize `crates/tunnelmux-gui/Cargo.toml` by adding empty `features = []` on `tauri` and `tauri-build`. That change is tooling noise and should be reverted before committing.
+
+## Local Raw Archive Smoke Check
+
+To mirror the release workflow's raw archive layout on the current host with the current workspace version and host target:
+
+```bash
+scripts/package-local-release-archive.sh /tmp/tunnelmux-local-release
+```
+
+Expected result:
+
+- one raw archive named like `tunnelmux-<current-version>-<host-target>.tar.gz`
+- one `SHA256SUMS`
+- archive contents include `tunnelmuxd`, `tunnelmux-cli`, `tunnelmux-gui`, `README.md`, `README.zh-CN.md`, `LICENSE`, and `CHANGELOG.md`
+
+## GUI Easy-Path Smoke Check
+
+Run this after you have a host-platform GUI artifact that reflects the current workspace. Use `cloudflared` quick tunnels for the happy path because they do not require account setup.
+
+### Prerequisites
+
+- a fresh enough GUI state that you can still rehearse `Create Tunnel` without stale runtime noise;
+- the current host-platform GUI artifact (`target/release/tunnelmux-gui` is fine for local rehearsal);
+- a matching `tunnelmuxd` binary available next to the GUI binary or bundled in the app;
+- one local test service on `http://127.0.0.1:3000`.
+
+Example local test service:
+
+```bash
+python3 -m http.server 3000
+```
+
+Windows PowerShell:
+
+```powershell
+py -m http.server 3000
+```
+
+If `cloudflared` is already installed and you want a deterministic missing-provider pass, temporarily launch the GUI with a trimmed `PATH` so `cloudflared` is hidden while the colocated `tunnelmuxd` binary is still discoverable:
+
+```bash
+env PATH="/usr/bin:/bin:/usr/sbin:/sbin" target/release/tunnelmux-gui
+```
+
+Windows PowerShell:
+
+```powershell
+$env:Path = 'C:\Windows\System32;C:\Windows'
+.\target\release\tunnelmux-gui.exe
+```
+
+Run the automated easy-path verifier first:
+
+```bash
+scripts/verify-easy-path.sh
+```
+
+### Checklist
+
+1. **Managed daemon bundle and stalled-boot recovery**
+   - Quit any already-running local `tunnelmuxd` and keep the default local daemon URL.
+   - Temporarily rename or remove the bundled/colocated `tunnelmuxd` binary from the GUI artifact, then launch the app.
+   - Expect the status area to explain that the local `tunnelmuxd` component is unavailable and to recommend reinstalling the app or putting `tunnelmuxd` on `PATH`, instead of surfacing a raw binary lookup error.
+   - Restore the binary and relaunch the GUI.
+   - Expect the status area to show `Starting local TunnelMux…` while the GUI-managed daemon is still booting.
+   - If you deliberately block the default local daemon port before launch, expect startup to escalate to `Starting local TunnelMux is taking longer than expected. Retry the local daemon or check whether another app is already using this port.` with `Retry Local Daemon` instead of spinning forever.
+
+2. **Missing-provider warning**
+   - Open the app and create a tunnel with provider `cloudflared`.
+   - Leave the Cloudflare tunnel token empty so the tunnel stays on the quick-tunnel path.
+   - Click `Start Tunnel`.
+   - Expect the `Provider Status` card to show `Cloudflared Missing` instead of a raw spawn error.
+   - Expect the message to explain that TunnelMux could not find `cloudflared` in `PATH`.
+
+3. **Install guidance copy**
+   - Click `Copy Install Command` from the provider-status card.
+   - Paste the clipboard contents into a scratch buffer.
+   - Expect the copied command to match the host OS:
+     - macOS: `brew install cloudflared`
+     - Windows: `winget install --id Cloudflare.cloudflared`
+     - Linux: command includes `apt-get install cloudflared`
+
+4. **Provider recovery and successful start**
+   - Install `cloudflared`, or restore it to `PATH`.
+   - Click `Recheck Provider` from the provider warning state.
+   - Click `Start Tunnel` again.
+   - Expect status text `Tunnel started. Add Service to keep going.`
+   - Expect `Public URL` to switch from `Not running` to a real `https://...trycloudflare.com` URL.
+   - Expect the primary next step to stay `Add Service`.
+   - Expect `Copy URL` and `Open` to stay hidden until at least one service is enabled.
+
+5. **Add one service from the main flow**
+   - Click `Add Service`.
+   - Save a service with:
+     - `Service Name`: `demo-web`
+     - `Local Service URL`: `http://127.0.0.1:3000`
+     - `Public Path`: `/`
+   - Expect a `Service saved.` confirmation.
+   - Expect one enabled service in the list and the dashboard count to update.
+
+6. **Copy/share verification**
+   - Click `Copy URL` and expect `Public URL copied.`
+   - Paste the copied URL into a browser or scratch buffer.
+   - Click `Open` and confirm the public URL resolves to the local test service.
+
+7. **`ngrok` authtoken preflight**
+   - Edit the current tunnel and switch the provider to `ngrok`.
+   - Leave `ngrok Authtoken` empty.
+   - Expect the home hint and `Provider Status` card to show `ngrok Authtoken Required` before any launch attempt.
+   - Expect the dashboard `Start Tunnel` button to stay disabled until the token is added.
+   - Expect the tunnel drawer to keep `Save` available, disable `Save and Start`, and expose the `ngrok Authtoken` field immediately.
+
+8. **`ngrok`-only first-run escape hatch**
+   - Launch the app with `ngrok` available but `cloudflared` hidden from `PATH`, and make sure there is no existing tunnel selected.
+   - Expect the empty state to say `Create Tunnel` will preselect `ngrok`, but first start still needs an authtoken.
+   - Expect a secondary `Copy cloudflared Install Command` button to stay visible in that same empty state.
+   - Click it and expect the copied command to match the current OS-specific `cloudflared` install guidance.
+
+### Pass Criteria
+
+- Missing or stalled GUI-managed daemon startup stays on installer-aware or retryable recovery copy instead of surfacing a raw lookup error or spinning forever.
+- Missing-provider guidance appears before raw provider launch failures.
+- Missing `ngrok` authtoken guidance appears before any failed `ngrok` launch attempt.
+- `ngrok`-only onboarding keeps the authtoken warning visible and preserves the `cloudflared` install escape hatch.
+- Copied install guidance matches the current OS.
+- The quick-tunnel path works after provider recovery without advanced configuration.
+- A service can be added from the main screen.
+- Share actions stay gated until a service is enabled.
+- The public URL can be copied/opened and reaches the local test service.
 
 ## macOS First-launch Trust Prompts
 

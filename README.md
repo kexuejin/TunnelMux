@@ -113,6 +113,8 @@ cargo run -p tunnelmux-gui
 
 The GUI prefers to connect to an existing local `tunnelmuxd`. If nothing is reachable, it can auto-start a local daemon for the desktop app.
 
+If the selected provider is not installed yet, TunnelMux now catches that before launch, shows a provider-specific warning on the main page, and offers a `Copy Install Command` action for the current tunnel instead of surfacing a raw spawn error.
+
 ### CLI path
 
 ```bash
