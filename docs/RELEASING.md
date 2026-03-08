@@ -87,6 +87,8 @@ cargo tauri build --bundles dmg -c tauri.conf.json
 
 Adjust `--bundles` for your platform (`msi` on Windows, `deb` on Linux). On headless macOS shells, prefix `CI=true` to skip Finder prettification during DMG creation.
 
+During local macOS smoke checks, `cargo tauri build` may also normalize `crates/tunnelmux-gui/Cargo.toml` by adding empty `features = []` on `tauri` and `tauri-build`. That change is tooling noise and should be reverted before committing.
+
 ## macOS First-launch Trust Prompts
 
 Unsigned macOS GUI builds can still trigger Gatekeeper warnings on first launch.
