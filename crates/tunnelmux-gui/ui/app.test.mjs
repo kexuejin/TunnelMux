@@ -1286,13 +1286,14 @@ test('summarizeDaemonRecoveryAction stays hidden while the managed local daemon 
   );
 });
 
-test('summarizeDashboardGuidance pushes add-service guidance before sharing a live URL', () => {
+test('summarizeDashboardGuidance keeps add-service guidance when no services exist yet', () => {
   assert.deepEqual(
     summarizeDashboardGuidance({
       connected: true,
       public_url: 'https://demo.trycloudflare.com',
       tunnel_state: 'running',
       enabled_services: 0,
+      route_count: 0,
       named_cloudflared: false,
       message: 'Connected, but waiting for services.',
     }),
@@ -1303,6 +1304,23 @@ test('summarizeDashboardGuidance pushes add-service guidance before sharing a li
   );
 });
 
+test('summarizeDashboardGuidance points back to saved disabled services before sharing a live URL', () => {
+  assert.deepEqual(
+    summarizeDashboardGuidance({
+      connected: true,
+      public_url: 'https://demo.trycloudflare.com',
+      tunnel_state: 'running',
+      enabled_services: 0,
+      route_count: 2,
+      named_cloudflared: false,
+      message: 'Connected, but waiting for services.',
+    }),
+    {
+      home_public_url_meta: 'Review or enable a saved service before sharing this URL. Until then, visitors only see the default welcome page.',
+      dashboard_message: 'Review services before sharing.',
+    },
+  );
+});
 
 test('summarizeDashboardGuidance treats a running quick tunnel without a public URL as pending publish', () => {
   assert.deepEqual(
@@ -1466,6 +1484,7 @@ test('summarizeStartSuccessAction offers Add Service before Copy URL on zero-ser
     summarizeStartSuccessAction({
       public_url: '',
       enabled_services: 0,
+      route_count: 0,
       named_cloudflared: false,
       tunnel_state: 'running',
     }),
@@ -1480,12 +1499,30 @@ test('summarizeStartSuccessAction offers Add Service before Copy URL on zero-ser
     summarizeStartSuccessAction({
       public_url: 'https://demo.trycloudflare.com',
       enabled_services: 1,
+      route_count: 1,
       named_cloudflared: false,
       tunnel_state: 'running',
     }),
     {
       kind: 'copy_public_url',
       label: 'Copy URL',
+      payload: null,
+    },
+  );
+});
+
+test('summarizeStartSuccessAction offers Review Services when saved services are all disabled', () => {
+  assert.deepEqual(
+    summarizeStartSuccessAction({
+      public_url: '',
+      enabled_services: 0,
+      route_count: 2,
+      named_cloudflared: false,
+      tunnel_state: 'running',
+    }),
+    {
+      kind: 'review_services',
+      label: 'Review Services',
       payload: null,
     },
   );
@@ -1643,16 +1680,30 @@ test('resolveDashboardPublicUrlActions only exposes dashboard share actions for 
   );
 });
 
-test('summarizeZeroServiceHeroAction exposes add-service only for a running tunnel with zero services', () => {
+test('summarizeZeroServiceHeroAction distinguishes missing services from disabled ones', () => {
   assert.deepEqual(
     summarizeZeroServiceHeroAction({
       connected: true,
       tunnel_state: 'running',
       enabled_services: 0,
+      route_count: 0,
     }),
     {
       kind: 'add_service',
       label: 'Add Service',
+    },
+  );
+
+  assert.deepEqual(
+    summarizeZeroServiceHeroAction({
+      connected: true,
+      tunnel_state: 'running',
+      enabled_services: 0,
+      route_count: 2,
+    }),
+    {
+      kind: 'review_services',
+      label: 'Review Services',
     },
   );
 
@@ -1661,6 +1712,7 @@ test('summarizeZeroServiceHeroAction exposes add-service only for a running tunn
       connected: true,
       tunnel_state: 'running',
       enabled_services: 1,
+      route_count: 1,
     }),
     null,
   );
@@ -1670,14 +1722,16 @@ test('summarizeZeroServiceHeroAction exposes add-service only for a running tunn
       connected: false,
       tunnel_state: 'running',
       enabled_services: 0,
+      route_count: 0,
     }),
     null,
   );
 });
 
-test('add-service handoff keeps reset-before-open wiring for hero and empty-state actions', () => {
+test('hero service handoff keeps add-service reset wiring and reuses services review highlighting', () => {
   const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 
+  assert.match(appJs, /elements\.heroAddService\?\.addEventListener\('click',[\s\S]*state\.heroActionKind === 'review_services'[\s\S]*highlightServicesPanel\(\);[\s\S]*return;[\s\S]*resetRouteForm\(\);[\s\S]*openServiceDrawer\(\);/);
   assert.match(appJs, /elements\.heroAddService\?\.addEventListener\('click',[\s\S]*resetRouteForm\(\);[\s\S]*openServiceDrawer\(\);/);
   assert.match(appJs, /elements\.newRouteEmpty\?\.addEventListener\('click',[\s\S]*resetRouteForm\(\);[\s\S]*openServiceDrawer\(\);/);
 });
@@ -1701,14 +1755,15 @@ test('status action handler supports Add Service follow-through after tunnel sta
   const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 
   assert.match(appJs, /case 'add_service':[\s\S]*resetRouteForm\(\);[\s\S]*openServiceDrawer\(\);/);
-  assert.match(appJs, /const statusAction = summarizeStartSuccessAction\([\s\S]*renderStatus\(statusAction\?\.kind === 'add_service' \? 'Tunnel started\. Add Service to keep going\.' : statusAction\?\.kind === 'copy_public_url' \? 'Tunnel started\. Copy URL to share\.' : 'Tunnel started\.', false, statusAction\);/);
+  assert.match(appJs, /case 'review_services':[\s\S]*highlightServicesPanel\(\);/);
+  assert.match(appJs, /const statusAction = summarizeStartSuccessAction\([\s\S]*renderStatus\(statusAction\?\.kind === 'add_service' \? 'Tunnel started\. Add Service to keep going\.' : statusAction\?\.kind === 'review_services' \? 'Tunnel started\. Review Services to enable one\.' : statusAction\?\.kind === 'copy_public_url' \? 'Tunnel started\. Copy URL to share\.' : 'Tunnel started\.', false, statusAction\);/);
 });
 
 test('status action handler supports Copy URL follow-through and wires it after start and save', () => {
   const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 
   assert.match(appJs, /case 'copy_public_url':[\s\S]*await copyPublicUrl\(\);/);
-  assert.match(appJs, /const statusAction = summarizeStartSuccessAction\([\s\S]*renderStatus\(statusAction\?\.kind === 'add_service' \? 'Tunnel started\. Add Service to keep going\.' : statusAction\?\.kind === 'copy_public_url' \? 'Tunnel started\. Copy URL to share\.' : 'Tunnel started\.', false, statusAction\);/);
+  assert.match(appJs, /const statusAction = summarizeStartSuccessAction\([\s\S]*renderStatus\(statusAction\?\.kind === 'add_service' \? 'Tunnel started\. Add Service to keep going\.' : statusAction\?\.kind === 'review_services' \? 'Tunnel started\. Review Services to enable one\.' : statusAction\?\.kind === 'copy_public_url' \? 'Tunnel started\. Copy URL to share\.' : 'Tunnel started\.', false, statusAction\);/);
   assert.match(appJs, /const shareAction = summarizeShareStatusAction\([\s\S]*renderStatus\(summarizeRouteSaveStatus\([\s\S]*\), false, shareAction\);/);
 });
 

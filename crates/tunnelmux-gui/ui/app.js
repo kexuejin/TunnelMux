@@ -74,6 +74,7 @@ const state = {
   daemonBootstrapping: false,
   dashboardConnected: false,
   dashboardTunnelState: 'offline',
+  heroActionKind: null,
   statusActionKind: null,
   statusActionLabel: null,
   statusActionPayload: null,
@@ -338,6 +339,10 @@ function bindEvents() {
 
   elements.startTunnel?.addEventListener('click', () => withBusy(startTunnel));
   elements.heroAddService?.addEventListener('click', () => {
+    if (state.heroActionKind === 'review_services') {
+      highlightServicesPanel();
+      return;
+    }
     resetRouteForm();
     openServiceDrawer();
   });
@@ -1275,13 +1280,15 @@ async function startTunnel() {
     });
     renderDashboard(snapshot);
     await refreshTunnelWorkspace();
+    const currentTunnelDetails = getCurrentTunnelDetails();
     const statusAction = summarizeStartSuccessAction({
-      public_url: getCurrentTunnelDetails()?.public_base_url ?? snapshot?.tunnel?.public_base_url ?? '',
-      enabled_services: state.routeCache.filter((route) => route.enabled).length,
-      named_cloudflared: Boolean(getCurrentTunnelDetails()?.cloudflared_tunnel_token),
-      tunnel_state: getCurrentTunnelDetails()?.state ?? snapshot?.tunnel?.state ?? 'running',
+      public_url: currentTunnelDetails?.public_base_url ?? snapshot?.tunnel?.public_base_url ?? '',
+      enabled_services: currentTunnelDetails?.enabled_route_count ?? snapshot?.tunnel?.enabled_route_count ?? state.routeCache.filter((route) => route.enabled).length,
+      route_count: currentTunnelDetails?.route_count ?? snapshot?.tunnel?.route_count ?? state.routeCache.length,
+      named_cloudflared: Boolean(currentTunnelDetails?.cloudflared_tunnel_token),
+      tunnel_state: currentTunnelDetails?.state ?? snapshot?.tunnel?.state ?? 'running',
     });
-    renderStatus(statusAction?.kind === 'add_service' ? 'Tunnel started. Add Service to keep going.' : statusAction?.kind === 'copy_public_url' ? 'Tunnel started. Copy URL to share.' : 'Tunnel started.', false, statusAction);
+    renderStatus(statusAction?.kind === 'add_service' ? 'Tunnel started. Add Service to keep going.' : statusAction?.kind === 'review_services' ? 'Tunnel started. Review Services to enable one.' : statusAction?.kind === 'copy_public_url' ? 'Tunnel started. Copy URL to share.' : 'Tunnel started.', false, statusAction);
     return {
       ok: true,
       recoveryTarget: null,
@@ -1452,7 +1459,8 @@ function renderDashboard(snapshot) {
   const connected = Boolean(snapshot?.connected);
   const publicUrl = tunnel?.public_base_url ?? '';
   const tunnelState = tunnel?.state ?? (connected ? 'idle' : 'offline');
-  const enabledServices = state.routeCache.filter((route) => route.enabled).length;
+  const routeCount = Number(tunnel?.route_count ?? state.routeCache.length);
+  const enabledServices = Number(tunnel?.enabled_route_count ?? state.routeCache.filter((route) => route.enabled).length);
   state.dashboardConnected = connected;
   state.dashboardTunnelState = tunnelState;
   const namedCloudflared =
@@ -1463,6 +1471,7 @@ function renderDashboard(snapshot) {
     public_url: publicUrl,
     tunnel_state: tunnelState,
     enabled_services: enabledServices,
+    route_count: routeCount,
     named_cloudflared: namedCloudflared,
     message: snapshot?.message ?? null,
   });
@@ -1500,6 +1509,7 @@ function renderDashboard(snapshot) {
     connected,
     tunnel_state: tunnelState,
     enabled_services: enabledServices,
+    route_count: routeCount,
   }));
 
   elements.stateBadge.textContent = titleCase(tunnelState);
@@ -1535,6 +1545,7 @@ function renderHeroAddServiceAction(action) {
     return;
   }
 
+  state.heroActionKind = action?.kind ?? null;
   elements.heroAddService.hidden = !action;
   elements.heroAddService.textContent = action?.label ?? 'Add Service';
   elements.heroAddService.disabled = state.busy;
@@ -1590,6 +1601,7 @@ function renderRoutes(snapshot) {
     connected: state.dashboardConnected,
     tunnel_state: state.dashboardTunnelState,
     enabled_services: enabled,
+    route_count: state.routeCache.length,
   }));
   elements.newRoute.hidden = false;
   elements.servicesNotice.hidden = !viewState.notice;
@@ -2158,6 +2170,9 @@ async function handleStatusAction() {
     case 'add_service':
       resetRouteForm();
       openServiceDrawer();
+      break;
+    case 'review_services':
+      highlightServicesPanel();
       break;
     case 'create_tunnel':
       openTunnelDrawer({ mode: 'create' });

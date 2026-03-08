@@ -414,6 +414,7 @@ export function summarizeStartReadyStatusAction(tunnel) {
 export function summarizeStartSuccessAction({
   public_url,
   enabled_services,
+  route_count,
   named_cloudflared,
   tunnel_state,
 }) {
@@ -421,6 +422,7 @@ export function summarizeStartSuccessAction({
     connected: true,
     tunnel_state,
     enabled_services,
+    route_count,
   });
   if (addServiceAction) {
     return {
@@ -450,6 +452,7 @@ export function summarizeDashboardGuidance({
   public_url,
   tunnel_state,
   enabled_services,
+  route_count,
   named_cloudflared,
   message,
 }) {
@@ -466,10 +469,15 @@ export function summarizeDashboardGuidance({
         home_public_url_meta: 'Your tunnel is live and ready to share.',
         dashboard_message: 'Live now.',
       }
-      : {
-        home_public_url_meta: 'Add a service before sharing this URL. Until then, visitors only see the default welcome page.',
-        dashboard_message: 'Add a service before sharing.',
-      };
+      : Number(route_count ?? 0) > 0
+        ? {
+          home_public_url_meta: 'Review or enable a saved service before sharing this URL. Until then, visitors only see the default welcome page.',
+          dashboard_message: 'Review services before sharing.',
+        }
+        : {
+          home_public_url_meta: 'Add a service before sharing this URL. Until then, visitors only see the default welcome page.',
+          dashboard_message: 'Add a service before sharing.',
+        };
   }
 
   if (tunnel_state === 'running' && named_cloudflared) {
@@ -503,15 +511,21 @@ export function summarizeZeroServiceHeroAction({
   connected,
   tunnel_state,
   enabled_services,
+  route_count,
 }) {
   if (!connected || tunnel_state !== 'running' || Number(enabled_services ?? 0) !== 0) {
     return null;
   }
 
-  return {
-    kind: 'add_service',
-    label: 'Add Service',
-  };
+  return Number(route_count ?? 0) > 0
+    ? {
+      kind: 'review_services',
+      label: 'Review Services',
+    }
+    : {
+      kind: 'add_service',
+      label: 'Add Service',
+    };
 }
 
 export function resolveRouteFormTitle({ editing_route_id, route_count }) {
