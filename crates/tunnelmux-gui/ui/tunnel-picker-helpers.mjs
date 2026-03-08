@@ -286,6 +286,22 @@ export function summarizeDaemonRecoveryAction(snapshot, settings) {
   };
 }
 
+function isCloudflaredNamedTunnelSetupError(tunnel, lower) {
+  if (tunnel?.provider !== 'cloudflared' || !String(tunnel?.cloudflared_tunnel_token ?? '').trim()) {
+    return false;
+  }
+
+  return lower.includes('cloudflare tunnel token')
+    || lower.includes('tunnel token')
+    || lower.includes('provided tunnel token')
+    || lower.includes('token is not valid')
+    || lower.includes('invalid token')
+    || lower.includes('failed to get tunnel')
+    || lower.includes('authentication')
+    || lower.includes('unauthorized')
+    || lower.includes('tunnel credentials');
+}
+
 export function summarizeStartFailureRecovery({
   message,
   settings,
@@ -332,6 +348,18 @@ export function summarizeStartFailureRecovery({
         kind: 'edit_tunnel',
         label: 'Review Local Service URL',
         payload: 'gateway_target_url',
+      },
+    };
+  }
+
+  if (isCloudflaredNamedTunnelSetupError(tunnel, lower)) {
+    return {
+      preservesProviderRecovery: false,
+      recoveryTarget: 'cloudflared_tunnel_token',
+      statusAction: {
+        kind: 'edit_tunnel',
+        label: 'Review Cloudflare Tunnel Token',
+        payload: 'cloudflared_tunnel_token',
       },
     };
   }

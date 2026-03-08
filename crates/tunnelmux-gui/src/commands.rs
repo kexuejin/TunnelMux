@@ -1025,6 +1025,21 @@ fn classify_provider_log_line(
         }
     }
 
+    if *provider == TunnelProvider::Cloudflared
+        && is_named_cloudflared_tunnel(current_tunnel)
+        && is_cloudflared_named_tunnel_setup_error(&lower)
+    {
+        return Some(
+            ProviderStatusVm::new(
+                "error",
+                "Cloudflare Setup",
+                cloudflared_named_tunnel_setup_status_message(),
+            )
+            .with_action("open_cloudflare", "Open Cloudflare")
+            .with_follow_up_action("open_cloudflare_docs", "Setup Hostname"),
+        );
+    }
+
     if *provider == TunnelProvider::Cloudflared && line.contains("trycloudflare.com") {
         return Some(ProviderStatusVm::new(
             "success",
@@ -1158,9 +1173,37 @@ fn validate_tunnel_profile_input(profile: &TunnelProfileInput) -> Result<(), Str
     Ok(())
 }
 
+fn is_named_cloudflared_tunnel(
+    current_tunnel: Option<&crate::settings::TunnelProfileSettings>,
+) -> bool {
+    current_tunnel
+        .and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_deref())
+        .is_some()
+}
+
+fn is_cloudflared_named_tunnel_setup_error(lower: &str) -> bool {
+    lower.contains("cloudflare tunnel token")
+        || lower.contains("tunnel token")
+        || lower.contains("provided tunnel token")
+        || lower.contains("token is not valid")
+        || lower.contains("invalid token")
+        || lower.contains("failed to get tunnel")
+        || lower.contains("authentication")
+        || lower.contains("unauthorized")
+        || lower.contains("tunnel credentials")
+}
+
+fn cloudflared_tunnel_token_recovery_message() -> String {
+    "Review the Cloudflare Tunnel Token on this tunnel, then retry.".to_string()
+}
+
+fn cloudflared_named_tunnel_setup_status_message() -> &'static str {
+    "Cloudflare rejected the named tunnel setup. Review the tunnel token on this tunnel and make sure a hostname is configured in Cloudflare."
+}
+
 fn friendly_start_error(
     message: String,
-    _current_tunnel: Option<&crate::settings::TunnelProfileSettings>,
+    current_tunnel: Option<&crate::settings::TunnelProfileSettings>,
     input: &StartTunnelInput,
 ) -> String {
     let lower = message.to_ascii_lowercase();
@@ -1169,6 +1212,13 @@ fn friendly_start_error(
         || (lower.contains("invalid") && lower.contains("target url"))
     {
         return tunnel_local_service_url_recovery_message();
+    }
+
+    if input.provider == TunnelProvider::Cloudflared
+        && is_named_cloudflared_tunnel(current_tunnel)
+        && is_cloudflared_named_tunnel_setup_error(&lower)
+    {
+        return cloudflared_tunnel_token_recovery_message();
     }
 
     if input.provider == TunnelProvider::Ngrok
@@ -1575,6 +1625,46 @@ mod tests {
                 },
             ),
             "Review the reserved domain on this tunnel and make sure it matches your ngrok account."
+        );
+    }
+
+    #[test]
+    fn friendly_start_error_maps_cloudflared_named_tunnel_setup_errors() {
+        let tunnel = crate::settings::TunnelProfileSettings {
+            id: "primary".to_string(),
+            name: "Main Tunnel".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            gateway_target_url: "http://127.0.0.1:58080".to_string(),
+            auto_restart: true,
+            cloudflared_tunnel_token: Some("cf-token".to_string()),
+            ngrok_authtoken: None,
+            ngrok_domain: None,
+        };
+
+        assert_eq!(
+            friendly_start_error(
+                "Provided Tunnel token is not valid".to_string(),
+                Some(&tunnel),
+                &StartTunnelInput {
+                    provider: TunnelProvider::Cloudflared,
+                    target_url: "http://127.0.0.1:58080".to_string(),
+                    auto_restart: true,
+                },
+            ),
+            "Review the Cloudflare Tunnel Token on this tunnel, then retry."
+        );
+
+        assert_eq!(
+            friendly_start_error(
+                "Unauthorized: failed to get tunnel".to_string(),
+                Some(&tunnel),
+                &StartTunnelInput {
+                    provider: TunnelProvider::Cloudflared,
+                    target_url: "http://127.0.0.1:58080".to_string(),
+                    auto_restart: true,
+                },
+            ),
+            "Review the Cloudflare Tunnel Token on this tunnel, then retry."
         );
     }
 
@@ -2828,6 +2918,58 @@ mod tests {
 
         assert_eq!(summary.level, "warning");
         assert_eq!(summary.title, "Cloudflare Setup");
+        assert_eq!(summary.action_kind.as_deref(), Some("open_cloudflare"));
+        assert_eq!(summary.action_label.as_deref(), Some("Open Cloudflare"));
+        assert_eq!(
+            summary.follow_up_action_kind.as_deref(),
+            Some("open_cloudflare_docs")
+        );
+        assert_eq!(
+            summary.follow_up_action_label.as_deref(),
+            Some("Setup Hostname")
+        );
+    }
+
+    #[test]
+    fn provider_status_summary_classifies_named_cloudflared_setup_errors() {
+        let settings = GuiSettings {
+            current_tunnel_id: Some("primary".to_string()),
+            tunnels: vec![crate::settings::TunnelProfileSettings {
+                id: "primary".to_string(),
+                name: "Main Tunnel".to_string(),
+                provider: TunnelProvider::Cloudflared,
+                cloudflared_tunnel_token: Some("cf-token".to_string()),
+                ..crate::settings::TunnelProfileSettings::default()
+            }],
+            ..GuiSettings::default()
+        };
+        let tunnel = TunnelStatus {
+            state: tunnelmux_core::TunnelState::Starting,
+            provider: Some(TunnelProvider::Cloudflared),
+            target_url: Some("http://127.0.0.1:48080".to_string()),
+            public_base_url: None,
+            started_at: None,
+            updated_at: "2026-03-07T00:00:01Z".to_string(),
+            process_id: None,
+            auto_restart: true,
+            restart_count: 0,
+            last_error: None,
+        };
+
+        let summary = derive_provider_status_summary(
+            &settings,
+            Some(&tunnel),
+            &[String::from("Unauthorized: failed to get tunnel credentials")],
+            &[],
+        )
+        .expect("summary should be derived");
+
+        assert_eq!(summary.level, "error");
+        assert_eq!(summary.title, "Cloudflare Setup");
+        assert_eq!(
+            summary.message,
+            "Cloudflare rejected the named tunnel setup. Review the tunnel token on this tunnel and make sure a hostname is configured in Cloudflare."
+        );
         assert_eq!(summary.action_kind.as_deref(), Some("open_cloudflare"));
         assert_eq!(summary.action_label.as_deref(), Some("Open Cloudflare"));
         assert_eq!(

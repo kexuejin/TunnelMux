@@ -532,6 +532,46 @@ test('summarizeStartFailureRecovery routes known config failures back to edit ta
   );
 });
 
+test('summarizeStartFailureRecovery routes named-cloudflared token and auth failures back to the tunnel drawer', () => {
+  const expected = {
+    preservesProviderRecovery: false,
+    recoveryTarget: 'cloudflared_tunnel_token',
+    statusAction: {
+      kind: 'edit_tunnel',
+      label: 'Review Cloudflare Tunnel Token',
+      payload: 'cloudflared_tunnel_token',
+    },
+  };
+
+  assert.deepEqual(
+    summarizeStartFailureRecovery({
+      message: 'Review the Cloudflare Tunnel Token on this tunnel, then retry.',
+      settings: {
+        base_url: 'http://127.0.0.1:4765',
+      },
+      tunnel: {
+        provider: 'cloudflared',
+        cloudflared_tunnel_token: 'cf-token',
+      },
+    }),
+    expected,
+  );
+
+  assert.deepEqual(
+    summarizeStartFailureRecovery({
+      message: 'Unauthorized: Provided Tunnel token is not valid.',
+      settings: {
+        base_url: 'http://127.0.0.1:4765',
+      },
+      tunnel: {
+        provider: 'cloudflared',
+        cloudflared_tunnel_token: 'cf-token',
+      },
+    }),
+    expected,
+  );
+});
+
 test('summarizeProviderRecheckFollowThrough returns Start Tunnel for home recovery when starting is next', () => {
   assert.deepEqual(
     summarizeProviderRecheckFollowThrough({
@@ -1167,6 +1207,19 @@ test('shouldOpenTunnelAdvanced keeps provider fields collapsed by default and op
         ngrok_domain: null,
       },
       'ngrok_authtoken',
+    ),
+    true,
+  );
+
+  assert.equal(
+    shouldOpenTunnelAdvanced(
+      {
+        provider: 'cloudflared',
+        cloudflared_tunnel_token: null,
+        ngrok_authtoken: null,
+        ngrok_domain: null,
+      },
+      'cloudflared_tunnel_token',
     ),
     true,
   );
@@ -1832,6 +1885,14 @@ test('provider-status actions edit a single unreachable service directly and hig
 
   assert.match(appJs, /case 'edit_service':\s*[\s\S]*openServiceEditorForRoute\(actionPayload\);/);
   assert.match(appJs, /case 'review_services':\s*[\s\S]*highlightServicesPanel\(\);/);
+});
+
+test('provider-status actions keep Cloudflare setup handoffs available', () => {
+  const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+
+  assert.match(appJs, /case 'open_cloudflare':\s*[\s\S]*openCloudflareDashboard\(\);/);
+  assert.match(appJs, /case 'open_cloudflare_docs':\s*[\s\S]*openCloudflareDocs\(\);/);
+  assert.match(appJs, /function resolveTunnelRecoveryField\(recoveryTarget\) \{[\s\S]*case 'cloudflared_tunnel_token':[\s\S]*return elements\.tunnelCloudflaredTunnelToken;/);
 });
 
 test('saveRoute keeps the service drawer open and refocuses Local Service URL for recoverable save errors', () => {
