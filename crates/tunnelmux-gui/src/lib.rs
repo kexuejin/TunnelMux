@@ -21,6 +21,7 @@ pub fn run() {
             commands::daemon_connection_state,
             commands::probe_connection,
             commands::load_tunnel_workspace,
+            commands::load_provider_availability_snapshot,
             commands::save_tunnel_profile,
             commands::select_tunnel_profile,
             commands::delete_tunnel_profile,

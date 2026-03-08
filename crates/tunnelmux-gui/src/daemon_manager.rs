@@ -3,6 +3,7 @@ use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
@@ -49,6 +50,7 @@ pub enum DaemonStartupAction {
 }
 
 const BOOTSTRAPPING_MESSAGE: &str = "Starting local TunnelMux…";
+const MISSING_DAEMON_BINARY_MESSAGE: &str = "TunnelMux could not start its local daemon because the tunnelmuxd component is unavailable. Reinstall the TunnelMux app, or install tunnelmuxd separately and make sure it is on your PATH.";
 
 pub trait ManagedDaemonHandle {
     fn id(&self) -> u32;
@@ -72,6 +74,7 @@ pub struct DaemonRuntimeState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaemonStatusSnapshot {
     pub ownership: DaemonOwnership,
+    pub bootstrapping: bool,
     pub connected: bool,
     pub message: Option<String>,
 }
@@ -94,9 +97,18 @@ pub fn resolve_daemon_binary_paths(
         });
     }
 
-    Err(anyhow!(
-        "tunnelmuxd binary could not be found in bundled resources or PATH"
-    ))
+    Err(anyhow!(MISSING_DAEMON_BINARY_MESSAGE))
+}
+
+pub fn friendly_daemon_unavailable_message(message: impl AsRef<str>) -> String {
+    let message = message.as_ref();
+    if message.contains("tunnelmuxd binary could not be found")
+        || message.contains("tunnelmuxd component is unavailable")
+    {
+        MISSING_DAEMON_BINARY_MESSAGE.to_string()
+    } else {
+        message.to_string()
+    }
 }
 
 pub fn determine_daemon_startup_action(
@@ -210,6 +222,7 @@ pub fn daemon_status_snapshot(
 
     DaemonStatusSnapshot {
         ownership: connection.ownership,
+        bootstrapping,
         connected: connection.ownership != DaemonOwnership::Unavailable,
         message,
     }
@@ -443,30 +456,43 @@ pub fn find_binary_on_path(binary_name: &str) -> Option<PathBuf> {
 }
 
 pub fn resolve_provider_binary(binary_name: &str) -> Option<PathBuf> {
-    resolve_binary_in_dirs(binary_name, common_provider_search_dirs())
+    resolve_binary_in_dirs(
+        binary_name,
+        provider_binary_search_dirs(
+            env::var_os("PATH").as_deref(),
+            std::iter::empty::<PathBuf>(),
+        ),
+        env::var_os("PATHEXT").as_deref(),
+    )
 }
 
-fn resolve_binary_in_dirs(
+pub(crate) fn resolve_binary_in_dirs(
     binary_name: &str,
     search_dirs: impl IntoIterator<Item = PathBuf>,
+    pathext: Option<&OsStr>,
 ) -> Option<PathBuf> {
+    if Path::new(binary_name).components().count() > 1 {
+        return binary_is_executable(Path::new(binary_name)).then(|| PathBuf::from(binary_name));
+    }
+
+    let candidates = executable_candidate_names(binary_name, pathext);
     search_dirs
         .into_iter()
-        .flat_map(|path| {
-            [
-                path.join(binary_name),
-                path.join(format!("{binary_name}.exe")),
-            ]
-        })
-        .find(|candidate| candidate.exists())
+        .flat_map(|path| candidates.iter().map(move |candidate| path.join(candidate)))
+        .find(|candidate| binary_is_executable(candidate))
 }
 
-fn common_provider_search_dirs() -> Vec<PathBuf> {
+pub(crate) fn provider_binary_search_dirs(
+    path_var: Option<&OsStr>,
+    extra_search_dirs: impl IntoIterator<Item = PathBuf>,
+) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    if let Some(path_var) = env::var_os("PATH") {
-        dirs.extend(env::split_paths(&path_var));
+    if let Some(path_var) = path_var {
+        dirs.extend(env::split_paths(path_var));
     }
+
+    dirs.extend(extra_search_dirs);
 
     #[cfg(unix)]
     {
@@ -482,6 +508,46 @@ fn common_provider_search_dirs() -> Vec<PathBuf> {
     dirs.sort();
     dirs.dedup();
     dirs
+}
+
+fn executable_candidate_names(binary_name: &str, pathext: Option<&OsStr>) -> Vec<String> {
+    let mut candidates = vec![binary_name.to_string()];
+
+    if Path::new(binary_name).extension().is_none() {
+        let pathext = pathext
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .or_else(|| cfg!(windows).then_some(".COM;.EXE;.BAT;.CMD"));
+
+        if let Some(pathext) = pathext {
+            for extension in pathext.split(';').filter(|value| !value.is_empty()) {
+                candidates.push(format!("{binary_name}{extension}"));
+            }
+        }
+    }
+
+    candidates
+}
+
+fn binary_is_executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        return metadata.permissions().mode() & 0o111 != 0;
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 pub fn spawn_managed_daemon(
@@ -680,10 +746,28 @@ mod tests {
         let tools_dir = temp_dir.join("tools");
         std::fs::create_dir_all(&tools_dir).expect("tool dir should be created");
         let provider = tools_dir.join("cloudflared");
-        std::fs::write(&provider, "").expect("provider fixture should write");
+        write_fake_binary(&provider);
 
-        let resolved = resolve_binary_in_dirs("cloudflared", vec![tools_dir.clone()])
+        let resolved = resolve_binary_in_dirs("cloudflared", vec![tools_dir.clone()], None)
             .expect("provider should resolve from common search dir");
+
+        assert_eq!(resolved, provider);
+    }
+
+    #[test]
+    fn provider_binary_resolution_uses_pathext_candidates() {
+        let temp_dir = prepare_temp_dir();
+        let tools_dir = temp_dir.join("tools");
+        std::fs::create_dir_all(&tools_dir).expect("tool dir should be created");
+        let provider = tools_dir.join("cloudflared.CMD");
+        write_fake_binary(&provider);
+
+        let resolved = resolve_binary_in_dirs(
+            "cloudflared",
+            vec![tools_dir.clone()],
+            Some(OsStr::new(".EXE;.CMD")),
+        )
+        .expect("provider should resolve from PATHEXT candidate");
 
         assert_eq!(resolved, provider);
     }
@@ -724,7 +808,13 @@ mod tests {
             .expect_err("missing daemon binary should fail");
 
         assert!(
-            error.to_string().contains("tunnelmuxd binary"),
+            error
+                .to_string()
+                .contains("tunnelmuxd component is unavailable"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains("Reinstall the TunnelMux app"),
             "unexpected error: {error}"
         );
     }
@@ -809,6 +899,7 @@ mod tests {
         let snapshot = daemon_status_snapshot(&DaemonConnectionState::default(), true);
 
         assert_eq!(snapshot.ownership, DaemonOwnership::Unavailable);
+        assert!(snapshot.bootstrapping);
         assert!(!snapshot.connected);
         assert_eq!(
             snapshot.message.as_deref(),
@@ -874,6 +965,28 @@ mod tests {
         }
         std::fs::create_dir_all(&path).expect("temp dir should be created");
         path
+    }
+
+    fn write_fake_binary(path: &Path) {
+        std::fs::write(
+            path,
+            "#!/bin/sh
+exit 0
+",
+        )
+        .expect("fake binary should be written");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(path)
+                .expect("fake binary metadata should load")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions)
+                .expect("fake binary permissions should update");
+        }
     }
 
     fn next_temp_dir() -> PathBuf {

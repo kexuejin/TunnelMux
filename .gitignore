@@ -8,6 +8,7 @@
 .env
 .env.*
 !.env.example
+.codex-local/
 
 # Editor / IDE
 .idea/

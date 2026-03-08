@@ -17,6 +17,7 @@
             <h1>Expose local services instantly</h1>
             <div class="status-row">
               <p id="app-status" class="subtle">Loading your current tunnel and services…</p>
+              <button id="status-action" type="button" class="secondary inline-action" hidden>Retry Local Daemon</button>
               <button id="status-error-details" type="button" class="secondary inline-action" hidden>View Error Details</button>
             </div>
           </div>
@@ -33,10 +34,13 @@
           <p class="eyebrow card-eyebrow">Get Started</p>
           <h2>No tunnel yet</h2>
           <p class="panel-subtle">
-            Create a tunnel, start it, then add your first local service.
+            Create Tunnel → Install provider if needed → Start Tunnel → Add Service → Share URL
           </p>
+          <p id="empty-provider-copy" class="panel-subtle" hidden></p>
           <div class="actions">
             <button id="create-tunnel-empty" type="button">Create Tunnel</button>
+            <button id="empty-provider-action" type="button" class="secondary" hidden>Copy Install Command</button>
+            <button id="empty-provider-follow-up-action" type="button" class="secondary" hidden>Recheck Provider</button>
           </div>
         </section>
 
@@ -85,6 +89,9 @@
             </dl>
             <div class="actions hero-actions">
               <button id="start-tunnel" type="button">Start Tunnel</button>
+              <button id="hero-add-service" type="button" hidden>Add Service</button>
+              <button id="home-provider-action" type="button" hidden>Copy Install Command</button>
+              <button id="home-provider-follow-up-action" type="button" class="secondary" hidden>Recheck Provider</button>
               <button id="copy-public-url" type="button" class="secondary">Copy URL</button>
               <button id="open-public-url" type="button" class="secondary">Open</button>
               <button id="manage-provider" type="button" class="secondary" hidden>Open Cloudflare</button>
@@ -104,6 +111,7 @@
             </div>
             <div class="actions compact-actions">
               <button id="provider-status-action" type="button" class="secondary" hidden>Review</button>
+              <button id="provider-status-follow-up-action" type="button" class="secondary" hidden>Recheck Provider</button>
             </div>
           </article>
         </section>
@@ -123,7 +131,7 @@
           <div id="routes-empty" class="empty-state">
             <p id="routes-empty-title" class="empty-title">No services yet.</p>
             <p id="routes-empty-copy" class="panel-subtle">
-              Add one local URL to replace the default welcome page.
+              Add a local service before sharing this URL.
             </p>
             <div class="actions">
               <button id="new-route-empty" type="button">Add Service</button>
@@ -252,6 +260,23 @@
                 <option value="ngrok">ngrok</option>
               </select>
             </label>
+          </section>
+
+          <section class="drawer-section">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Provider Readiness</p>
+                <h3 id="tunnel-provider-readiness-title">Checking provider</h3>
+                <p id="tunnel-provider-readiness-message" class="panel-subtle">
+                  TunnelMux will verify whether this provider is installed before you start the tunnel.
+                </p>
+              </div>
+              <div id="tunnel-provider-readiness-badge" class="status-pill idle">Info</div>
+            </div>
+            <div class="actions compact-actions">
+              <button id="tunnel-provider-install-action" type="button" class="secondary" hidden>Copy Install Command</button>
+              <button id="tunnel-provider-recheck-action" type="button" class="secondary" hidden>Recheck Provider</button>
+            </div>
           </section>
 
           <details id="tunnel-advanced" class="advanced-section">

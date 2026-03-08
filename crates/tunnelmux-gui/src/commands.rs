@@ -2,21 +2,38 @@ use crate::daemon_manager::{self, DaemonStatusSnapshot};
 use crate::settings::{GuiSettings, load_settings_from_dir, save_settings_to_dir};
 use crate::state::GuiAppState;
 use crate::view_models::{
-    DiagnosticsSummaryVm, LogTailVm, ProviderStatusVm, RouteFormData, RouteWorkspaceSnapshot,
-    TunnelProfileVm, TunnelWorkspaceVm, UpstreamHealthVm,
+    DiagnosticsSummaryVm, LogTailVm, ProviderAvailabilitySnapshotVm, ProviderAvailabilityVm,
+    ProviderStatusVm, RouteFormData, RouteWorkspaceSnapshot, TunnelProfileVm, TunnelWorkspaceVm,
+    UpstreamHealthVm,
 };
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 use tauri::Manager;
 use tunnelmux_control_client::{ControlClientConfig, TunnelmuxControlClient};
 use tunnelmux_core::{HealthResponse, TunnelProvider, TunnelStartRequest, TunnelStatus};
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionStatus {
     pub connected: bool,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SaveSettingsResult {
+    pub settings: GuiSettings,
+    pub daemon_status: DaemonStatusSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsSaveReconnectMode {
+    EnsureLocalDaemon,
+    ProbeConnection,
 }
 
 #[tauri::command]
@@ -40,9 +57,19 @@ async fn bootstrap_local_daemon_with_state<R: tauri::Runtime>(
 ) -> Result<DaemonStatusSnapshot, String> {
     let settings_dir = resolve_settings_dir(app, state)?;
     let settings = load_settings_from_dir(&settings_dir).map_err(command_error)?;
-    daemon_manager::ensure_local_daemon(app, &state.daemon_runtime, &settings)
+
+    match startup_reconnect_mode(&settings) {
+        SettingsSaveReconnectMode::EnsureLocalDaemon => {
+            daemon_manager::ensure_local_daemon(app, &state.daemon_runtime, &settings)
+                .await
+                .map_err(command_error)
+        }
+        SettingsSaveReconnectMode::ProbeConnection => probe_connection_from_settings_dir(
+            &settings_dir,
+        )
         .await
-        .map_err(command_error)
+        .map(daemon_status_snapshot_from_connection),
+    }
 }
 
 #[tauri::command]
@@ -90,14 +117,20 @@ pub fn load_settings(
 }
 
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     app: tauri::AppHandle,
     state: tauri::State<'_, GuiAppState>,
     settings: GuiSettings,
-) -> Result<GuiSettings, String> {
+) -> Result<SaveSettingsResult, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     save_settings_to_dir(&settings_dir, &settings).map_err(command_error)?;
-    load_settings_from_dir(&settings_dir).map_err(command_error)
+    let settings = load_settings_from_dir(&settings_dir).map_err(command_error)?;
+    let daemon_status =
+        reconnect_after_settings_save(&app, state.inner(), &settings_dir, &settings).await;
+    Ok(SaveSettingsResult {
+        settings,
+        daemon_status,
+    })
 }
 
 #[tauri::command]
@@ -125,6 +158,13 @@ pub async fn load_tunnel_workspace(
 ) -> Result<TunnelWorkspaceVm, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     load_tunnel_workspace_from_settings_dir(&settings_dir).await
+}
+
+#[tauri::command]
+pub fn load_provider_availability_snapshot() -> Result<ProviderAvailabilitySnapshotVm, String> {
+    Ok(build_provider_availability_snapshot(
+        ProviderAvailabilityProbe::detect(),
+    ))
 }
 
 #[tauri::command]
@@ -258,6 +298,78 @@ pub async fn probe_connection_from_settings_dir(
     }
 }
 
+fn settings_save_reconnect_mode(settings: &GuiSettings) -> SettingsSaveReconnectMode {
+    if settings.base_url == crate::settings::DEFAULT_BASE_URL {
+        SettingsSaveReconnectMode::EnsureLocalDaemon
+    } else {
+        SettingsSaveReconnectMode::ProbeConnection
+    }
+}
+
+fn startup_reconnect_mode(settings: &GuiSettings) -> SettingsSaveReconnectMode {
+    settings_save_reconnect_mode(settings)
+}
+
+fn daemon_status_snapshot_from_connection(connection: ConnectionStatus) -> DaemonStatusSnapshot {
+    if connection.connected {
+        DaemonStatusSnapshot {
+            ownership: daemon_manager::DaemonOwnership::External,
+            bootstrapping: false,
+            connected: true,
+            message: Some("Connected to the configured TunnelMux daemon.".to_string()),
+        }
+    } else {
+        DaemonStatusSnapshot {
+            ownership: daemon_manager::DaemonOwnership::Unavailable,
+            bootstrapping: false,
+            connected: false,
+            message: connection
+                .message
+                .or_else(|| Some("Configured TunnelMux daemon is unavailable.".to_string())),
+        }
+    }
+}
+
+async fn reconnect_after_settings_save<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &GuiAppState,
+    settings_dir: &Path,
+    settings: &GuiSettings,
+) -> DaemonStatusSnapshot {
+    match settings_save_reconnect_mode(settings) {
+        SettingsSaveReconnectMode::EnsureLocalDaemon => {
+            match daemon_manager::ensure_local_daemon(app, &state.daemon_runtime, settings).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => DaemonStatusSnapshot {
+                    ownership: daemon_manager::DaemonOwnership::Unavailable,
+                    bootstrapping: false,
+                    connected: false,
+                    message: {
+                        let error = command_error(error);
+                        let friendly = daemon_manager::friendly_daemon_unavailable_message(&error);
+                        Some(if friendly == error {
+                            format!("Could not start local TunnelMux: {error}")
+                        } else {
+                            friendly
+                        })
+                    },
+                },
+            }
+        }
+        SettingsSaveReconnectMode::ProbeConnection => {
+            match probe_connection_from_settings_dir(settings_dir).await {
+                Ok(connection) => daemon_status_snapshot_from_connection(connection),
+                Err(error) => DaemonStatusSnapshot {
+                    ownership: daemon_manager::DaemonOwnership::Unavailable,
+                    bootstrapping: false,
+                    connected: false,
+                    message: Some(error),
+                },
+            }
+        }
+    }
+}
+
 pub async fn refresh_dashboard_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<DashboardSnapshot, String> {
@@ -319,22 +431,38 @@ pub async fn start_tunnel_from_settings_dir(
     settings_dir: &Path,
     input: StartTunnelInput,
 ) -> Result<DashboardSnapshot, String> {
+    start_tunnel_from_settings_dir_with_provider_probe(
+        settings_dir,
+        input,
+        ProviderAvailabilityProbe::detect(),
+    )
+    .await
+}
+
+async fn start_tunnel_from_settings_dir_with_provider_probe(
+    settings_dir: &Path,
+    input: StartTunnelInput,
+    provider_probe: ProviderAvailabilityProbe,
+) -> Result<DashboardSnapshot, String> {
+    ensure_provider_is_available(&input.provider, provider_probe)?;
     let (settings, client) = load_client(settings_dir)?;
-    let tunnel_id = settings
-        .current_tunnel()
+    let current_tunnel = settings.current_tunnel();
+    let tunnel_id = current_tunnel
         .map(|tunnel| tunnel.id.clone())
         .ok_or_else(|| "no tunnel selected".to_string())?;
-    let metadata = build_tunnel_metadata(settings.current_tunnel(), &input.provider);
+    ensure_tunnel_start_is_configured(current_tunnel, &input.provider)?;
+    let metadata = build_tunnel_metadata(current_tunnel, &input.provider);
+    let request = TunnelStartRequest {
+        tunnel_id,
+        provider: input.provider.clone(),
+        target_url: input.target_url.clone(),
+        auto_restart: Some(input.auto_restart),
+        metadata,
+    };
     let response = client
-        .start_tunnel(&TunnelStartRequest {
-            tunnel_id,
-            provider: input.provider,
-            target_url: input.target_url,
-            auto_restart: Some(input.auto_restart),
-            metadata,
-        })
+        .start_tunnel(&request)
         .await
-        .map_err(command_error)?;
+        .map_err(|error| friendly_start_error(command_error(error), current_tunnel, &input))?;
 
     Ok(DashboardSnapshot {
         connected: true,
@@ -405,9 +533,14 @@ pub async fn save_route_from_settings_dir(
         client
             .update_route_with_options(original_id, &request, true)
             .await
-            .map_err(command_error)?;
+            .map_err(command_error)
+            .map_err(|error| friendly_route_save_error(error, &request))?;
     } else {
-        client.create_route(&request).await.map_err(command_error)?;
+        client
+            .create_route(&request)
+            .await
+            .map_err(command_error)
+            .map_err(|error| friendly_route_save_error(error, &request))?;
     }
 
     let routes = client.list_routes(tunnel_id).await.map_err(command_error)?;
@@ -511,10 +644,16 @@ pub async fn load_provider_status_summary_from_settings_dir(
         .await
         .map(|response| response.lines)
         .unwrap_or_default();
+    let routes = client
+        .list_routes(&tunnel_id)
+        .await
+        .map(|response| response.routes)
+        .unwrap_or_default();
     Ok(derive_provider_status_summary(
         &settings,
         tunnel.as_ref(),
         &log_lines,
+        &routes,
     ))
 }
 
@@ -522,12 +661,7 @@ pub async fn load_tunnel_workspace_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<TunnelWorkspaceVm, String> {
     let settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
-    if settings.tunnels.is_empty() {
-        return Ok(TunnelWorkspaceVm {
-            tunnels: Vec::new(),
-            current_tunnel_id: None,
-        });
-    }
+    let provider_probe = ProviderAvailabilityProbe::detect();
 
     let daemon_workspace = if let Ok((_, client)) = load_client(settings_dir) {
         if client.health().await.is_ok() {
@@ -539,42 +673,18 @@ pub async fn load_tunnel_workspace_from_settings_dir(
         None
     };
 
-    let tunnels = settings
-        .tunnels
-        .iter()
-        .map(|tunnel| {
-            let summary = daemon_workspace
-                .as_ref()
-                .and_then(|workspace| workspace.tunnels.iter().find(|item| item.id == tunnel.id));
-            TunnelProfileVm {
-                id: tunnel.id.clone(),
-                name: tunnel.name.clone(),
-                provider: match tunnel.provider {
-                    TunnelProvider::Cloudflared => "cloudflared".to_string(),
-                    TunnelProvider::Ngrok => "ngrok".to_string(),
-                },
-                state: summary
-                    .map(|item| format!("{:?}", item.state).to_lowercase())
-                    .unwrap_or_else(|| "idle".to_string()),
-                route_count: summary.map(|item| item.route_count).unwrap_or(0),
-                enabled_route_count: summary.map(|item| item.enabled_route_count).unwrap_or(0),
-                public_base_url: summary.and_then(|item| item.public_base_url.clone()),
-            }
-        })
-        .collect();
-
-    Ok(TunnelWorkspaceVm {
-        tunnels,
-        current_tunnel_id: daemon_workspace
-            .and_then(|workspace| workspace.current_tunnel_id)
-            .or(settings.current_tunnel_id.clone()),
-    })
+    Ok(build_tunnel_workspace(
+        &settings,
+        daemon_workspace.as_ref(),
+        provider_probe,
+    ))
 }
 
 pub fn save_tunnel_profile_to_settings_dir(
     settings_dir: &Path,
     profile: TunnelProfileInput,
 ) -> Result<TunnelWorkspaceVm, String> {
+    validate_tunnel_profile_input(&profile)?;
     let mut settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
     let tunnel_id = profile
         .id
@@ -649,35 +759,173 @@ fn delete_tunnel_profile_from_settings_dir_without_daemon(
 fn load_tunnel_workspace_from_settings_dir_without_daemon(
     settings_dir: &Path,
 ) -> Result<TunnelWorkspaceVm, String> {
+    load_tunnel_workspace_from_settings_dir_without_daemon_with_provider_probe(
+        settings_dir,
+        ProviderAvailabilityProbe::detect(),
+    )
+}
+
+fn load_tunnel_workspace_from_settings_dir_without_daemon_with_provider_probe(
+    settings_dir: &Path,
+    provider_probe: ProviderAvailabilityProbe,
+) -> Result<TunnelWorkspaceVm, String> {
     let settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
+    Ok(build_tunnel_workspace(&settings, None, provider_probe))
+}
+
+fn build_tunnel_workspace(
+    settings: &GuiSettings,
+    daemon_workspace: Option<&tunnelmux_core::TunnelWorkspaceResponse>,
+    provider_probe: ProviderAvailabilityProbe,
+) -> TunnelWorkspaceVm {
     if settings.tunnels.is_empty() {
-        return Ok(TunnelWorkspaceVm {
+        return TunnelWorkspaceVm {
             tunnels: Vec::new(),
             current_tunnel_id: None,
-        });
+        };
     }
 
     let tunnels = settings
         .tunnels
         .iter()
-        .map(|tunnel| TunnelProfileVm {
-            id: tunnel.id.clone(),
-            name: tunnel.name.clone(),
-            provider: match tunnel.provider {
-                TunnelProvider::Cloudflared => "cloudflared".to_string(),
-                TunnelProvider::Ngrok => "ngrok".to_string(),
-            },
-            state: "idle".to_string(),
-            route_count: 0,
-            enabled_route_count: 0,
-            public_base_url: None,
+        .map(|tunnel| {
+            let summary = daemon_workspace
+                .and_then(|workspace| workspace.tunnels.iter().find(|item| item.id == tunnel.id));
+            TunnelProfileVm {
+                id: tunnel.id.clone(),
+                name: tunnel.name.clone(),
+                provider: provider_name(&tunnel.provider).to_string(),
+                provider_availability: ProviderAvailabilityVm {
+                    binary_name: provider_binary_name(&tunnel.provider).to_string(),
+                    installed: provider_probe.installed(&tunnel.provider),
+                },
+                state: summary
+                    .map(|item| format!("{:?}", item.state).to_lowercase())
+                    .unwrap_or_else(|| "idle".to_string()),
+                route_count: summary.map(|item| item.route_count).unwrap_or(0),
+                enabled_route_count: summary.map(|item| item.enabled_route_count).unwrap_or(0),
+                public_base_url: summary.and_then(|item| item.public_base_url.clone()),
+            }
         })
         .collect();
 
-    Ok(TunnelWorkspaceVm {
+    TunnelWorkspaceVm {
         tunnels,
-        current_tunnel_id: settings.current_tunnel_id.clone(),
-    })
+        current_tunnel_id: daemon_workspace
+            .and_then(|workspace| workspace.current_tunnel_id.clone())
+            .or(settings.current_tunnel_id.clone()),
+    }
+}
+
+fn build_provider_availability_snapshot(
+    provider_probe: ProviderAvailabilityProbe,
+) -> ProviderAvailabilitySnapshotVm {
+    ProviderAvailabilitySnapshotVm {
+        cloudflared: ProviderAvailabilityVm {
+            binary_name: provider_binary_name(&TunnelProvider::Cloudflared).to_string(),
+            installed: provider_probe.cloudflared_installed,
+        },
+        ngrok: ProviderAvailabilityVm {
+            binary_name: provider_binary_name(&TunnelProvider::Ngrok).to_string(),
+            installed: provider_probe.ngrok_installed,
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProviderAvailabilityProbe {
+    cloudflared_installed: bool,
+    ngrok_installed: bool,
+}
+
+impl ProviderAvailabilityProbe {
+    fn detect() -> Self {
+        Self::from_search_dirs(
+            daemon_manager::provider_binary_search_dirs(
+                std::env::var_os("PATH").as_deref(),
+                std::iter::empty::<PathBuf>(),
+            ),
+            std::env::var_os("PATHEXT").as_deref(),
+        )
+    }
+
+    #[cfg(test)]
+    fn from_env(path: Option<&OsStr>, pathext: Option<&OsStr>) -> Self {
+        let search_dirs = path
+            .map(std::env::split_paths)
+            .into_iter()
+            .flatten()
+            .collect();
+        Self::from_search_dirs(search_dirs, pathext)
+    }
+
+    fn from_search_dirs(search_dirs: Vec<PathBuf>, pathext: Option<&OsStr>) -> Self {
+        Self {
+            cloudflared_installed: daemon_manager::resolve_binary_in_dirs(
+                "cloudflared",
+                search_dirs.clone(),
+                pathext,
+            )
+            .is_some(),
+            ngrok_installed: daemon_manager::resolve_binary_in_dirs("ngrok", search_dirs, pathext)
+                .is_some(),
+        }
+    }
+
+    fn installed(&self, provider: &TunnelProvider) -> bool {
+        match provider {
+            TunnelProvider::Cloudflared => self.cloudflared_installed,
+            TunnelProvider::Ngrok => self.ngrok_installed,
+        }
+    }
+}
+
+fn ensure_provider_is_available(
+    provider: &TunnelProvider,
+    provider_probe: ProviderAvailabilityProbe,
+) -> Result<(), String> {
+    if provider_probe.installed(provider) {
+        return Ok(());
+    }
+
+    let binary_name = provider_binary_name(provider);
+    Err(format!(
+        "Install {binary_name} to start this tunnel. TunnelMux could not find the {binary_name} command in your PATH."
+    ))
+}
+
+fn ensure_tunnel_start_is_configured(
+    current_tunnel: Option<&crate::settings::TunnelProfileSettings>,
+    provider: &TunnelProvider,
+) -> Result<(), String> {
+    if *provider == TunnelProvider::Ngrok
+        && current_tunnel
+            .and_then(|tunnel| tunnel.ngrok_authtoken.as_deref())
+            .is_none()
+    {
+        return Err("Add the ngrok authtoken on this tunnel, then retry.".to_string());
+    }
+
+    if *provider == TunnelProvider::Ngrok
+        && current_tunnel
+            .and_then(|tunnel| tunnel.ngrok_domain.as_deref())
+            .is_some_and(|value| !is_supported_ngrok_reserved_domain(value))
+    {
+        return Err(ngrok_reserved_domain_recovery_message());
+    }
+
+    Ok(())
+}
+
+fn provider_name(provider: &TunnelProvider) -> &'static str {
+    match provider {
+        TunnelProvider::Cloudflared => "cloudflared",
+        TunnelProvider::Ngrok => "ngrok",
+    }
+}
+
+fn provider_binary_name(provider: &TunnelProvider) -> &'static str {
+    provider_name(provider)
 }
 
 fn next_tunnel_profile_id(profiles: &[crate::settings::TunnelProfileSettings]) -> String {
@@ -695,6 +943,7 @@ fn derive_provider_status_summary(
     settings: &GuiSettings,
     tunnel: Option<&TunnelStatus>,
     log_lines: &[String],
+    routes: &[tunnelmux_core::RouteRule],
 ) -> Option<ProviderStatusVm> {
     let tunnel = tunnel?;
     let current_tunnel = settings.current_tunnel();
@@ -717,12 +966,14 @@ fn derive_provider_status_summary(
                 "Cloudflare Setup",
                 "Named tunnel connected. Configure hostname and Access in Cloudflare.",
             )
-            .with_action("open_cloudflare", "Open Cloudflare"),
+            .with_action("open_cloudflare", "Open Cloudflare")
+            .with_follow_up_action("open_cloudflare_docs", "Setup Hostname"),
         );
     }
 
     for line in log_lines.iter().rev() {
-        if let Some(summary) = classify_provider_log_line(&provider, line) {
+        if let Some(summary) = classify_provider_log_line(&provider, current_tunnel, line, routes)
+        {
             return Some(summary);
         }
     }
@@ -738,19 +989,31 @@ fn derive_provider_status_summary(
     None
 }
 
-fn classify_provider_log_line(provider: &TunnelProvider, line: &str) -> Option<ProviderStatusVm> {
+fn classify_provider_log_line(
+    provider: &TunnelProvider,
+    current_tunnel: Option<&crate::settings::TunnelProfileSettings>,
+    line: &str,
+    routes: &[tunnelmux_core::RouteRule],
+) -> Option<ProviderStatusVm> {
     let lower = line.to_ascii_lowercase();
 
     if lower.contains("unable to reach the origin service")
         || lower.contains("connection refused")
         || lower.contains("upstream request failed")
     {
-        return Some(ProviderStatusVm::new(
+        let summary = ProviderStatusVm::new(
             "warning",
             "Local Service Unreachable",
             "Tunnel is up, but the local service did not respond. Check the target URL and make sure your app is running.",
-        )
-        .with_action("review_services", "Review Services"));
+        );
+
+        return Some(if routes.len() == 1 {
+            summary
+                .with_action("edit_service", "Edit Service")
+                .with_action_payload(&routes[0].id)
+        } else {
+            summary.with_action("review_services", "Review Services")
+        });
     }
 
     if *provider == TunnelProvider::Ngrok {
@@ -758,14 +1021,7 @@ fn classify_provider_log_line(provider: &TunnelProvider, line: &str) -> Option<P
             .split(|value: char| !value.is_ascii_alphanumeric() && value != '_')
             .find(|token| token.starts_with("ERR_NGROK_"))
         {
-            return Some(
-                ProviderStatusVm::new(
-                    "error",
-                    "ngrok Error",
-                    &format!("{code}. Check your authtoken, domain, or ngrok account settings."),
-                )
-                .with_action("open_settings", "Open Settings"),
-            );
+            return Some(classify_ngrok_error(current_tunnel, &lower, code));
         }
     }
 
@@ -778,6 +1034,47 @@ fn classify_provider_log_line(provider: &TunnelProvider, line: &str) -> Option<P
     }
 
     None
+}
+
+fn classify_ngrok_error(
+    current_tunnel: Option<&crate::settings::TunnelProfileSettings>,
+    lower: &str,
+    code: &str,
+) -> ProviderStatusVm {
+    let has_authtoken = current_tunnel
+        .and_then(|tunnel| tunnel.ngrok_authtoken.as_ref())
+        .is_some();
+    let has_domain = current_tunnel
+        .and_then(|tunnel| tunnel.ngrok_domain.as_ref())
+        .is_some();
+
+    if lower.contains("authtoken") || code == "ERR_NGROK_4018" || !has_authtoken {
+        return ProviderStatusVm::new(
+            "error",
+            "ngrok Authtoken Needed",
+            &format!("{code}. Add the ngrok authtoken on this tunnel, then retry."),
+        )
+        .with_action("edit_tunnel", "Add ngrok Authtoken")
+        .with_action_payload("ngrok_authtoken");
+    }
+
+    if lower.contains("domain") || lower.contains("reserved") || has_domain {
+        return ProviderStatusVm::new(
+            "error",
+            "ngrok Domain Check",
+            &format!("{code}. Review the reserved domain on this tunnel and make sure it matches your ngrok account."),
+        )
+        .with_action("edit_tunnel", "Review ngrok Domain")
+        .with_action_payload("ngrok_domain");
+    }
+
+    ProviderStatusVm::new(
+        "error",
+        "ngrok Setup Check",
+        &format!("{code}. Review the ngrok settings on this tunnel, then retry."),
+    )
+    .with_action("edit_tunnel", "Review ngrok Settings")
+    .with_action_payload("ngrok_authtoken")
 }
 
 fn load_client(settings_dir: &Path) -> Result<(GuiSettings, TunnelmuxControlClient), String> {
@@ -805,6 +1102,136 @@ fn resolve_settings_dir<R: tauri::Runtime>(
 
 fn command_error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+fn is_supported_local_url(value: &str) -> bool {
+    Url::parse(value.trim())
+        .map(|parsed| matches!(parsed.scheme(), "http" | "https"))
+        .unwrap_or(false)
+}
+
+fn tunnel_local_service_url_recovery_message() -> String {
+    "Invalid Local Service URL. Review it on this tunnel, then retry.".to_string()
+}
+
+fn ngrok_reserved_domain_recovery_message() -> String {
+    "Review the reserved domain on this tunnel. Use only the hostname, like demo.ngrok.app, without https://, paths, query strings, or ports.".to_string()
+}
+
+fn is_supported_ngrok_reserved_domain(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    if trimmed.contains("://") || trimmed.chars().any(char::is_whitespace) {
+        return false;
+    }
+
+    Url::parse(&format!("https://{trimmed}"))
+        .map(|parsed| {
+            parsed.host_str().is_some()
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+                && parsed.port().is_none()
+                && parsed.path() == "/"
+                && parsed.query().is_none()
+                && parsed.fragment().is_none()
+        })
+        .unwrap_or(false)
+}
+
+fn validate_tunnel_profile_input(profile: &TunnelProfileInput) -> Result<(), String> {
+    if !is_supported_local_url(&profile.gateway_target_url) {
+        return Err(tunnel_local_service_url_recovery_message());
+    }
+
+    if profile.provider == TunnelProvider::Ngrok
+        && profile
+            .ngrok_domain
+            .as_deref()
+            .is_some_and(|value| !is_supported_ngrok_reserved_domain(value))
+    {
+        return Err(ngrok_reserved_domain_recovery_message());
+    }
+
+    Ok(())
+}
+
+fn friendly_start_error(
+    message: String,
+    _current_tunnel: Option<&crate::settings::TunnelProfileSettings>,
+    input: &StartTunnelInput,
+) -> String {
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("invalid gateway target url")
+        || (lower.contains("invalid") && lower.contains("target url"))
+    {
+        return tunnel_local_service_url_recovery_message();
+    }
+
+    if input.provider == TunnelProvider::Ngrok
+        && (lower.contains("ngrok authtoken")
+            || lower.contains("authtoken")
+            || lower.contains("err_ngrok_4018"))
+    {
+        return "Add the ngrok authtoken on this tunnel, then retry.".to_string();
+    }
+
+    if input.provider == TunnelProvider::Ngrok
+        && (lower.contains("reserved domain") || lower.contains("domain"))
+    {
+        return "Review the reserved domain on this tunnel and make sure it matches your ngrok account.".to_string();
+    }
+
+    message
+}
+
+fn friendly_route_save_error(
+    message: String,
+    request: &tunnelmux_core::CreateRouteRequest,
+) -> String {
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("invalid url") {
+        if !is_supported_local_url(&request.upstream_url) {
+            return "Invalid Local Service URL. Review it in this service, then save again."
+                .to_string();
+        }
+
+        if request
+            .fallback_upstream_url
+            .as_deref()
+            .is_some_and(|value| !is_supported_local_url(value))
+        {
+            return "Invalid Fallback Local URL. Review it in this service, then save again."
+                .to_string();
+        }
+    }
+
+    if lower.contains("invalid health_check_path") {
+        return "Health Check Path must be a slash path like /healthz. Remove any ?query or #fragment, then save again.".to_string();
+    }
+
+    if lower.contains("route id is required") {
+        return "Add a Local Service URL or enter a Service Name before saving.".to_string();
+    }
+
+    if lower.contains("already exists in tunnel") || lower.contains("duplicate route id") {
+        let route_name = request.id.trim();
+        if route_name.is_empty() {
+            return "Service Name is already in use for this tunnel. Rename it and save again."
+                .to_string();
+        }
+
+        return format!(
+            "Service Name \"{}\" is already in use for this tunnel. Rename it and save again.",
+            route_name
+        );
+    }
+
+    message
 }
 
 fn build_tunnel_metadata(
@@ -837,7 +1264,11 @@ fn build_tunnel_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, extract::Query, routing::get};
+    use axum::{
+        Json, Router,
+        extract::Query,
+        routing::{get, post},
+    };
     use std::{
         net::SocketAddr,
         sync::atomic::{AtomicU64, Ordering},
@@ -883,6 +1314,270 @@ mod tests {
         );
     }
 
+    #[test]
+    fn settings_save_reconnect_mode_prefers_local_daemon_for_default_url() {
+        assert_eq!(
+            settings_save_reconnect_mode(&GuiSettings::default()),
+            SettingsSaveReconnectMode::EnsureLocalDaemon
+        );
+    }
+
+    #[test]
+    fn settings_save_reconnect_mode_uses_probe_for_custom_url() {
+        assert_eq!(
+            settings_save_reconnect_mode(&GuiSettings {
+                base_url: "http://127.0.0.1:9900".to_string(),
+                ..GuiSettings::default()
+            }),
+            SettingsSaveReconnectMode::ProbeConnection
+        );
+    }
+
+    #[test]
+    fn startup_reconnect_mode_prefers_local_daemon_for_default_url() {
+        assert_eq!(
+            startup_reconnect_mode(&GuiSettings::default()),
+            SettingsSaveReconnectMode::EnsureLocalDaemon
+        );
+    }
+
+    #[test]
+    fn startup_reconnect_mode_uses_probe_for_custom_url() {
+        assert_eq!(
+            startup_reconnect_mode(&GuiSettings {
+                base_url: "http://127.0.0.1:9900".to_string(),
+                ..GuiSettings::default()
+            }),
+            SettingsSaveReconnectMode::ProbeConnection
+        );
+    }
+
+    #[test]
+    fn daemon_status_snapshot_from_connection_marks_connected_custom_daemon_as_external() {
+        let snapshot = daemon_status_snapshot_from_connection(ConnectionStatus {
+            connected: true,
+            message: None,
+        });
+
+        assert!(snapshot.connected);
+        assert_eq!(
+            snapshot.ownership,
+            daemon_manager::DaemonOwnership::External
+        );
+        assert_eq!(
+            snapshot.message.as_deref(),
+            Some("Connected to the configured TunnelMux daemon.")
+        );
+    }
+
+    #[test]
+    fn daemon_status_snapshot_from_connection_preserves_custom_probe_errors() {
+        let snapshot = daemon_status_snapshot_from_connection(ConnectionStatus {
+            connected: false,
+            message: Some("connection refused".to_string()),
+        });
+
+        assert!(!snapshot.connected);
+        assert_eq!(
+            snapshot.ownership,
+            daemon_manager::DaemonOwnership::Unavailable
+        );
+        assert_eq!(snapshot.message.as_deref(), Some("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn probe_connection_reports_connected_for_reachable_custom_daemon() {
+        let temp_dir = prepare_temp_dir();
+        let base_url =
+            spawn_test_server(Router::new().route("/v1/health", get(health_handler))).await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let status = probe_connection_from_settings_dir(&temp_dir)
+            .await
+            .expect("probe should succeed");
+
+        assert!(status.connected);
+        assert_eq!(status.message, None);
+    }
+
+    #[tokio::test]
+    async fn probe_connection_reports_error_for_unreachable_custom_daemon() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url: "http://127.0.0.1:9".to_string(),
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let status = probe_connection_from_settings_dir(&temp_dir)
+            .await
+            .expect("probe should return a disconnected status");
+
+        assert!(!status.connected);
+        assert!(
+            status
+                .message
+                .as_deref()
+                .map(|message| message.contains("request failed")
+                    || message.contains("error sending request"))
+                .unwrap_or(false),
+            "unexpected status: {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn friendly_start_error_maps_invalid_gateway_target_url() {
+        let tunnel = crate::settings::TunnelProfileSettings {
+            id: "primary".to_string(),
+            name: "Main Tunnel".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            gateway_target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: true,
+            cloudflared_tunnel_token: None,
+            ngrok_authtoken: None,
+            ngrok_domain: None,
+        };
+
+        assert_eq!(
+            friendly_start_error(
+                "invalid gateway target URL: not-a-url".to_string(),
+                Some(&tunnel),
+                &StartTunnelInput {
+                    provider: TunnelProvider::Cloudflared,
+                    target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                },
+            ),
+            "Invalid Local Service URL. Review it on this tunnel, then retry."
+        );
+    }
+
+    #[test]
+    fn friendly_route_save_error_maps_invalid_local_service_url() {
+        assert_eq!(
+            friendly_route_save_error(
+                "invalid URL: not-a-url".to_string(),
+                &crate::view_models::RouteFormData {
+                    upstream_url: "not-a-url".to_string(),
+                    ..crate::view_models::RouteFormData::default()
+                }
+                .into_create_request("primary"),
+            ),
+            "Invalid Local Service URL. Review it in this service, then save again."
+        );
+    }
+
+    #[test]
+    fn friendly_route_save_error_maps_invalid_fallback_local_service_url() {
+        assert_eq!(
+            friendly_route_save_error(
+                "invalid URL: tcp://127.0.0.1:3001".to_string(),
+                &crate::view_models::RouteFormData {
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    fallback_upstream_url: "tcp://127.0.0.1:3001".to_string(),
+                    ..crate::view_models::RouteFormData::default()
+                }
+                .into_create_request("primary"),
+            ),
+            "Invalid Fallback Local URL. Review it in this service, then save again."
+        );
+    }
+
+    #[test]
+    fn friendly_route_save_error_maps_invalid_health_check_path() {
+        assert_eq!(
+            friendly_route_save_error(
+                "invalid health_check_path: health check path must not include query or fragment"
+                    .to_string(),
+                &crate::view_models::RouteFormData {
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    health_check_path: "/healthz?bad=1".to_string(),
+                    ..crate::view_models::RouteFormData::default()
+                }
+                .into_create_request("primary"),
+            ),
+            "Health Check Path must be a slash path like /healthz. Remove any ?query or #fragment, then save again."
+        );
+    }
+
+    #[test]
+    fn friendly_route_save_error_maps_duplicate_service_name() {
+        assert_eq!(
+            friendly_route_save_error(
+                "route 'local-3000' already exists in tunnel 'primary'".to_string(),
+                &crate::view_models::RouteFormData {
+                    id: "local-3000".to_string(),
+                    upstream_url: "http://127.0.0.1:3000".to_string(),
+                    ..crate::view_models::RouteFormData::default()
+                }
+                .into_create_request("primary"),
+            ),
+            "Service Name \"local-3000\" is already in use for this tunnel. Rename it and save again."
+        );
+    }
+
+    #[test]
+    fn friendly_route_save_error_maps_missing_service_name_or_url() {
+        assert_eq!(
+            friendly_route_save_error(
+                "route id is required".to_string(),
+                &crate::view_models::RouteFormData::default().into_create_request("primary"),
+            ),
+            "Add a Local Service URL or enter a Service Name before saving."
+        );
+    }
+
+    #[test]
+    fn friendly_start_error_maps_ngrok_config_errors() {
+        let tunnel = crate::settings::TunnelProfileSettings {
+            id: "primary".to_string(),
+            name: "Main Tunnel".to_string(),
+            provider: TunnelProvider::Ngrok,
+            gateway_target_url: "http://127.0.0.1:58080".to_string(),
+            auto_restart: true,
+            cloudflared_tunnel_token: None,
+            ngrok_authtoken: Some("token".to_string()),
+            ngrok_domain: Some("demo.ngrok.app".to_string()),
+        };
+
+        assert_eq!(
+            friendly_start_error(
+                "ERR_NGROK_4018: authtoken missing".to_string(),
+                Some(&tunnel),
+                &StartTunnelInput {
+                    provider: TunnelProvider::Ngrok,
+                    target_url: "http://127.0.0.1:58080".to_string(),
+                    auto_restart: true,
+                },
+            ),
+            "Add the ngrok authtoken on this tunnel, then retry."
+        );
+
+        assert_eq!(
+            friendly_start_error(
+                "reserved domain mismatch".to_string(),
+                Some(&tunnel),
+                &StartTunnelInput {
+                    provider: TunnelProvider::Ngrok,
+                    target_url: "http://127.0.0.1:58080".to_string(),
+                    auto_restart: true,
+                },
+            ),
+            "Review the reserved domain on this tunnel and make sure it matches your ngrok account."
+        );
+    }
+
     #[tokio::test]
     async fn start_tunnel_command_maps_connection_errors_cleanly() {
         let temp_dir = prepare_temp_dir();
@@ -910,6 +1605,135 @@ mod tests {
         assert!(
             error.contains("request failed") || error.contains("error sending request"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_tunnel_returns_friendly_error_when_provider_is_missing() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url: "http://127.0.0.1:9".to_string(),
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Cloudflared,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: None,
+                    ngrok_domain: None,
+                }],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let error = start_tunnel_from_settings_dir_with_provider_probe(
+            &temp_dir,
+            StartTunnelInput {
+                provider: TunnelProvider::Cloudflared,
+                target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: true,
+            },
+            ProviderAvailabilityProbe {
+                cloudflared_installed: false,
+                ngrok_installed: true,
+            },
+        )
+        .await
+        .expect_err("missing provider should be caught before the daemon call");
+
+        assert_eq!(
+            error,
+            "Install cloudflared to start this tunnel. TunnelMux could not find the cloudflared command in your PATH."
+        );
+    }
+
+    #[tokio::test]
+    async fn start_tunnel_returns_friendly_error_when_ngrok_authtoken_is_missing() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url: "http://127.0.0.1:9".to_string(),
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: None,
+                    ngrok_domain: None,
+                }],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let error = start_tunnel_from_settings_dir_with_provider_probe(
+            &temp_dir,
+            StartTunnelInput {
+                provider: TunnelProvider::Ngrok,
+                target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: true,
+            },
+            ProviderAvailabilityProbe {
+                cloudflared_installed: true,
+                ngrok_installed: true,
+            },
+        )
+        .await
+        .expect_err("missing ngrok authtoken should be caught before the daemon call");
+
+        assert_eq!(error, "Add the ngrok authtoken on this tunnel, then retry.");
+    }
+
+    #[tokio::test]
+    async fn start_tunnel_returns_friendly_error_when_ngrok_reserved_domain_is_invalid() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url: "http://127.0.0.1:9".to_string(),
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: Some("ngrok-token".to_string()),
+                    ngrok_domain: Some("https://demo.ngrok.app/path".to_string()),
+                }],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let error = start_tunnel_from_settings_dir_with_provider_probe(
+            &temp_dir,
+            StartTunnelInput {
+                provider: TunnelProvider::Ngrok,
+                target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: true,
+            },
+            ProviderAvailabilityProbe {
+                cloudflared_installed: true,
+                ngrok_installed: true,
+            },
+        )
+        .await
+        .expect_err("invalid reserved domain should be caught before the daemon call");
+
+        assert_eq!(
+            error,
+            "Review the reserved domain on this tunnel. Use only the hostname, like demo.ngrok.app, without https://, paths, query strings, or ports."
         );
     }
 
@@ -1256,6 +2080,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_route_returns_friendly_duplicate_name_guidance() {
+        let temp_dir = prepare_temp_dir();
+        let base_url = spawn_test_server(
+            Router::new().route("/v1/routes", post(create_route_conflict_handler)),
+        )
+        .await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let error = save_route_from_settings_dir(
+            &temp_dir,
+            crate::view_models::RouteFormData {
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                ..crate::view_models::RouteFormData::default()
+            },
+        )
+        .await
+        .expect_err("duplicate name should surface as guidance");
+
+        assert_eq!(
+            error,
+            "Service Name \"local-3000\" is already in use for this tunnel. Rename it and save again."
+        );
+    }
+
+    #[tokio::test]
+    async fn save_route_returns_friendly_missing_name_guidance() {
+        let temp_dir = prepare_temp_dir();
+        let base_url = spawn_test_server(
+            Router::new().route("/v1/routes", post(create_route_missing_id_handler)),
+        )
+        .await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let error =
+            save_route_from_settings_dir(&temp_dir, crate::view_models::RouteFormData::default())
+                .await
+                .expect_err("missing name should surface as guidance");
+
+        assert_eq!(
+            error,
+            "Add a Local Service URL or enter a Service Name before saving."
+        );
+    }
+
+    #[tokio::test]
     async fn delete_route_returns_updated_route_list() {
         let temp_dir = prepare_temp_dir();
         let routes = std::sync::Arc::new(tokio::sync::Mutex::new(vec![
@@ -1478,6 +2363,122 @@ mod tests {
         assert_eq!(workspace.tunnels[0].enabled_route_count, 0);
     }
 
+    #[test]
+    fn load_tunnel_workspace_includes_provider_availability_for_each_tunnel() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                current_tunnel_id: Some("tunnel-2".to_string()),
+                tunnels: vec![
+                    crate::settings::TunnelProfileSettings {
+                        id: "primary".to_string(),
+                        name: "Main Tunnel".to_string(),
+                        provider: TunnelProvider::Cloudflared,
+                        ..crate::settings::TunnelProfileSettings::default()
+                    },
+                    crate::settings::TunnelProfileSettings {
+                        id: "tunnel-2".to_string(),
+                        name: "API Tunnel".to_string(),
+                        provider: TunnelProvider::Ngrok,
+                        ..crate::settings::TunnelProfileSettings::default()
+                    },
+                ],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let workspace = load_tunnel_workspace_from_settings_dir_without_daemon_with_provider_probe(
+            &temp_dir,
+            ProviderAvailabilityProbe {
+                cloudflared_installed: true,
+                ngrok_installed: false,
+            },
+        )
+        .expect("workspace should load");
+
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("tunnel-2"));
+        assert_eq!(workspace.tunnels.len(), 2);
+        assert!(workspace.tunnels[0].provider_availability.installed);
+        assert_eq!(
+            workspace.tunnels[0].provider_availability.binary_name,
+            "cloudflared"
+        );
+        assert!(!workspace.tunnels[1].provider_availability.installed);
+        assert_eq!(
+            workspace.tunnels[1].provider_availability.binary_name,
+            "ngrok"
+        );
+    }
+
+    #[test]
+    fn provider_availability_probe_detects_binaries_from_explicit_path() {
+        let temp_dir = prepare_temp_dir();
+        write_fake_binary(&temp_dir.join("cloudflared"));
+
+        let probe = ProviderAvailabilityProbe::from_env(Some(temp_dir.as_os_str()), None);
+
+        assert!(probe.cloudflared_installed);
+        assert!(!probe.ngrok_installed);
+    }
+
+    #[test]
+    fn provider_availability_probe_detects_windows_pathext_binaries() {
+        let temp_dir = prepare_temp_dir();
+        write_fake_binary(&temp_dir.join("ngrok.CMD"));
+
+        let probe = ProviderAvailabilityProbe::from_env(
+            Some(temp_dir.as_os_str()),
+            Some(OsStr::new(".EXE;.CMD")),
+        );
+
+        assert!(probe.ngrok_installed);
+    }
+
+    #[test]
+    fn provider_availability_probe_detects_binaries_from_common_search_dirs() {
+        let temp_dir = prepare_temp_dir();
+        let common_dir = temp_dir.join("common-bin");
+        std::fs::create_dir_all(&common_dir).expect("common dir should be created");
+        write_fake_binary(&common_dir.join("cloudflared"));
+
+        let probe = ProviderAvailabilityProbe::from_search_dirs(vec![common_dir], None);
+
+        assert!(probe.cloudflared_installed);
+        assert!(!probe.ngrok_installed);
+    }
+
+    #[test]
+    fn provider_availability_probe_refreshes_when_path_contents_change() {
+        let temp_dir = prepare_temp_dir();
+
+        let before = ProviderAvailabilityProbe::from_env(Some(temp_dir.as_os_str()), None);
+        assert!(!before.cloudflared_installed);
+        assert!(!before.ngrok_installed);
+
+        write_fake_binary(&temp_dir.join("cloudflared"));
+
+        let after = ProviderAvailabilityProbe::from_env(Some(temp_dir.as_os_str()), None);
+        let snapshot = build_provider_availability_snapshot(after);
+
+        assert!(snapshot.cloudflared.installed);
+        assert!(!snapshot.ngrok.installed);
+    }
+
+    #[test]
+    fn provider_availability_snapshot_reports_both_supported_providers() {
+        let snapshot = build_provider_availability_snapshot(ProviderAvailabilityProbe {
+            cloudflared_installed: false,
+            ngrok_installed: true,
+        });
+
+        assert_eq!(snapshot.cloudflared.binary_name, "cloudflared");
+        assert!(!snapshot.cloudflared.installed);
+        assert_eq!(snapshot.ngrok.binary_name, "ngrok");
+        assert!(snapshot.ngrok.installed);
+    }
+
     #[tokio::test]
     async fn load_tunnel_workspace_merges_daemon_summary_when_available() {
         let temp_dir = prepare_temp_dir();
@@ -1551,6 +2552,149 @@ mod tests {
         assert_eq!(workspace.current_tunnel_id.as_deref(), Some("tunnel-1"));
         assert_eq!(workspace.tunnels[0].name, "Second Tunnel");
         assert_eq!(workspace.tunnels[0].provider, "ngrok");
+    }
+
+    #[test]
+    fn save_tunnel_profile_rejects_invalid_local_service_url_without_overwriting_profile() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Primary Tunnel".to_string(),
+                    provider: TunnelProvider::Cloudflared,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    ..crate::settings::TunnelProfileSettings::default()
+                }],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let error = save_tunnel_profile_to_settings_dir(
+            &temp_dir,
+            TunnelProfileInput {
+                id: Some("primary".to_string()),
+                name: "Primary Tunnel".to_string(),
+                provider: TunnelProvider::Cloudflared,
+                gateway_target_url: "not-a-url".to_string(),
+                auto_restart: true,
+                cloudflared_tunnel_token: None,
+                ngrok_authtoken: None,
+                ngrok_domain: None,
+            },
+        )
+        .expect_err("invalid tunnel target should be rejected");
+
+        assert_eq!(
+            error,
+            "Invalid Local Service URL. Review it on this tunnel, then retry."
+        );
+
+        let settings = load_settings_from_dir(&temp_dir).expect("settings should still load");
+        assert_eq!(settings.current_tunnel_id.as_deref(), Some("primary"));
+        assert_eq!(settings.tunnels.len(), 1);
+        assert_eq!(
+            settings.tunnels[0].gateway_target_url,
+            "http://127.0.0.1:48080"
+        );
+    }
+
+    #[test]
+    fn save_tunnel_profile_rejects_invalid_ngrok_reserved_domain_without_overwriting_profile() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Primary Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: Some("ngrok-token".to_string()),
+                    ngrok_domain: Some("demo.ngrok.app".to_string()),
+                }],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let error = save_tunnel_profile_to_settings_dir(
+            &temp_dir,
+            TunnelProfileInput {
+                id: Some("primary".to_string()),
+                name: "Primary Tunnel".to_string(),
+                provider: TunnelProvider::Ngrok,
+                gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: true,
+                cloudflared_tunnel_token: None,
+                ngrok_authtoken: Some("ngrok-token".to_string()),
+                ngrok_domain: Some("https://demo.ngrok.app/path".to_string()),
+            },
+        )
+        .expect_err("invalid reserved domain should be rejected");
+
+        assert_eq!(
+            error,
+            "Review the reserved domain on this tunnel. Use only the hostname, like demo.ngrok.app, without https://, paths, query strings, or ports."
+        );
+
+        let settings = load_settings_from_dir(&temp_dir).expect("settings should still load");
+        assert_eq!(settings.current_tunnel_id.as_deref(), Some("primary"));
+        assert_eq!(settings.tunnels[0].ngrok_domain.as_deref(), Some("demo.ngrok.app"));
+    }
+
+    #[test]
+    fn save_tunnel_profile_updates_provider_without_dropping_easy_path_fields() {
+        let temp_dir = prepare_temp_dir();
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Cloudflared,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: false,
+                    cloudflared_tunnel_token: Some("cf-token".to_string()),
+                    ..crate::settings::TunnelProfileSettings::default()
+                }],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let workspace = save_tunnel_profile_to_settings_dir(
+            &temp_dir,
+            TunnelProfileInput {
+                id: Some("primary".to_string()),
+                name: "Main Tunnel".to_string(),
+                provider: TunnelProvider::Ngrok,
+                gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: false,
+                cloudflared_tunnel_token: Some("cf-token".to_string()),
+                ngrok_authtoken: None,
+                ngrok_domain: None,
+            },
+        )
+        .expect("profile should save");
+
+        assert_eq!(workspace.current_tunnel_id.as_deref(), Some("primary"));
+        assert_eq!(workspace.tunnels.len(), 1);
+        assert_eq!(workspace.tunnels[0].provider, "ngrok");
+        assert_eq!(workspace.tunnels[0].name, "Main Tunnel");
+
+        let settings = load_settings_from_dir(&temp_dir).expect("settings should load");
+        assert_eq!(settings.tunnels[0].provider, TunnelProvider::Ngrok);
+        assert_eq!(settings.tunnels[0].name, "Main Tunnel");
+        assert_eq!(settings.tunnels[0].gateway_target_url, "http://127.0.0.1:48080");
+        assert!(!settings.tunnels[0].auto_restart);
     }
 
     #[test]
@@ -1679,17 +2823,25 @@ mod tests {
             last_error: None,
         };
 
-        let summary = derive_provider_status_summary(&settings, Some(&tunnel), &[])
+        let summary = derive_provider_status_summary(&settings, Some(&tunnel), &[], &[])
             .expect("summary should be derived");
 
         assert_eq!(summary.level, "warning");
         assert_eq!(summary.title, "Cloudflare Setup");
         assert_eq!(summary.action_kind.as_deref(), Some("open_cloudflare"));
         assert_eq!(summary.action_label.as_deref(), Some("Open Cloudflare"));
+        assert_eq!(
+            summary.follow_up_action_kind.as_deref(),
+            Some("open_cloudflare_docs")
+        );
+        assert_eq!(
+            summary.follow_up_action_label.as_deref(),
+            Some("Setup Hostname")
+        );
     }
 
     #[test]
-    fn provider_status_summary_identifies_ngrok_error_code() {
+    fn provider_status_summary_focuses_ngrok_authtoken_recovery_on_tunnel_editor() {
         let tunnel = TunnelStatus {
             state: tunnelmux_core::TunnelState::Starting,
             provider: Some(TunnelProvider::Ngrok),
@@ -1718,13 +2870,59 @@ mod tests {
             &[String::from(
                 "t=2026-03-07 lvl=eror msg=\"failed\" err=\"ERR_NGROK_4018\"",
             )],
+            &[],
         )
         .expect("summary should be derived");
 
         assert_eq!(summary.level, "error");
+        assert_eq!(summary.title, "ngrok Authtoken Needed");
         assert!(summary.message.contains("ERR_NGROK_4018"));
-        assert_eq!(summary.action_kind.as_deref(), Some("open_settings"));
-        assert_eq!(summary.action_label.as_deref(), Some("Open Settings"));
+        assert_eq!(summary.action_kind.as_deref(), Some("edit_tunnel"));
+        assert_eq!(summary.action_label.as_deref(), Some("Add ngrok Authtoken"));
+        assert_eq!(summary.action_payload.as_deref(), Some("ngrok_authtoken"));
+    }
+
+    #[test]
+    fn provider_status_summary_focuses_ngrok_domain_recovery_on_tunnel_editor() {
+        let tunnel = TunnelStatus {
+            state: tunnelmux_core::TunnelState::Starting,
+            provider: Some(TunnelProvider::Ngrok),
+            target_url: Some("http://127.0.0.1:48080".to_string()),
+            public_base_url: None,
+            started_at: None,
+            updated_at: "2026-03-07T00:00:01Z".to_string(),
+            process_id: None,
+            auto_restart: true,
+            restart_count: 0,
+            last_error: None,
+        };
+
+        let summary = derive_provider_status_summary(
+            &GuiSettings {
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Ngrok,
+                    ngrok_authtoken: Some("ngrok-token".to_string()),
+                    ngrok_domain: Some("demo.ngrok.app".to_string()),
+                    ..crate::settings::TunnelProfileSettings::default()
+                }],
+                ..GuiSettings::default()
+            },
+            Some(&tunnel),
+            &[String::from(
+                "t=2026-03-07 lvl=eror msg=\"failed\" err=\"domain already reserved ERR_NGROK_3004\"",
+            )],
+            &[],
+        )
+        .expect("summary should be derived");
+
+        assert_eq!(summary.level, "error");
+        assert_eq!(summary.title, "ngrok Domain Check");
+        assert_eq!(summary.action_kind.as_deref(), Some("edit_tunnel"));
+        assert_eq!(summary.action_label.as_deref(), Some("Review ngrok Domain"));
+        assert_eq!(summary.action_payload.as_deref(), Some("ngrok_domain"));
     }
 
     #[test]
@@ -1746,6 +2944,7 @@ mod tests {
             &GuiSettings::default(),
             Some(&tunnel),
             &[String::from("Unable to reach the origin service. The service may be down or it may not be responding to traffic from cloudflared")],
+            &[],
         )
         .expect("summary should be derived");
 
@@ -1753,6 +2952,97 @@ mod tests {
         assert_eq!(summary.title, "Local Service Unreachable");
         assert_eq!(summary.action_kind.as_deref(), Some("review_services"));
         assert_eq!(summary.action_label.as_deref(), Some("Review Services"));
+    }
+
+    #[test]
+    fn provider_status_summary_edits_single_unreachable_service_directly() {
+        let tunnel = TunnelStatus {
+            state: tunnelmux_core::TunnelState::Running,
+            provider: Some(TunnelProvider::Cloudflared),
+            target_url: Some("http://127.0.0.1:48080".to_string()),
+            public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+            started_at: Some("2026-03-07T00:00:00Z".to_string()),
+            updated_at: "2026-03-07T00:00:01Z".to_string(),
+            process_id: Some(12345),
+            auto_restart: true,
+            restart_count: 0,
+            last_error: None,
+        };
+        let routes = vec![tunnelmux_core::RouteRule {
+            tunnel_id: "primary".to_string(),
+            id: "demo-web".to_string(),
+            match_host: None,
+            match_path_prefix: Some("/".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: None,
+            health_check_path: None,
+            enabled: true,
+        }];
+
+        let summary = derive_provider_status_summary(
+            &GuiSettings::default(),
+            Some(&tunnel),
+            &[String::from("Unable to reach the origin service. The service may be down or it may not be responding to traffic from cloudflared")],
+            &routes,
+        )
+        .expect("summary should be derived");
+
+        assert_eq!(summary.action_kind.as_deref(), Some("edit_service"));
+        assert_eq!(summary.action_label.as_deref(), Some("Edit Service"));
+        assert_eq!(summary.action_payload.as_deref(), Some("demo-web"));
+    }
+
+    #[test]
+    fn provider_status_summary_keeps_multi_service_unreachable_recovery_lightweight() {
+        let tunnel = TunnelStatus {
+            state: tunnelmux_core::TunnelState::Running,
+            provider: Some(TunnelProvider::Cloudflared),
+            target_url: Some("http://127.0.0.1:48080".to_string()),
+            public_base_url: Some("https://demo.trycloudflare.com".to_string()),
+            started_at: Some("2026-03-07T00:00:00Z".to_string()),
+            updated_at: "2026-03-07T00:00:01Z".to_string(),
+            process_id: Some(12345),
+            auto_restart: true,
+            restart_count: 0,
+            last_error: None,
+        };
+        let routes = vec![
+            tunnelmux_core::RouteRule {
+                tunnel_id: "primary".to_string(),
+                id: "demo-web".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+            tunnelmux_core::RouteRule {
+                tunnel_id: "primary".to_string(),
+                id: "demo-api".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/api".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3001".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            },
+        ];
+
+        let summary = derive_provider_status_summary(
+            &GuiSettings::default(),
+            Some(&tunnel),
+            &[String::from("Unable to reach the origin service. The service may be down or it may not be responding to traffic from cloudflared")],
+            &routes,
+        )
+        .expect("summary should be derived");
+
+        assert_eq!(summary.action_kind.as_deref(), Some("review_services"));
+        assert_eq!(summary.action_label.as_deref(), Some("Review Services"));
+        assert_eq!(summary.action_payload, None);
     }
 
     #[tokio::test]
@@ -1967,6 +3257,37 @@ mod tests {
         Json(route)
     }
 
+    async fn create_route_conflict_handler(
+        Json(request): Json<tunnelmux_core::CreateRouteRequest>,
+    ) -> Result<
+        Json<tunnelmux_core::RouteRule>,
+        (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>),
+    > {
+        Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(tunnelmux_core::ErrorResponse {
+                error: format!(
+                    "route '{}' already exists in tunnel '{}'",
+                    request.id, request.tunnel_id
+                ),
+            }),
+        ))
+    }
+
+    async fn create_route_missing_id_handler(
+        _request: Json<tunnelmux_core::CreateRouteRequest>,
+    ) -> Result<
+        Json<tunnelmux_core::RouteRule>,
+        (axum::http::StatusCode, Json<tunnelmux_core::ErrorResponse>),
+    > {
+        Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(tunnelmux_core::ErrorResponse {
+                error: "route id is required".to_string(),
+            }),
+        ))
+    }
+
     async fn update_route_handler(
         axum::extract::Path(id): axum::extract::Path<String>,
         tauri_state: axum::extract::State<
@@ -2040,6 +3361,22 @@ mod tests {
         }
         std::fs::create_dir_all(&path).expect("temp dir should be created");
         path
+    }
+
+    fn write_fake_binary(path: &Path) {
+        std::fs::write(path, "#!/bin/sh\nexit 0\n").expect("fake binary should be written");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(path)
+                .expect("fake binary metadata should load")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions)
+                .expect("fake binary permissions should update");
+        }
     }
 
     fn next_temp_dir() -> PathBuf {

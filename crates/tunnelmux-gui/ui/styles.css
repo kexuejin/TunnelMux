@@ -525,6 +525,13 @@ select {
   gap: 18px;
 }
 
+.services-shell.needs-attention {
+  padding: 10px;
+  margin: -10px;
+  border-radius: 22px;
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.48);
+}
+
 .services-notice {
   padding: 12px 14px;
   border-radius: 14px;
@@ -545,6 +552,11 @@ select {
   border-radius: 20px;
   background: rgba(22, 27, 34, 0.96);
   border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.service-card.needs-attention {
+  border-color: rgba(96, 165, 250, 0.52);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.2);
 }
 
 .service-card-header,

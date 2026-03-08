@@ -1,10 +1,38 @@
 import {
+  applyProviderAvailabilitySnapshot,
   classifyRoutesPanel,
   formatCurrentTunnelMeta,
   formatCurrentTunnelUrl,
+  formatHomeProviderHint,
   formatTunnelOptionLabel,
+  resolveCreateTunnelDefaults,
+  resolveDashboardPublicUrlActions,
   resolveDashboardStatus,
+  resolveRouteFormTitle,
+  resolveServiceDrawerPrimaryField,
+  shouldPassiveCurrentTunnelProviderRefresh,
+  shouldPassiveEmptyStateProviderRefresh,
+  shouldOpenTunnelAdvanced,
+  shouldPassiveDrawerProviderRefresh,
   shouldShowErrorDetailsAction,
+  summarizePassiveCurrentTunnelProviderRefresh,
+  summarizePassiveEmptyStateProviderRefresh,
+  summarizePassiveDrawerProviderRefresh,
+  summarizeShareStatusAction,
+  summarizeStartReadyStatusAction,
+  summarizeStartSuccessAction,
+  summarizeStartFailureRecovery,
+  summarizeDaemonRecoveryAction,
+  summarizeDaemonUnavailableMessage,
+  summarizeDashboardGuidance,
+  summarizeDrawerProviderReadiness,
+  summarizeEmptyStateProviderGuidance,
+  summarizeHomeTunnelActions,
+  summarizeProviderAvailability,
+  summarizeProviderRecheckFollowThrough,
+  summarizeRouteSaveFailure,
+  summarizeRouteSaveStatus,
+  summarizeZeroServiceHeroAction,
   summarizeStatusMessage,
   titleCase,
   tunnelPickerRowClass,
@@ -35,11 +63,24 @@ const state = {
   serviceDrawerOpen: false,
   tunnelDrawerOpen: false,
   tunnelEditorMode: 'create',
+  tunnelEditorRecoveryTarget: null,
   confirmResolver: null,
   tunnelPickerOpen: false,
   providerStatusAction: null,
+  providerStatusActionPayload: null,
+  providerStatusFollowUpAction: null,
+  providerStatusFollowUpActionPayload: null,
+  providerAvailabilitySnapshot: null,
+  daemonBootstrapping: false,
+  dashboardConnected: false,
+  dashboardTunnelState: 'offline',
+  statusActionKind: null,
+  statusActionLabel: null,
+  statusActionPayload: null,
   statusMessage: '',
   statusIsError: false,
+  passiveProviderRefreshInFlight: false,
+  servicesAttentionTimer: null,
   diagnostics: {
     logLines: 100,
     summary: null,
@@ -82,7 +123,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   await refreshTunnelWorkspace();
   if (state.tunnelWorkspace.tunnels.length) {
-    await ensureLocalDaemonAndRefresh();
+    const daemon = await invoke('daemon_connection_state');
+    if (daemon?.bootstrapping) {
+      renderDaemonStatus(daemon);
+      await waitForManagedDaemonBootstrap();
+    } else {
+      await ensureLocalDaemonAndRefresh();
+    }
   } else {
     renderStatus('No tunnel configured yet. Create a tunnel to get started.');
     renderDashboard({
@@ -98,9 +145,13 @@ window.addEventListener('DOMContentLoaded', async () => {
 function bindElements() {
   elements.status = document.getElementById('app-status');
   elements.statusErrorDetails = document.getElementById('status-error-details');
+  elements.statusAction = document.getElementById('status-action');
   elements.openSettings = document.getElementById('open-settings');
   elements.tunnelEmptyState = document.getElementById('tunnel-empty-state');
   elements.createTunnelEmpty = document.getElementById('create-tunnel-empty');
+  elements.emptyProviderCopy = document.getElementById('empty-provider-copy');
+  elements.emptyProviderAction = document.getElementById('empty-provider-action');
+  elements.emptyProviderFollowUpAction = document.getElementById('empty-provider-follow-up-action');
   elements.tunnelContextBar = document.getElementById('tunnel-context-bar');
   elements.currentTunnelName = document.getElementById('current-tunnel-name');
   elements.currentTunnelBadge = document.getElementById('current-tunnel-badge');
@@ -127,8 +178,12 @@ function bindElements() {
   elements.providerStatusMessage = document.getElementById('provider-status-message');
   elements.providerStatusBadge = document.getElementById('provider-status-badge');
   elements.providerStatusAction = document.getElementById('provider-status-action');
+  elements.providerStatusFollowUpAction = document.getElementById('provider-status-follow-up-action');
 
   elements.startTunnel = document.getElementById('start-tunnel');
+  elements.heroAddService = document.getElementById('hero-add-service');
+  elements.homeProviderAction = document.getElementById('home-provider-action');
+  elements.homeProviderFollowUpAction = document.getElementById('home-provider-follow-up-action');
   elements.stopTunnel = document.getElementById('stop-tunnel');
   elements.copyPublicUrl = document.getElementById('copy-public-url');
   elements.openPublicUrl = document.getElementById('open-public-url');
@@ -166,6 +221,11 @@ function bindElements() {
   elements.tunnelFormTitle = document.getElementById('tunnel-form-title');
   elements.tunnelName = document.getElementById('tunnel-name');
   elements.tunnelProvider = document.getElementById('tunnel-provider');
+  elements.tunnelProviderReadinessTitle = document.getElementById('tunnel-provider-readiness-title');
+  elements.tunnelProviderReadinessMessage = document.getElementById('tunnel-provider-readiness-message');
+  elements.tunnelProviderReadinessBadge = document.getElementById('tunnel-provider-readiness-badge');
+  elements.tunnelProviderInstallAction = document.getElementById('tunnel-provider-install-action');
+  elements.tunnelProviderRecheckAction = document.getElementById('tunnel-provider-recheck-action');
   elements.tunnelAdvanced = document.getElementById('tunnel-advanced');
   elements.tunnelGatewayTargetUrl = document.getElementById('tunnel-gateway-target-url');
   elements.tunnelAutoRestart = document.getElementById('tunnel-auto-restart');
@@ -219,14 +279,19 @@ function bindElements() {
 
 function bindEvents() {
   elements.openSettings?.addEventListener('click', () => openSettingsDrawer());
+  elements.statusAction?.addEventListener('click', () => withBusy(handleStatusAction));
   elements.closeSettings?.addEventListener('click', closeSettingsDrawer);
   elements.settingsBackdrop?.addEventListener('click', closeSettingsDrawer);
   elements.createTunnelEmpty?.addEventListener('click', () => openTunnelDrawer({ mode: 'create' }));
+  elements.emptyProviderAction?.addEventListener('click', () => withBusy(handleEmptyProviderAction));
+  elements.emptyProviderFollowUpAction?.addEventListener('click', () => withBusy(handleEmptyProviderFollowUpAction));
   elements.newTunnel?.addEventListener('click', () => openTunnelDrawer({ mode: 'create' }));
   elements.editTunnel?.addEventListener('click', () => openTunnelDrawer({ mode: 'edit' }));
   elements.closeTunnel?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelBackdrop?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelProvider?.addEventListener('change', syncTunnelProviderFields);
+  elements.tunnelProviderInstallAction?.addEventListener('click', () => void copyTunnelProviderInstallCommand());
+  elements.tunnelProviderRecheckAction?.addEventListener('click', () => void withBusy(recheckTunnelDrawerProvider));
   elements.tunnelPickerTrigger?.addEventListener('click', toggleTunnelPicker);
   elements.deleteTunnel?.addEventListener('click', deleteTunnelProfile);
   elements.saveTunnel?.addEventListener('click', () => withBusy(() => saveTunnel({ startNow: false })));
@@ -263,8 +328,19 @@ function bindEvents() {
     }
     closeTunnelPicker();
   });
+  window.addEventListener('focus', () => void refreshProviderAvailabilityOnForeground());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') {
+      return;
+    }
+    void refreshProviderAvailabilityOnForeground();
+  });
 
   elements.startTunnel?.addEventListener('click', () => withBusy(startTunnel));
+  elements.heroAddService?.addEventListener('click', () => {
+    resetRouteForm();
+    openServiceDrawer();
+  });
   elements.stopTunnel?.addEventListener('click', () => withBusy(stopTunnel));
   elements.copyPublicUrl?.addEventListener('click', () => withBusy(copyPublicUrl));
   elements.openPublicUrl?.addEventListener('click', () => withBusy(openPublicUrl));
@@ -284,7 +360,10 @@ function bindEvents() {
   elements.serviceExposureMode?.addEventListener('change', applyExposureMode);
 
   elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
-  elements.providerStatusAction?.addEventListener('click', handleProviderStatusAction);
+  elements.homeProviderAction?.addEventListener('click', () => withBusy(handleHomeProviderAction));
+  elements.homeProviderFollowUpAction?.addEventListener('click', () => withBusy(handleHomeProviderFollowUpAction));
+  elements.providerStatusAction?.addEventListener('click', () => withBusy(handleProviderStatusAction));
+  elements.providerStatusFollowUpAction?.addEventListener('click', () => withBusy(handleProviderStatusFollowUpAction));
 
   elements.refreshDiagnostics?.addEventListener('click', () => withBusy(() => refreshDiagnosticsWorkspace({ manual: true })));
   elements.refreshLogs?.addEventListener('click', () => withBusy(() => refreshRecentLogs({ manual: true })));
@@ -309,18 +388,26 @@ function closeSettingsDrawer() {
   elements.settingsDrawer.hidden = true;
 }
 
-function openTunnelDrawer({ mode }) {
+function openTunnelDrawer({ mode, recoveryTarget = null }) {
   state.tunnelEditorMode = mode;
+  state.tunnelEditorRecoveryTarget = recoveryTarget;
   state.tunnelDrawerOpen = true;
   elements.tunnelBackdrop.hidden = false;
   elements.tunnelDrawer.hidden = false;
   elements.tunnelFormTitle.textContent = mode === 'edit' ? 'Edit Tunnel' : 'Create Tunnel';
-  populateTunnelFields(mode === 'edit' ? getCurrentTunnelSettings() : null);
+  populateTunnelFields(
+    mode === 'edit'
+      ? getCurrentTunnelSettings()
+      : resolveCreateTunnelDefaults(state.providerAvailabilitySnapshot),
+    recoveryTarget,
+  );
   elements.deleteTunnel.hidden = mode !== 'edit' || (state.settings?.tunnels?.length ?? 0) <= 1;
+  requestAnimationFrame(() => focusTunnelDrawerPrimaryField({ mode, recoveryTarget }));
 }
 
 function closeTunnelDrawer() {
   state.tunnelDrawerOpen = false;
+  state.tunnelEditorRecoveryTarget = null;
   elements.tunnelBackdrop.hidden = true;
   elements.tunnelDrawer.hidden = true;
 }
@@ -329,12 +416,89 @@ function openServiceDrawer() {
   state.serviceDrawerOpen = true;
   elements.serviceBackdrop.hidden = false;
   elements.serviceDrawer.hidden = false;
+  requestAnimationFrame(() => focusServiceDrawerPrimaryField());
+}
+
+function openServiceEditorForRoute(routeId = null) {
+  const route = routeId
+    ? state.routeCache.find((item) => item.id === routeId)
+    : (state.routeCache.length === 1 ? state.routeCache[0] : null);
+
+  if (!route) {
+    highlightServicesPanel();
+    return;
+  }
+
+  populateRouteForm(route);
+  openServiceDrawer();
+}
+
+function highlightServicesPanel() {
+  const firstCard = elements.routesList?.querySelector('.service-card');
+  elements.servicesShell?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  elements.servicesShell?.classList.add('needs-attention');
+  firstCard?.classList.add('needs-attention');
+
+  if (state.servicesAttentionTimer) {
+    window.clearTimeout(state.servicesAttentionTimer);
+  }
+
+  state.servicesAttentionTimer = window.setTimeout(() => {
+    elements.servicesShell?.classList.remove('needs-attention');
+    firstCard?.classList.remove('needs-attention');
+    state.servicesAttentionTimer = null;
+  }, 1600);
 }
 
 function closeServiceDrawer() {
   state.serviceDrawerOpen = false;
   elements.serviceBackdrop.hidden = true;
   elements.serviceDrawer.hidden = true;
+}
+
+function focusServiceDrawerPrimaryField() {
+  focusServiceDrawerField();
+}
+
+function focusServiceDrawerField(recoveryTarget = null) {
+  const resolvedFieldId = resolveServiceRecoveryField(recoveryTarget) || resolveServiceDrawerPrimaryField({
+    editing_route_id: state.editingOriginalId,
+    route_count: currentRouteCount(),
+  });
+  const field = resolvedFieldId === 'route-upstream-url'
+    ? elements.routeUpstreamUrl
+    : resolvedFieldId === 'route-fallback-upstream-url'
+      ? elements.routeFallbackUpstreamUrl
+      : resolvedFieldId === 'route-health-check-path'
+        ? elements.routeHealthCheckPath
+      : elements.routeId;
+  if (!field || field.disabled || typeof field.focus !== 'function') {
+    return;
+  }
+
+  field.focus();
+  if (typeof field.select === 'function') {
+    field.select();
+  }
+}
+
+function resolveServiceRecoveryField(recoveryTarget) {
+  switch (recoveryTarget) {
+    case 'route-id':
+      return 'route-id';
+    case 'route-upstream-url':
+      return 'route-upstream-url';
+    case 'route-fallback-upstream-url':
+      return 'route-fallback-upstream-url';
+    case 'route-health-check-path':
+      return 'route-health-check-path';
+    default:
+      return null;
+  }
+}
+
+function currentRouteCount() {
+  return Number(getCurrentTunnelDetails()?.route_count ?? state.routeCache.length);
 }
 
 async function withBusy(fn) {
@@ -355,9 +519,16 @@ function setBusyState(nextBusy) {
   const controls = [
     elements.openSettings,
     elements.startTunnel,
+    elements.heroAddService,
     elements.stopTunnel,
     elements.copyPublicUrl,
     elements.openPublicUrl,
+    elements.emptyProviderAction,
+    elements.emptyProviderFollowUpAction,
+    elements.homeProviderAction,
+    elements.homeProviderFollowUpAction,
+    elements.providerStatusAction,
+    elements.providerStatusFollowUpAction,
     elements.newRoute,
     elements.newRouteEmpty,
     elements.cancelRouteEdit,
@@ -368,6 +539,7 @@ function setBusyState(nextBusy) {
     elements.refreshLogs,
     elements.clearLogs,
     elements.logLinesSelect,
+    elements.statusAction,
   ];
 
   controls.filter(Boolean).forEach((element) => {
@@ -377,6 +549,10 @@ function setBusyState(nextBusy) {
   document.querySelectorAll('[data-route-action]').forEach((button) => {
     button.disabled = nextBusy;
   });
+
+  renderHomeProviderActions();
+  renderEmptyStateProviderGuidance();
+  renderTunnelDrawerProviderReadiness();
 }
 
 function collectSettingsForm() {
@@ -396,16 +572,21 @@ function populateSettingsFields(settings) {
 }
 
 function syncProviderHints() {
-  const tunnel = getCurrentTunnelSettings();
-  const provider = tunnel?.provider ?? 'cloudflared';
-  const gatewayTarget = tunnel?.gateway_target_url ?? 'http://127.0.0.1:48080';
-  const restartLabel = tunnel?.auto_restart ? 'enabled' : 'disabled';
-  const cloudflaredMode = tunnel?.cloudflared_tunnel_token ? 'named tunnel' : 'quick tunnel';
-  if (provider === 'cloudflared') {
-    elements.homeProviderHint.textContent = `${provider} ${cloudflaredMode} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
-    return;
+  const tunnel = getCurrentTunnelDetails(getCurrentTunnelSettings());
+  elements.homeProviderHint.textContent = tunnel ? formatHomeProviderHint(tunnel) : 'No tunnel data yet.';
+}
+
+async function refreshProviderAvailabilitySnapshot() {
+  try {
+    state.providerAvailabilitySnapshot = await invoke('load_provider_availability_snapshot');
+  } catch {
+    state.providerAvailabilitySnapshot = null;
   }
-  elements.homeProviderHint.textContent = `${provider} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
+  syncProviderHints();
+  renderHomeProviderActions();
+  renderEmptyStateProviderGuidance();
+  renderTunnelDrawerProviderReadiness();
+  return state.providerAvailabilitySnapshot;
 }
 
 async function refreshTunnelWorkspace() {
@@ -413,10 +594,85 @@ async function refreshTunnelWorkspace() {
     const workspace = await invoke('load_tunnel_workspace');
     state.tunnelWorkspace = workspace;
     renderTunnelWorkspace(workspace);
+    await refreshProviderAvailabilitySnapshot();
   } catch (error) {
+    if (state.daemonBootstrapping) {
+      return;
+    }
+
     renderStatus(`Failed to load tunnels: ${formatError(error)}`, true);
     renderTunnelWorkspace({ tunnels: [], current_tunnel_id: null });
+    state.providerAvailabilitySnapshot = null;
+    renderHomeProviderActions();
+    renderEmptyStateProviderGuidance();
+    renderTunnelDrawerProviderReadiness();
   }
+}
+
+function getCurrentWorkspaceTunnel() {
+  const tunnels = state.tunnelWorkspace?.tunnels ?? [];
+  return tunnels.find((tunnel) => tunnel.id === state.tunnelWorkspace?.current_tunnel_id) ?? tunnels[0] ?? null;
+}
+
+function getCurrentTunnelDetails(currentTunnel = getCurrentWorkspaceTunnel()) {
+  const currentTunnelSettings = getCurrentTunnelSettings();
+  if (!currentTunnel && !currentTunnelSettings) {
+    return null;
+  }
+
+  return applyProviderAvailabilitySnapshot(
+    {
+      ...currentTunnelSettings,
+      ...currentTunnel,
+    },
+    state.providerAvailabilitySnapshot,
+  );
+}
+
+function currentProviderAvailabilitySummary() {
+  return summarizeProviderAvailability(getCurrentTunnelDetails());
+}
+
+function renderHomeProviderActions(currentTunnel = getCurrentTunnelDetails()) {
+  if (!elements.startTunnel || !elements.homeProviderAction || !elements.homeProviderFollowUpAction) {
+    return;
+  }
+
+  if (!currentTunnel) {
+    elements.homeProviderAction.hidden = true;
+    elements.homeProviderFollowUpAction.hidden = true;
+    return;
+  }
+
+  const actionState = summarizeHomeTunnelActions(currentTunnel, undefined, state.providerAvailabilitySnapshot);
+  elements.startTunnel.disabled = state.busy || Boolean(actionState.start_disabled);
+  elements.startTunnel.textContent = actionState.start_label ?? 'Start Tunnel';
+
+  elements.homeProviderAction.textContent = actionState.action_label ?? 'Copy Install Command';
+  elements.homeProviderAction.hidden = !actionState.action_kind;
+  elements.homeProviderAction.disabled = state.busy;
+
+  elements.homeProviderFollowUpAction.textContent = actionState.follow_up_action_label ?? 'Recheck Provider';
+  elements.homeProviderFollowUpAction.hidden = !actionState.follow_up_action_kind;
+  elements.homeProviderFollowUpAction.disabled = state.busy;
+}
+
+function renderEmptyStateProviderGuidance() {
+  if (!elements.emptyProviderCopy || !elements.emptyProviderAction || !elements.emptyProviderFollowUpAction) {
+    return;
+  }
+
+  const summary = summarizeEmptyStateProviderGuidance(state.providerAvailabilitySnapshot);
+  elements.emptyProviderCopy.textContent = summary?.message ?? '';
+  elements.emptyProviderCopy.hidden = !summary?.message;
+
+  elements.emptyProviderAction.textContent = summary?.action_label ?? 'Copy Install Command';
+  elements.emptyProviderAction.hidden = !summary?.action_kind;
+  elements.emptyProviderAction.disabled = state.busy;
+
+  elements.emptyProviderFollowUpAction.textContent = summary?.follow_up_action_label ?? 'Recheck Provider';
+  elements.emptyProviderFollowUpAction.hidden = !summary?.follow_up_action_kind;
+  elements.emptyProviderFollowUpAction.disabled = state.busy;
 }
 
 function renderTunnelWorkspace(workspace) {
@@ -430,6 +686,7 @@ function renderTunnelWorkspace(workspace) {
   elements.servicesShell.hidden = !hasCurrentTunnel;
 
   if (!hasCurrentTunnel) {
+    renderEmptyStateProviderGuidance();
     closeTunnelPicker();
     closeErrorDetailsDialog();
     return;
@@ -440,11 +697,20 @@ function renderTunnelWorkspace(workspace) {
   elements.currentTunnelBadge.textContent = titleCase(tunnelState);
   elements.currentTunnelBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
   elements.currentTunnelMeta.textContent = formatCurrentTunnelMeta(currentTunnel);
+  const currentTunnelDetails = getCurrentTunnelDetails(currentTunnel);
+  elements.homeProviderHint.textContent = formatHomeProviderHint(currentTunnelDetails);
   const currentTunnelUrl = formatCurrentTunnelUrl(currentTunnel);
   elements.currentTunnelUrl.hidden = !currentTunnelUrl;
   if (currentTunnelUrl) {
     elements.currentTunnelUrl.textContent = currentTunnelUrl;
   }
+  const providerAvailabilitySummary = summarizeProviderAvailability(currentTunnelDetails);
+  if (providerAvailabilitySummary) {
+    renderProviderStatusSummary(providerAvailabilitySummary);
+  } else {
+    renderProviderStatusSummary(null);
+  }
+  renderHomeProviderActions(currentTunnelDetails);
   renderTunnelPicker(workspace, currentTunnel);
 }
 
@@ -502,7 +768,7 @@ function renderTunnelPicker(workspace, currentTunnel) {
   });
 }
 
-function populateTunnelFields(tunnel) {
+function populateTunnelFields(tunnel, recoveryTarget = null) {
   elements.tunnelName.value = tunnel?.name ?? '';
   elements.tunnelProvider.value = tunnel?.provider ?? 'cloudflared';
   elements.tunnelGatewayTargetUrl.value = tunnel?.gateway_target_url ?? 'http://127.0.0.1:48080';
@@ -510,12 +776,7 @@ function populateTunnelFields(tunnel) {
   elements.tunnelCloudflaredTunnelToken.value = tunnel?.cloudflared_tunnel_token ?? '';
   elements.tunnelNgrokAuthtoken.value = tunnel?.ngrok_authtoken ?? '';
   elements.tunnelNgrokDomain.value = tunnel?.ngrok_domain ?? '';
-  const shouldOpenAdvanced =
-    Boolean(elements.tunnelCloudflaredTunnelToken.value) ||
-    elements.tunnelProvider.value === 'ngrok' ||
-    Boolean(elements.tunnelNgrokAuthtoken.value) ||
-    Boolean(elements.tunnelNgrokDomain.value);
-  elements.tunnelAdvanced.open = shouldOpenAdvanced;
+  elements.tunnelAdvanced.open = shouldOpenTunnelAdvanced(tunnel, recoveryTarget);
   syncTunnelProviderFields();
 }
 
@@ -523,6 +784,207 @@ function syncTunnelProviderFields() {
   const provider = elements.tunnelProvider.value || 'cloudflared';
   elements.tunnelCloudflaredFields.hidden = provider !== 'cloudflared';
   elements.tunnelNgrokFields.hidden = provider !== 'ngrok';
+  if (provider === 'ngrok' && !String(elements.tunnelNgrokAuthtoken?.value ?? '').trim()) {
+    elements.tunnelAdvanced.open = true;
+  }
+  renderTunnelDrawerProviderReadiness();
+}
+
+function renderTunnelDrawerProviderReadiness() {
+  if (!elements.tunnelProviderReadinessTitle || !elements.tunnelProviderReadinessMessage) {
+    return;
+  }
+
+  const provider = elements.tunnelProvider?.value || 'cloudflared';
+  if (!state.providerAvailabilitySnapshot) {
+    elements.tunnelProviderReadinessTitle.textContent = `${titleCase(provider)} Check Pending`;
+    elements.tunnelProviderReadinessMessage.textContent = 'TunnelMux will verify whether this provider is installed before you start the tunnel.';
+    elements.tunnelProviderReadinessBadge.textContent = 'Info';
+    elements.tunnelProviderReadinessBadge.className = 'status-pill idle';
+    if (elements.tunnelProviderInstallAction) {
+      elements.tunnelProviderInstallAction.hidden = true;
+      elements.tunnelProviderInstallAction.disabled = state.busy;
+    }
+    if (elements.tunnelProviderRecheckAction) {
+      elements.tunnelProviderRecheckAction.hidden = true;
+      elements.tunnelProviderRecheckAction.disabled = state.busy;
+    }
+    if (elements.saveAndStartTunnel) {
+      elements.saveAndStartTunnel.disabled = state.busy;
+      elements.saveAndStartTunnel.textContent = 'Save and Start';
+    }
+    return;
+  }
+
+  const readiness = summarizeDrawerProviderReadiness(
+    collectTunnelProfile(),
+    state.providerAvailabilitySnapshot,
+  );
+  elements.tunnelProviderReadinessTitle.textContent = readiness.title;
+  elements.tunnelProviderReadinessMessage.textContent = readiness.message;
+  elements.tunnelProviderReadinessBadge.textContent = titleCase(readiness.level ?? 'info');
+  elements.tunnelProviderReadinessBadge.className = `status-pill ${escapeClassName(readiness.level ?? 'idle')}`;
+
+  if (elements.tunnelProviderInstallAction) {
+    elements.tunnelProviderInstallAction.hidden = !readiness.action_kind;
+    elements.tunnelProviderInstallAction.textContent = readiness.action_label ?? 'Copy Install Command';
+    elements.tunnelProviderInstallAction.disabled = state.busy;
+  }
+
+  if (elements.tunnelProviderRecheckAction) {
+    elements.tunnelProviderRecheckAction.hidden = !readiness.follow_up_action_kind;
+    elements.tunnelProviderRecheckAction.textContent = readiness.follow_up_action_label ?? 'Recheck Provider';
+    elements.tunnelProviderRecheckAction.disabled = state.busy;
+  }
+
+  if (elements.saveAndStartTunnel) {
+    elements.saveAndStartTunnel.disabled = state.busy || Boolean(readiness.start_disabled);
+    elements.saveAndStartTunnel.textContent = readiness.start_label ?? 'Save and Start';
+  }
+}
+
+async function copyTunnelProviderInstallCommand() {
+  const readiness = summarizeDrawerProviderReadiness(
+    elements.tunnelProvider?.value || 'cloudflared',
+    state.providerAvailabilitySnapshot,
+  );
+
+  if (!readiness.action_payload) {
+    renderStatus('No install command is available for this provider yet.', true);
+    return;
+  }
+
+  await copyTextValue(
+    readiness.action_payload,
+    'Install command copied.',
+    'Failed to copy install command',
+  );
+}
+
+async function recheckTunnelDrawerProvider() {
+  const readiness = summarizeDrawerProviderReadiness(
+    elements.tunnelProvider?.value || 'cloudflared',
+    state.providerAvailabilitySnapshot,
+  );
+
+  await runProviderUiAction(
+    readiness.follow_up_action_kind,
+    readiness.follow_up_action_payload,
+    'drawer',
+  );
+}
+
+async function refreshProviderAvailabilityOnForeground() {
+  await refreshEmptyStateProviderAvailabilityOnForeground();
+  await refreshCurrentTunnelProviderAvailabilityOnForeground();
+  await refreshDrawerProviderAvailabilityOnForeground();
+}
+
+async function refreshEmptyStateProviderAvailabilityOnForeground() {
+  const previousGuidance = summarizeEmptyStateProviderGuidance(state.providerAvailabilitySnapshot);
+  if (!shouldPassiveEmptyStateProviderRefresh({
+    hasCurrentTunnel: Boolean(getCurrentWorkspaceTunnel()),
+    tunnelDrawerOpen: state.tunnelDrawerOpen,
+    busy: state.busy || state.passiveProviderRefreshInFlight,
+    visibilityState: document.visibilityState,
+    providerAvailabilitySnapshot: state.providerAvailabilitySnapshot,
+  })) {
+    return;
+  }
+
+  state.passiveProviderRefreshInFlight = true;
+
+  try {
+    const snapshot = await refreshProviderAvailabilitySnapshot();
+    if (!snapshot) {
+      return;
+    }
+
+    await refreshProviderStatusSummary();
+    const nextGuidance = summarizeEmptyStateProviderGuidance(snapshot);
+    const statusUpdate = summarizePassiveEmptyStateProviderRefresh({
+      previousGuidance,
+      nextGuidance,
+      nextProviderAvailabilitySnapshot: snapshot,
+    });
+
+    if (statusUpdate) {
+      renderStatus(statusUpdate.message, statusUpdate.isError, statusUpdate.statusAction);
+    }
+  } finally {
+    state.passiveProviderRefreshInFlight = false;
+  }
+}
+
+async function refreshCurrentTunnelProviderAvailabilityOnForeground() {
+  const previousTunnel = getCurrentTunnelDetails();
+  if (!shouldPassiveCurrentTunnelProviderRefresh({
+    currentTunnel: previousTunnel,
+    tunnelDrawerOpen: state.tunnelDrawerOpen,
+    busy: state.busy || state.passiveProviderRefreshInFlight,
+    visibilityState: document.visibilityState,
+  })) {
+    return;
+  }
+
+  state.passiveProviderRefreshInFlight = true;
+
+  try {
+    const snapshot = await refreshProviderAvailabilitySnapshot();
+    if (!snapshot) {
+      return;
+    }
+
+    await refreshProviderStatusSummary();
+    const nextTunnel = getCurrentTunnelDetails();
+    const statusUpdate = summarizePassiveCurrentTunnelProviderRefresh({
+      previousTunnel,
+      nextTunnel,
+    });
+
+    if (statusUpdate) {
+      renderStatus(statusUpdate.message, statusUpdate.isError, statusUpdate.statusAction);
+    }
+  } finally {
+    state.passiveProviderRefreshInFlight = false;
+  }
+}
+
+async function refreshDrawerProviderAvailabilityOnForeground() {
+  const provider = elements.tunnelProvider?.value || 'cloudflared';
+  if (!shouldPassiveDrawerProviderRefresh({
+    tunnelDrawerOpen: state.tunnelDrawerOpen,
+    busy: state.busy || state.passiveProviderRefreshInFlight,
+    visibilityState: document.visibilityState,
+    provider,
+    providerAvailabilitySnapshot: state.providerAvailabilitySnapshot,
+  })) {
+    return;
+  }
+
+  const previousReadiness = summarizeDrawerProviderReadiness(provider, state.providerAvailabilitySnapshot);
+  state.passiveProviderRefreshInFlight = true;
+
+  try {
+    const snapshot = await refreshProviderAvailabilitySnapshot();
+    if (!snapshot) {
+      return;
+    }
+
+    await refreshProviderStatusSummary();
+    const nextReadiness = summarizeDrawerProviderReadiness(provider, snapshot);
+    const statusUpdate = summarizePassiveDrawerProviderRefresh({
+      provider,
+      previousReadiness,
+      nextReadiness,
+    });
+
+    if (statusUpdate) {
+      renderStatus(statusUpdate.message, statusUpdate.isError);
+    }
+  } finally {
+    state.passiveProviderRefreshInFlight = false;
+  }
 }
 
 function getCurrentTunnelSettings() {
@@ -545,12 +1007,15 @@ function nextTunnelId() {
 function collectTunnelProfile() {
   const current = getCurrentTunnelSettings();
   const id = state.tunnelEditorMode === 'edit' && current ? current.id : nextTunnelId();
+  const defaults = state.tunnelEditorMode === 'create'
+    ? resolveCreateTunnelDefaults(state.providerAvailabilitySnapshot)
+    : current ?? resolveCreateTunnelDefaults(state.providerAvailabilitySnapshot);
   return {
     id,
-    name: elements.tunnelName.value.trim() || 'Untitled Tunnel',
-    provider: elements.tunnelProvider.value,
-    gateway_target_url: elements.tunnelGatewayTargetUrl.value,
-    auto_restart: elements.tunnelAutoRestart.checked,
+    name: elements.tunnelName.value.trim() || defaults.name,
+    provider: elements.tunnelProvider.value || defaults.provider,
+    gateway_target_url: elements.tunnelGatewayTargetUrl.value.trim() || defaults.gateway_target_url,
+    auto_restart: elements.tunnelAutoRestart.checked ?? defaults.auto_restart,
     cloudflared_tunnel_token: elements.tunnelCloudflaredTunnelToken.value || null,
     ngrok_authtoken: elements.tunnelNgrokAuthtoken.value || null,
     ngrok_domain: elements.tunnelNgrokDomain.value || null,
@@ -564,15 +1029,37 @@ async function saveTunnel({ startNow }) {
     state.tunnelWorkspace = workspace;
     await loadSettings();
     renderTunnelWorkspace(workspace);
-    closeTunnelDrawer();
     if (startNow) {
       await ensureLocalDaemonAndRefresh();
-      await startTunnel();
+      const startResult = await startTunnel();
+      if (!startResult.ok) {
+        if (startResult.recoveryTarget) {
+          openTunnelDrawer({ mode: 'edit', recoveryTarget: startResult.recoveryTarget ?? null });
+        }
+        return;
+      }
+      closeTunnelDrawer();
       return;
     }
-    renderStatus('Tunnel saved. Start it when you are ready.');
+    closeTunnelDrawer();
+    const statusAction = summarizeStartReadyStatusAction(getCurrentTunnelDetails());
+    renderStatus(statusAction ? 'Tunnel saved. Start Tunnel is available.' : 'Tunnel saved.', false, statusAction);
   } catch (error) {
-    renderStatus(`Failed to save tunnel: ${formatError(error)}`, true);
+    const message = formatError(error);
+    const failure = summarizeStartFailureRecovery({
+      message,
+      settings: state.settings,
+      tunnel: collectTunnelProfile(),
+    });
+    if (failure.recoveryTarget) {
+      renderStatus(message, true);
+      requestAnimationFrame(() => focusTunnelDrawerPrimaryField({
+        mode: state.tunnelEditorMode,
+        recoveryTarget: failure.recoveryTarget ?? null,
+      }));
+      return;
+    }
+    renderStatus(`Failed to save tunnel: ${message}`, true);
   }
 }
 
@@ -635,13 +1122,33 @@ async function loadSettings() {
 
 async function saveSettings() {
   try {
-    const settings = await invoke('save_settings', { settings: collectSettingsForm() });
-    populateSettingsFields(settings);
-    renderStatus('App settings saved.');
+    const result = await invoke('save_settings', { settings: collectSettingsForm() });
+    populateSettingsFields(result.settings);
+    renderDaemonStatus(result.daemon_status);
+    await refreshAll();
     closeSettingsDrawer();
   } catch (error) {
     renderStatus(`Failed to save settings: ${formatError(error)}`, true);
   }
+}
+
+async function waitForManagedDaemonBootstrap() {
+  for (let attempt = 0; attempt < 48; attempt += 1) {
+    const daemon = await invoke('daemon_connection_state');
+    renderDaemonStatus(daemon);
+    if (!daemon?.bootstrapping) {
+      await refreshAll();
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  renderDaemonStatus({
+    connected: false,
+    ownership: 'unavailable',
+    message: 'Starting local TunnelMux is taking longer than expected. Retry the local daemon or check whether another app is already using this port.',
+  });
 }
 
 async function ensureLocalDaemonAndRefresh() {
@@ -649,10 +1156,14 @@ async function ensureLocalDaemonAndRefresh() {
     const daemon = await invoke('ensure_local_daemon');
     renderDaemonStatus(daemon);
   } catch (error) {
+    const formattedError = formatError(error);
+    const daemonMessage = summarizeDaemonUnavailableMessage(formattedError);
     renderDaemonStatus({
       connected: false,
       ownership: 'unavailable',
-      message: `Could not start local TunnelMux: ${formatError(error)}`,
+      message: daemonMessage === formattedError
+        ? `Could not start local TunnelMux: ${formattedError}`
+        : daemonMessage,
     });
   }
 
@@ -667,6 +1178,13 @@ async function refreshAll() {
 }
 
 async function refreshProviderStatusSummary() {
+  const currentTunnel = getCurrentTunnelDetails();
+  const providerAvailabilitySummary = summarizeProviderAvailability(currentTunnel, undefined, state.providerAvailabilitySnapshot);
+  if (providerAvailabilitySummary) {
+    renderProviderStatusSummary(providerAvailabilitySummary);
+    return;
+  }
+
   try {
     const summary = await invoke('load_provider_status_summary');
     renderProviderStatusSummary(summary);
@@ -676,21 +1194,28 @@ async function refreshProviderStatusSummary() {
 }
 
 function renderDaemonStatus(snapshot) {
+  state.daemonBootstrapping = Boolean(snapshot?.bootstrapping);
   const ownership = snapshot?.ownership ?? 'unavailable';
   const connected = Boolean(snapshot?.connected);
-  const message = snapshot?.message ?? '';
+  const message = summarizeDaemonUnavailableMessage(snapshot?.message ?? '');
+  const statusAction = summarizeDaemonRecoveryAction(snapshot, state.settings);
+
+  if (state.daemonBootstrapping) {
+    renderStatus(message || 'Starting local TunnelMux…', false, null);
+    return;
+  }
 
   if (connected && ownership === 'managed') {
-    renderStatus(message || 'Connected to a GUI-managed local TunnelMux daemon.');
+    renderStatus(message || 'Connected to a GUI-managed local TunnelMux daemon.', false, null);
     return;
   }
 
   if (connected && ownership === 'external') {
-    renderStatus(message || 'Using an existing local TunnelMux daemon.');
+    renderStatus(message || 'Using an existing local TunnelMux daemon.', false, null);
     return;
   }
 
-  renderStatus(message || 'Local TunnelMux is unavailable.', true);
+  renderStatus(message || 'Local TunnelMux is unavailable.', true, statusAction);
 }
 
 async function refreshDashboard() {
@@ -698,6 +1223,10 @@ async function refreshDashboard() {
     const snapshot = await invoke('refresh_dashboard');
     renderDashboard(snapshot);
   } catch (error) {
+    if (state.daemonBootstrapping) {
+      return;
+    }
+
     renderStatus(`Failed to refresh dashboard: ${formatError(error)}`, true);
   }
 }
@@ -707,6 +1236,10 @@ async function refreshRoutes() {
     const snapshot = await invoke('list_routes');
     renderRoutes(snapshot);
   } catch (error) {
+    if (state.daemonBootstrapping) {
+      return;
+    }
+
     renderRoutes({ routes: [], message: `Failed to load services: ${formatError(error)}` });
   }
 }
@@ -716,8 +1249,23 @@ async function startTunnel() {
     const tunnel = getCurrentTunnelSettings();
     if (!tunnel) {
       renderStatus('Create a tunnel before starting it.', true);
-      return;
+      return {
+        ok: false,
+        recoveryTarget: null,
+      };
     }
+
+    const providerAvailabilitySummary = currentProviderAvailabilitySummary();
+    if (providerAvailabilitySummary) {
+      renderProviderStatusSummary(providerAvailabilitySummary);
+      renderHomeProviderActions();
+      renderStatus(providerAvailabilitySummary.message, true);
+      return {
+        ok: false,
+        recoveryTarget: null,
+      };
+    }
+
     const snapshot = await invoke('start_tunnel', {
       input: {
         provider: tunnel.provider,
@@ -727,9 +1275,47 @@ async function startTunnel() {
     });
     renderDashboard(snapshot);
     await refreshTunnelWorkspace();
-    renderStatus('Tunnel started.');
+    const statusAction = summarizeStartSuccessAction({
+      public_url: getCurrentTunnelDetails()?.public_base_url ?? snapshot?.tunnel?.public_base_url ?? '',
+      enabled_services: state.routeCache.filter((route) => route.enabled).length,
+      named_cloudflared: Boolean(getCurrentTunnelDetails()?.cloudflared_tunnel_token),
+      tunnel_state: getCurrentTunnelDetails()?.state ?? snapshot?.tunnel?.state ?? 'running',
+    });
+    renderStatus(statusAction?.kind === 'add_service' ? 'Tunnel started. Add Service to keep going.' : statusAction?.kind === 'copy_public_url' ? 'Tunnel started. Copy URL to share.' : 'Tunnel started.', false, statusAction);
+    return {
+      ok: true,
+      recoveryTarget: null,
+    };
   } catch (error) {
-    renderStatus(`Failed to start tunnel: ${formatError(error)}`, true);
+    const message = formatError(error);
+    await refreshProviderAvailabilitySnapshot();
+    await refreshProviderStatusSummary();
+    const failure = summarizeStartFailureRecovery({
+      message,
+      settings: state.settings,
+      tunnel: getCurrentTunnelDetails() ?? getCurrentTunnelSettings(),
+    });
+
+    if (failure.preservesProviderRecovery) {
+      const providerAvailabilitySummary = currentProviderAvailabilitySummary();
+      if (providerAvailabilitySummary) {
+        renderProviderStatusSummary(providerAvailabilitySummary);
+        renderHomeProviderActions();
+        renderStatus(providerAvailabilitySummary.message, true);
+      } else {
+        renderStatus(`Failed to start tunnel: ${message}`, true);
+      }
+      return {
+        ok: false,
+        recoveryTarget: null,
+      };
+    }
+
+    renderStatus(`Failed to start tunnel: ${message}`, true, failure.statusAction);
+    return {
+      ok: false,
+      recoveryTarget: failure.recoveryTarget,
+    };
   }
 }
 
@@ -747,6 +1333,7 @@ async function stopTunnel() {
 async function saveRoute() {
   try {
     const exposureMode = elements.serviceExposureMode.value;
+    const previousEnabledServices = state.routeCache.filter((route) => route.enabled).length;
     const snapshot = await invoke('save_route', {
       form: {
         original_id: state.editingOriginalId,
@@ -760,12 +1347,44 @@ async function saveRoute() {
         enabled: elements.routeEnabled.checked,
       },
     });
+    const nextEnabledServices = Array.isArray(snapshot?.routes)
+      ? snapshot.routes.filter((route) => route.enabled).length
+      : previousEnabledServices;
     renderRoutes(snapshot);
     await refreshTunnelWorkspace();
-    renderStatus(snapshot.message ?? 'Service saved.');
+    const startAction = previousEnabledServices === 0 && nextEnabledServices > 0
+      ? summarizeStartReadyStatusAction(getCurrentTunnelDetails())
+      : null;
+    if (startAction) {
+      renderStatus('Service saved. Start Tunnel to keep going.', false, startAction);
+      resetRouteForm();
+      closeServiceDrawer();
+      return;
+    }
+    const shareAction = summarizeShareStatusAction({
+      public_url: getCurrentTunnelDetails()?.public_base_url ?? '',
+      enabled_services: nextEnabledServices,
+    });
+    renderStatus(summarizeRouteSaveStatus({
+      tunnel_state: state.dashboardTunnelState,
+      public_url: getCurrentTunnelDetails()?.public_base_url ?? '',
+      previous_enabled_services: previousEnabledServices,
+      next_enabled_services: nextEnabledServices,
+      message: snapshot?.message,
+    }), false, shareAction);
     resetRouteForm();
     closeServiceDrawer();
   } catch (error) {
+    const failure = summarizeRouteSaveFailure({ message: formatError(error) });
+    if (failure) {
+      if (failure.openAdvanced) {
+        elements.serviceAdvanced.open = true;
+      }
+      renderStatus(failure.message, true);
+      requestAnimationFrame(() => focusServiceDrawerField(failure.recoveryTarget));
+      return;
+    }
+
     renderStatus(`Failed to save service: ${formatError(error)}`, true);
   }
 }
@@ -834,74 +1453,103 @@ function renderDashboard(snapshot) {
   const publicUrl = tunnel?.public_base_url ?? '';
   const tunnelState = tunnel?.state ?? (connected ? 'idle' : 'offline');
   const enabledServices = state.routeCache.filter((route) => route.enabled).length;
+  state.dashboardConnected = connected;
+  state.dashboardTunnelState = tunnelState;
   const namedCloudflared =
     tunnel?.provider === 'cloudflared' &&
     Boolean(snapshot?.settings?.cloudflared_tunnel_token);
+  const guidance = summarizeDashboardGuidance({
+    connected,
+    public_url: publicUrl,
+    tunnel_state: tunnelState,
+    enabled_services: enabledServices,
+    named_cloudflared: namedCloudflared,
+    message: snapshot?.message ?? null,
+  });
 
   elements.publicUrl.textContent = publicUrl || (
     tunnelState === 'running' && namedCloudflared
       ? 'Managed in Cloudflare'
-      : 'Not running'
+      : tunnelState === 'running'
+        ? 'Waiting for public URL…'
+        : 'Not running'
   );
   elements.dashboardConnected.textContent = connected ? 'Yes' : 'No';
   elements.dashboardProvider.textContent = tunnel?.provider ?? collectSettingsForm().default_provider ?? '—';
   elements.servicesEnabledCount.textContent = `${enabledServices} enabled`;
-  elements.copyPublicUrl.disabled = !publicUrl;
-  elements.openPublicUrl.disabled = !publicUrl;
-  elements.manageProvider.disabled = !namedCloudflared;
+  const publicUrlActions = resolveDashboardPublicUrlActions({
+    public_url: publicUrl,
+    enabled_services: enabledServices,
+    tunnel_state: tunnelState,
+    named_cloudflared: namedCloudflared,
+  });
+  elements.copyPublicUrl.disabled = !publicUrlActions.show_copy_public_url;
+  elements.openPublicUrl.disabled = !publicUrlActions.show_open_public_url;
+  elements.manageProvider.disabled = !publicUrlActions.show_manage_provider;
   elements.stopTunnel.disabled = tunnelState !== 'running';
   elements.startTunnel.textContent = tunnelState === 'stopped' || tunnelState === 'error'
     ? 'Restart Tunnel'
     : 'Start Tunnel';
   elements.startTunnel.hidden = tunnelState === 'running';
-  elements.copyPublicUrl.hidden = !publicUrl;
-  elements.openPublicUrl.hidden = !publicUrl;
-  elements.manageProvider.hidden = !(tunnelState === 'running' && namedCloudflared && !publicUrl);
+  elements.copyPublicUrl.hidden = !publicUrlActions.show_copy_public_url;
+  elements.openPublicUrl.hidden = !publicUrlActions.show_open_public_url;
+  elements.manageProvider.hidden = !publicUrlActions.show_manage_provider;
   elements.stopTunnel.hidden = tunnelState !== 'running';
+  renderHomeProviderActions();
+  renderHeroAddServiceAction(summarizeZeroServiceHeroAction({
+    connected,
+    tunnel_state: tunnelState,
+    enabled_services: enabledServices,
+  }));
 
   elements.stateBadge.textContent = titleCase(tunnelState);
   elements.stateBadge.className = `status-pill ${escapeClassName(tunnelState)}`;
 
   const dashboardStatus = resolveDashboardStatus(snapshot);
   if (!connected) {
-    elements.homePublicUrlMeta.textContent = 'TunnelMux is not ready yet. Open Settings or view error details.';
-    elements.dashboardMessage.textContent = snapshot?.message ?? 'Unable to reach the local daemon.';
+    elements.homePublicUrlMeta.textContent = guidance.home_public_url_meta;
+    elements.dashboardMessage.textContent = guidance.dashboard_message;
     if (dashboardStatus) {
-      renderStatus(dashboardStatus.message, dashboardStatus.isError);
+      renderStatus(
+        dashboardStatus.message,
+        dashboardStatus.isError,
+        summarizeDaemonRecoveryAction(
+          {
+            connected: false,
+            ownership: 'unavailable',
+            message: snapshot?.message ?? null,
+          },
+          state.settings,
+        ),
+      );
     }
     return;
   }
 
-  if (publicUrl) {
-    elements.homePublicUrlMeta.textContent = enabledServices > 0
-      ? 'Your tunnel is live and ready to share.'
-      : 'Your tunnel is live. Visitors will see the default welcome page until you add a service.';
-    elements.dashboardMessage.textContent = enabledServices > 0
-      ? 'Live now.'
-      : 'No services configured yet.';
+  elements.homePublicUrlMeta.textContent = guidance.home_public_url_meta;
+  elements.dashboardMessage.textContent = guidance.dashboard_message;
+}
+
+function renderHeroAddServiceAction(action) {
+  if (!elements.heroAddService) {
     return;
   }
 
-  if (tunnelState === 'running' && namedCloudflared) {
-    elements.homePublicUrlMeta.textContent = 'Your named Cloudflare tunnel is connected. Public hostname and Access are managed in Cloudflare.';
-    elements.dashboardMessage.textContent = snapshot?.message ?? 'Named tunnel running.';
-    return;
-  }
-
-  if (tunnelState === 'stopped' || tunnelState === 'error') {
-    elements.homePublicUrlMeta.textContent = 'The previous tunnel is no longer running. Start it again to restore a public URL.';
-    elements.dashboardMessage.textContent = snapshot?.message ?? 'Tunnel not running.';
-    return;
-  }
-
-  elements.homePublicUrlMeta.textContent = 'TunnelMux is connected. Start the tunnel to get a public URL.';
-  elements.dashboardMessage.textContent = snapshot?.message ?? 'Connected, but not live yet.';
+  elements.heroAddService.hidden = !action;
+  elements.heroAddService.textContent = action?.label ?? 'Add Service';
+  elements.heroAddService.disabled = state.busy;
 }
 
 function renderProviderStatusSummary(summary) {
   if (!summary) {
     elements.providerStatusCard.hidden = true;
     state.providerStatusAction = null;
+    state.providerStatusActionPayload = null;
+    state.providerStatusFollowUpAction = null;
+    state.providerStatusFollowUpActionPayload = null;
+    if (elements.providerStatusFollowUpAction) {
+      elements.providerStatusFollowUpAction.hidden = true;
+    }
     return;
   }
 
@@ -911,8 +1559,17 @@ function renderProviderStatusSummary(summary) {
   elements.providerStatusBadge.textContent = titleCase(summary.level ?? 'info');
   elements.providerStatusBadge.className = `status-pill ${escapeClassName(summary.level ?? 'idle')}`;
   state.providerStatusAction = summary.action_kind ?? null;
+  state.providerStatusActionPayload = summary.action_payload ?? null;
+  state.providerStatusFollowUpAction = summary.follow_up_action_kind ?? null;
+  state.providerStatusFollowUpActionPayload = summary.follow_up_action_payload ?? null;
   elements.providerStatusAction.textContent = summary.action_label ?? 'Review';
   elements.providerStatusAction.hidden = !summary.action_kind;
+  elements.providerStatusAction.disabled = state.busy;
+  if (elements.providerStatusFollowUpAction) {
+    elements.providerStatusFollowUpAction.textContent = summary.follow_up_action_label ?? 'Recheck Provider';
+    elements.providerStatusFollowUpAction.hidden = !summary.follow_up_action_kind;
+    elements.providerStatusFollowUpAction.disabled = state.busy;
+  }
 }
 
 function renderRoutes(snapshot) {
@@ -929,6 +1586,11 @@ function renderRoutes(snapshot) {
 
   const enabled = state.routeCache.filter((route) => route.enabled).length;
   elements.servicesEnabledCount.textContent = `${enabled} enabled`;
+  renderHeroAddServiceAction(summarizeZeroServiceHeroAction({
+    connected: state.dashboardConnected,
+    tunnel_state: state.dashboardTunnelState,
+    enabled_services: enabled,
+  }));
   elements.newRoute.hidden = false;
   elements.servicesNotice.hidden = !viewState.notice;
   if (viewState.notice) {
@@ -942,9 +1604,13 @@ function renderRoutes(snapshot) {
   }
 
   if (!state.routeCache.length) {
+    const currentTunnel = getCurrentTunnelDetails();
+    const shouldPromptBeforeSharing = currentTunnel?.state === 'running';
+
     elements.routesEmptyTitle.textContent = 'No services yet.';
-    elements.routesEmptyCopy.textContent =
-      snapshot?.message ?? 'Add one local URL to replace the default welcome page.';
+    elements.routesEmptyCopy.textContent = shouldPromptBeforeSharing
+      ? 'Add a service before sharing this URL. It replaces the default welcome page.'
+      : (snapshot?.message ?? 'Add a local service to route traffic somewhere useful.');
     elements.routesEmptyCopy.classList.remove('error');
     elements.routesEmpty.hidden = false;
     elements.dashboardMessage.hidden = true;
@@ -1183,7 +1849,10 @@ function bindRouteActionButtons() {
 
 function populateRouteForm(route) {
   state.editingOriginalId = route.id;
-  elements.routeFormTitle.textContent = `Edit Service: ${route.id}`;
+  elements.routeFormTitle.textContent = resolveRouteFormTitle({
+    editing_route_id: route.id,
+    route_count: currentRouteCount(),
+  });
   elements.routeId.value = route.id;
   elements.routeId.disabled = true;
   elements.routeMatchPathPrefix.value = route.match_path_prefix ?? '/';
@@ -1200,7 +1869,10 @@ function populateRouteForm(route) {
 
 function resetRouteForm() {
   state.editingOriginalId = null;
-  elements.routeFormTitle.textContent = 'Add Service';
+  elements.routeFormTitle.textContent = resolveRouteFormTitle({
+    editing_route_id: null,
+    route_count: currentRouteCount(),
+  });
   elements.routeId.disabled = false;
   elements.routeId.value = '';
   elements.routeMatchPathPrefix.value = '/';
@@ -1226,15 +1898,19 @@ async function copyPublicUrl() {
     return;
   }
 
+  await copyTextValue(url, 'Public URL copied.', 'Failed to copy URL');
+}
+
+async function copyTextValue(value, successMessage, failurePrefix) {
   try {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(url);
-      renderStatus('Public URL copied.');
+      await navigator.clipboard.writeText(value);
+      renderStatus(successMessage);
       return;
     }
     throw new Error('clipboard API unavailable');
   } catch (error) {
-    renderStatus(`Failed to copy URL: ${formatError(error)}`, true);
+    renderStatus(`${failurePrefix}: ${formatError(error)}`, true);
   }
 }
 
@@ -1255,20 +1931,154 @@ function openCloudflareDocs() {
   window.open(CLOUDFLARE_TUNNEL_DOCS_URL, '_blank', 'noopener,noreferrer');
 }
 
-function handleProviderStatusAction() {
-  switch (state.providerStatusAction) {
+async function handleEmptyProviderAction() {
+  const summary = summarizeEmptyStateProviderGuidance(state.providerAvailabilitySnapshot);
+  if (!summary) {
+    return;
+  }
+
+  await runProviderUiAction(summary.action_kind, summary.action_payload, 'empty');
+}
+
+async function handleEmptyProviderFollowUpAction() {
+  const summary = summarizeEmptyStateProviderGuidance(state.providerAvailabilitySnapshot);
+  if (!summary) {
+    return;
+  }
+
+  await runProviderUiAction(summary.follow_up_action_kind, summary.follow_up_action_payload, 'empty');
+}
+
+async function handleHomeProviderAction() {
+  const actionState = summarizeHomeTunnelActions(getCurrentTunnelDetails(), undefined, state.providerAvailabilitySnapshot);
+  await runProviderUiAction(actionState.action_kind, actionState.action_payload);
+}
+
+async function handleHomeProviderFollowUpAction() {
+  const actionState = summarizeHomeTunnelActions(getCurrentTunnelDetails(), undefined, state.providerAvailabilitySnapshot);
+  await runProviderUiAction(
+    actionState.follow_up_action_kind,
+    actionState.follow_up_action_payload,
+    'home',
+  );
+}
+
+async function handleProviderStatusAction() {
+  await runProviderUiAction(state.providerStatusAction, state.providerStatusActionPayload);
+}
+
+async function handleProviderStatusFollowUpAction() {
+  await runProviderUiAction(
+    state.providerStatusFollowUpAction,
+    state.providerStatusFollowUpActionPayload,
+    'provider_status',
+  );
+}
+
+async function runProviderUiAction(actionKind, actionPayload, actionSource = 'home') {
+  switch (actionKind) {
     case 'open_cloudflare':
       openCloudflareDashboard();
       break;
-    case 'open_settings':
-      openSettingsDrawer();
+    case 'open_cloudflare_docs':
+      openCloudflareDocs();
+      break;
+    case 'edit_tunnel':
+      openTunnelDrawer({ mode: 'edit', recoveryTarget: actionPayload ?? null });
+      syncTunnelProviderFields();
+      break;
+    case 'use_installed_provider':
+      if (!actionPayload) {
+        renderStatus('No installed provider is available yet.', true);
+        break;
+      }
+      openTunnelDrawer({ mode: 'edit', recoveryTarget: actionPayload === 'ngrok' ? 'ngrok_authtoken' : null });
+      elements.tunnelProvider.value = actionPayload;
+      syncTunnelProviderFields();
+      break;
+    case 'copy_install_command':
+      if (!actionPayload) {
+        renderStatus('No install command is available yet.', true);
+        break;
+      }
+      await copyTextValue(
+        actionPayload,
+        'Install command copied.',
+        'Failed to copy install command',
+      );
+      break;
+    case 'edit_service':
+      openServiceEditorForRoute(actionPayload);
       break;
     case 'review_services':
-      elements.servicesShell?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      highlightServicesPanel();
+      break;
+    case 'recheck_provider':
+      await refreshCurrentProviderAvailability(actionPayload, actionSource);
       break;
     default:
       break;
   }
+}
+
+async function refreshCurrentProviderAvailability(providerName, source = 'home') {
+  const previousEmptyStateGuidance = source === 'empty'
+    ? summarizeEmptyStateProviderGuidance(state.providerAvailabilitySnapshot)
+    : null;
+  const snapshot = await refreshProviderAvailabilitySnapshot();
+  await refreshProviderStatusSummary();
+
+  if (!snapshot) {
+    renderStatus('Failed to refresh provider availability.', true);
+    return;
+  }
+
+  if (source === 'empty') {
+    const guidance = summarizeEmptyStateProviderGuidance(snapshot);
+    const statusUpdate = summarizePassiveEmptyStateProviderRefresh({
+      previousGuidance: previousEmptyStateGuidance,
+      nextGuidance: guidance,
+      nextProviderAvailabilitySnapshot: snapshot,
+    });
+    if (statusUpdate) {
+      renderStatus(statusUpdate.message, statusUpdate.isError, statusUpdate.statusAction);
+      return;
+    }
+
+    if (guidance?.follow_up_action_kind) {
+      renderStatus(`${titleCase(guidance.follow_up_action_payload ?? 'provider')} is still missing. Install it, then recheck again.`, true);
+      return;
+    }
+
+    const statusAction = summarizeProviderRecheckFollowThrough({
+      source,
+      tunnel_state: 'offline',
+    });
+    renderStatus('Create Tunnel is available.', false, statusAction);
+    return;
+  }
+
+  const resolvedProvider = providerName
+    ?? elements.tunnelProvider?.value
+    ?? getCurrentTunnelDetails()?.provider
+    ?? 'provider';
+  const readiness = summarizeDrawerProviderReadiness(resolvedProvider, snapshot);
+  if (readiness.start_disabled) {
+    renderStatus(`${titleCase(resolvedProvider)} is still missing. Install it, then recheck again.`, true);
+    return;
+  }
+
+  const statusAction = summarizeProviderRecheckFollowThrough({
+    source,
+    tunnel_state: getCurrentTunnelDetails()?.state ?? state.dashboardTunnelState,
+  });
+  const statusMessage = statusAction?.kind === 'save_and_start_tunnel'
+    ? `${titleCase(resolvedProvider)} is ready. Save and Start is available again.`
+    : statusAction?.kind === 'start_tunnel'
+      ? `${titleCase(resolvedProvider)} is ready. Start Tunnel is available again.`
+      : `${titleCase(resolvedProvider)} is ready.`;
+
+  renderStatus(statusMessage, false, statusAction);
 }
 
 function describeRouteExposure(route) {
@@ -1285,13 +2095,81 @@ function ensurePath(value) {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
-function renderStatus(message, isError = false) {
+function focusTunnelDrawerPrimaryField({ mode, recoveryTarget }) {
+  const field = resolveTunnelRecoveryField(recoveryTarget) || (mode === 'create' ? elements.tunnelName : null);
+  if (!field || field.disabled || typeof field.focus !== 'function') {
+    return;
+  }
+
+  field.focus();
+  if (typeof field.select === 'function') {
+    field.select();
+  }
+}
+
+function resolveTunnelRecoveryField(recoveryTarget) {
+  switch (recoveryTarget) {
+    case 'gateway_target_url':
+      return elements.tunnelGatewayTargetUrl;
+    case 'cloudflared_tunnel_token':
+      return elements.tunnelCloudflaredTunnelToken;
+    case 'ngrok_authtoken':
+      return elements.tunnelNgrokAuthtoken;
+    case 'ngrok_domain':
+      return elements.tunnelNgrokDomain;
+    default:
+      return null;
+  }
+}
+
+function renderStatus(message, isError = false, statusAction = null) {
   state.statusMessage = message ?? '';
   state.statusIsError = Boolean(isError);
+  state.statusActionKind = statusAction?.kind ?? null;
+  state.statusActionLabel = statusAction?.label ?? null;
+  state.statusActionPayload = statusAction?.payload ?? null;
   elements.status.textContent = summarizeStatusMessage(message, isError);
   elements.status.classList.toggle('error', isError);
   if (elements.statusErrorDetails) {
     elements.statusErrorDetails.hidden = !shouldShowErrorDetailsAction({ isError });
+  }
+  if (elements.statusAction) {
+    elements.statusAction.textContent = state.statusActionLabel ?? 'Retry';
+    elements.statusAction.hidden = !state.statusActionKind;
+    elements.statusAction.disabled = state.busy;
+  }
+}
+
+async function handleStatusAction() {
+  switch (state.statusActionKind) {
+    case 'copy_public_url':
+      await copyPublicUrl();
+      break;
+    case 'retry_local_daemon':
+      await ensureLocalDaemonAndRefresh();
+      break;
+    case 'open_settings':
+      openSettingsDrawer();
+      break;
+    case 'edit_tunnel':
+      openTunnelDrawer({ mode: 'edit', recoveryTarget: state.statusActionPayload ?? null });
+      syncTunnelProviderFields();
+      break;
+    case 'add_service':
+      resetRouteForm();
+      openServiceDrawer();
+      break;
+    case 'create_tunnel':
+      openTunnelDrawer({ mode: 'create' });
+      break;
+    case 'start_tunnel':
+      await startTunnel();
+      break;
+    case 'save_and_start_tunnel':
+      await saveTunnel({ startNow: true });
+      break;
+    default:
+      break;
   }
 }
 

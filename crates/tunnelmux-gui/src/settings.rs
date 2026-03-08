@@ -255,6 +255,19 @@ mod tests {
     }
 
     #[test]
+    fn tunnel_profile_defaults_match_gui_easy_path() {
+        let profile = TunnelProfileSettings::default();
+
+        assert_eq!(profile.name, DEFAULT_TUNNEL_NAME);
+        assert_eq!(profile.provider, TunnelProvider::Cloudflared);
+        assert_eq!(profile.gateway_target_url, DEFAULT_GUI_GATEWAY_TARGET_URL);
+        assert!(profile.auto_restart);
+        assert_eq!(profile.cloudflared_tunnel_token, None);
+        assert_eq!(profile.ngrok_authtoken, None);
+        assert_eq!(profile.ngrok_domain, None);
+    }
+
+    #[test]
     fn save_and_reload_settings_round_trips_token() {
         let temp_dir = prepare_temp_dir();
         let expected = GuiSettings {
