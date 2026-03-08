@@ -87,6 +87,29 @@ cargo tauri build --bundles dmg -c tauri.conf.json
 
 Adjust `--bundles` for your platform (`msi` on Windows, `deb` on Linux). On headless macOS shells, prefix `CI=true` to skip Finder prettification during DMG creation.
 
+## macOS First-launch Trust Prompts
+
+Unsigned macOS GUI builds can still trigger Gatekeeper warnings on first launch.
+
+Recommended sequence when the app source is trusted:
+
+1. Right-click `TunnelMux.app`
+2. Click `Open`
+3. Confirm the prompt
+
+If macOS still blocks the app:
+
+1. Open `System Settings`
+2. Go to `Privacy & Security`
+3. Find the blocked app notice near the bottom
+4. Click `Open Anyway`
+
+Last resort, only for trusted downloads:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/TunnelMux.app
+```
+
 ## Signed GUI Release Mode
 
 The GUI release workflow now supports an explicit signed mode for macOS and Windows while keeping unsigned mode as the default.

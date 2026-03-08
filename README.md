@@ -1,44 +1,77 @@
 # TunnelMux
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 ![CI](https://github.com/kexuejin/TunnelMux/actions/workflows/ci.yml/badge.svg)
 ![Release](https://github.com/kexuejin/TunnelMux/actions/workflows/release.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
 
-TunnelMux is an open-source tunnel gateway and reverse-proxy control plane for local services.
+TunnelMux is a GUI-first local tunnel control console for developers who are tired of juggling `cloudflared`, `ngrok`, route scripts, and half-broken local demos.
 
-If you need a production-grade replacement for ad-hoc `cloudflared` / `ngrok` scripts, TunnelMux gives you a consistent API, deterministic routing, and provider lifecycle management in one standalone service.
+If your project now means “frontend + API + docs + callback endpoint” instead of one localhost port, TunnelMux gives you one place to start tunnels, expose services, switch providers, and see what is actually broken.
 
-## Why TunnelMux
+![TunnelMux GUI home screen](docs/images/gui-home.png)
 
-Most teams start with manual tunnel commands, then hit the same issues:
-- no shared control API for CLI/GUI/automation
-- fragile process supervision and log visibility
-- hard-to-manage routing across multiple local services
-- inconsistent failover behavior when upstreams are unstable
+## Why people reach for TunnelMux
 
-TunnelMux solves this by separating concerns:
-- TunnelMux owns tunnels, routing, health, and operations
-- your product/application acts as an API client
-- no vendor-specific business adapters inside TunnelMux
+Modern local sharing gets messy fast:
 
-## Key Capabilities
+- vibe coding turns one app into multiple local services in a day
+- ad-hoc `cloudflared` / `ngrok` commands become tribal knowledge
+- path and host routing drifts across scripts, shell history, and README snippets
+- when something fails, it is hard to tell whether the problem is the daemon, the tunnel, the route, or the local service
+- teammates cannot reliably reproduce the same local exposure setup
 
-- Independent daemon (`tunnelmuxd`) and CLI (`tunnelmux-cli`)
-- Desktop GUI (`tunnelmux-gui`) for local operations control and diagnostics
-- Shared Rust control client for CLI and GUI surfaces
-- Tunnel lifecycle API: start, stop, status, logs, streams
-- Host/path routing to multiple local upstream services
-- Primary/fallback failover with active health checks
-- HTTP and WebSocket proxying (`ws` and `wss` upstream support)
-- Provider supervision with exponential backoff restart
-- Declarative `config.json` with automatic hot reload for routes and health checks
-- Optional token authentication for control-plane endpoints
-- Multi-platform GitHub Release binaries with `SHA256SUMS`
+TunnelMux keeps that workflow in one local control plane instead of another pile of terminal glue.
 
-## Installation
+## What you get
 
-### 1) One-command installer (macOS/Linux)
+- A desktop GUI for the common path: create a tunnel, click start, add services
+- One daemon and one API behind both the GUI and CLI
+- Multi-service host/path routing for local apps, APIs, docs, and callbacks
+- Provider-aware tunnel setup for `cloudflared` and `ngrok`
+- Runtime status, public URL, and service state in one place
+- Route health, provider logs, and diagnostics when you need them
+- Declarative `config.json` hot reload for route and health-check changes
+
+## GUI-first workflow
+
+TunnelMux is designed for the “I just need this working” path first:
+
+1. Create a tunnel profile
+2. Pick `cloudflared` or `ngrok`
+3. Click `Start Tunnel`
+4. Add one or more local services
+5. Share the public URL
+
+When you need more control, the same app also supports:
+
+- multiple tunnel profiles
+- provider-specific configuration
+- tunnel-scoped services
+- tunnel restart / recovery
+- diagnostics and log inspection on demand
+
+## Install
+
+### Fastest path: native GUI installer
+
+Download the latest installer from GitHub Releases:
+
+- macOS: `.dmg`
+- Windows: `.msi`
+- Linux: `.deb`
+
+Releases also include raw platform archives with:
+
+- `tunnelmuxd`
+- `tunnelmux-cli`
+- `tunnelmux-gui`
+
+### One-command installer
+
+macOS and Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/install.sh | bash
@@ -54,21 +87,7 @@ curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/ins
 curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/install.sh | bash -s -- --prefix /usr/local
 ```
 
-### 2) GitHub Releases
-
-Download either the platform archive or the native GUI installer from Releases.
-
-Platform archives still contain:
-- `tunnelmuxd`
-- `tunnelmux-cli`
-- `tunnelmux-gui`
-
-Native GUI installer assets now include:
-- macOS: `.dmg`
-- Windows: `.msi`
-- Linux: `.deb`
-
-### 3) Install from source
+### Build from source
 
 ```bash
 cargo install --git https://github.com/kexuejin/TunnelMux tunnelmuxd --locked
@@ -78,90 +97,104 @@ cargo install --git https://github.com/kexuejin/TunnelMux tunnelmux-cli --locked
 For local development:
 
 ```bash
-cargo install --path crates/tunnelmuxd --force
-cargo install --path crates/tunnelmux-cli --force
+cargo run -p tunnelmuxd
 cargo run -p tunnelmux-gui
 ```
 
-Windows users should use release `.zip` assets.
+## Quick start
 
-## Quick Start (60 seconds)
+### GUI path
+
+1. Install `cloudflared` or `ngrok`
+2. Open TunnelMux
+3. Create your first tunnel
+4. Click `Start Tunnel`
+5. Add your local service URL, for example `http://127.0.0.1:3000`
+
+The GUI prefers to connect to an existing local `tunnelmuxd`. If nothing is reachable, it can auto-start a local daemon for the desktop app.
+
+### CLI path
 
 ```bash
 git clone https://github.com/kexuejin/TunnelMux.git
 cd TunnelMux
-cargo check
 
-TUNNELMUX_API_TOKEN=dev-token cargo run -p tunnelmuxd -- \
+cargo run -p tunnelmuxd -- \
   --listen 127.0.0.1:4765 \
-  --gateway-listen 127.0.0.1:18080 \
-  --max-auto-restarts 10 \
-  --health-check-interval-ms 5000 \
-  --health-check-timeout-ms 2000 \
-  --health-check-path /healthz
+  --gateway-listen 127.0.0.1:18080
 
-TUNNELMUX_API_TOKEN=dev-token cargo run -p tunnelmux-cli -- routes add \
+cargo run -p tunnelmux-cli -- routes add \
   --id app-web \
   --upstream-url http://127.0.0.1:3000 \
-  --fallback-upstream-url http://127.0.0.1:3001 \
-  --health-check-path /healthz \
-  --host app.local
+  --path-prefix /app
 
-curl -H 'Host: app.local' http://127.0.0.1:18080/
+cargo run -p tunnelmux-cli -- tunnel start \
+  --provider cloudflared \
+  --target-url http://127.0.0.1:18080 \
+  --auto-restart
 ```
 
-Operational helpers:
+## Supported local workflow
+
+TunnelMux is a good fit when you need to expose:
+
+- a frontend on one path and an API on another
+- docs, webhook callbacks, and local tools behind one tunnel
+- a stable named Cloudflare tunnel or a quick temporary tunnel
+- one tunnel today, then multiple tunnel profiles later
+
+It is not trying to be your production edge or cloud platform. It is the local control layer that makes local sharing less annoying.
+
+## macOS first-launch FAQ
+
+Current native GUI installers may still be unsigned, so macOS can show Gatekeeper warnings on first launch.
+
+### “TunnelMux is damaged and can’t be opened”
+
+If you trust the download source:
+
+1. Open Finder and locate the app
+2. Right-click `TunnelMux.app`
+3. Click `Open`
+4. Confirm the trust prompt
+
+If macOS still blocks it, go to:
+
+- `System Settings` → `Privacy & Security`
+- find the blocked app notice near the bottom
+- click `Open Anyway`
+
+### “Apple cannot verify the developer”
+
+Use the same sequence first:
+
+1. Right-click the app
+2. Click `Open`
+3. Confirm the dialog
+
+If needed:
+
+- `System Settings` → `Privacy & Security`
+- click `Open Anyway`
+
+### Last resort: remove quarantine
+
+Only do this if you trust the source of the app:
 
 ```bash
-tunnelmux diagnostics
-tunnelmux settings reload
+xattr -dr com.apple.quarantine /Applications/TunnelMux.app
 ```
 
-Desktop GUI:
+More release and bundle details live in `docs/RELEASING.md`.
 
-```bash
-cargo run -p tunnelmux-gui
-```
-
-The GUI now prefers to auto-start a local `tunnelmuxd` when no daemon is reachable at the configured control URL. If an existing daemon is already running, the GUI connects to it without taking ownership.
-
-Current GUI focuses on a single easy-first page:
-- the main page highlights the current public URL and tunnel start/stop actions,
-- one current tunnel stays in focus while additional tunnel profiles can be switched from the top tunnel picker,
-- the service list is always visible on the same page,
-- service add/edit opens in a side drawer,
-- settings live behind a top-right settings entry,
-- troubleshooting remains available on demand instead of occupying the default shell.
-
-Current GUI tunnel model:
-- one selected tunnel is shown at a time,
-- each tunnel owns its own services and runtime status,
-- multiple tunnel profiles can exist locally,
-- deleting a tunnel removes its daemon-owned services and runtime state before removing the local profile.
-
-When the GUI starts its own local daemon, that daemon is scoped to the GUI session and stops when the GUI exits. Externally started daemons are never stopped by the GUI.
-
-Current native GUI installers may still be unsigned, so first-launch trust prompts may still appear depending on platform policy. Maintainers can enable the signed macOS/Windows GUI release path described in `docs/RELEASING.md` once CI signing credentials are configured.
-
-Config files:
+## Config files
 
 - `~/.tunnelmux/config.json` — declarative routes and health-check settings
 - `~/.tunnelmux/state.json` — daemon-owned runtime snapshot
 
-The daemon polls `config.json` and applies route / health-check changes without restarting the process.
+The daemon polls `config.json` and applies route and health-check changes without restarting.
 
-## GUI Development Notes
-
-- `tunnelmux-gui` is a Tauri desktop shell with a plain `HTML/CSS/JS` frontend.
-- The GUI stores only local connection settings such as daemon `base_url` and optional token.
-- The GUI is an API client of `tunnelmuxd`, the same as `tunnelmux-cli`.
-
-Platform prerequisites for local GUI builds:
-- macOS: system WebKit
-- Windows: WebView2 runtime
-- Linux: WebKitGTK development packages (see `docs/RELEASING.md`)
-
-## Architecture and Integration
+## Docs
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [API](docs/API.md)
@@ -169,28 +202,19 @@ Platform prerequisites for local GUI builds:
 - [Integration Templates](docs/INTEGRATION-TEMPLATES.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Releasing](docs/RELEASING.md)
+- [Changelog](CHANGELOG.md)
 
-## Repository Layout
+## Repository layout
 
 - `crates/tunnelmux-core` — shared domain models and protocol types
 - `crates/tunnelmux-control-client` — shared HTTP control client for CLI and GUI
 - `crates/tunnelmuxd` — daemon runtime and control-plane API
 - `crates/tunnelmux-cli` — CLI client and operational commands
 - `crates/tunnelmux-gui` — Tauri desktop control console
-- `scripts/install.sh` — release installer for macOS/Linux
-- `docs/` — architecture, API, integration, roadmap, release process
-
-## Security and Operations
-
-- Default local binding (`127.0.0.1`) for control endpoints
-- Optional bearer token (`--api-token` / `TUNNELMUX_API_TOKEN`)
-- Provider logs available via API and SSE streams
-- Runtime health snapshots for upstream and route observability
-- GUI stores local connection settings separately from daemon runtime/config files
+- `scripts/install.sh` — installer for macOS/Linux
 
 ## Contributing
 
 - [Contributing Guide](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Security Policy](SECURITY.md)
-- [Changelog](CHANGELOG.md)
