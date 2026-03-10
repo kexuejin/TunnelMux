@@ -688,7 +688,6 @@ mod tests {
         Json(DeleteTunnelResponse { removed: true })
     }
 
-
     async fn spawn_test_server(app: Router) -> String {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await

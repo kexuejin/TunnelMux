@@ -27,12 +27,13 @@ export function formatHomeProviderHint(tunnel) {
   const gatewayTarget = tunnel?.gateway_target_url ?? DEFAULT_GUI_GATEWAY_TARGET_URL;
   const restartLabel = tunnel?.auto_restart ? 'enabled' : 'disabled';
   const cloudflaredMode = tunnel?.cloudflared_tunnel_token ? 'named tunnel' : 'quick tunnel';
+  const installedByTunnelMux = tunnel?.provider_availability?.source === 'local_tools';
 
   if (provider === 'cloudflared') {
-    return `${provider} ${cloudflaredMode} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
+    return `${provider}${installedByTunnelMux ? ' (installed for TunnelMux)' : ''} ${cloudflaredMode} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
   }
 
-  return `${provider} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
+  return `${provider}${installedByTunnelMux ? ' (installed for TunnelMux)' : ''} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
 }
 
 export function formatTunnelOptionLabel(tunnel) {
@@ -109,27 +110,65 @@ export function getProviderInstallGuidance(provider, platform = detectInstallPla
   }
 }
 
+function installProviderActionLabel(providerName) {
+  return `Install ${providerName ?? 'provider'}`;
+}
+
+function retryInstallActionLabel() {
+  return 'Retry Install';
+}
+
 export function summarizeProviderAvailability(
   tunnel,
   platform = detectInstallPlatform(),
   providerAvailabilitySnapshot = null,
 ) {
   const availability = tunnel?.provider_availability;
+  const providerName = tunnel?.provider ?? availability?.binary_name ?? 'provider';
+  const binaryName = availability?.binary_name ?? providerName;
+  const alternateProvider = resolveInstalledAlternativeProvider(
+    providerName,
+    providerAvailabilitySnapshot,
+  );
+
+  if (availability?.install_state === 'downloading') {
+    return {
+      level: 'info',
+      title: `${titleCase(providerName)} Installing`,
+      message: `Installing ${binaryName} for TunnelMux. Start Tunnel will unlock when the download finishes.`,
+      action_kind: null,
+      action_label: null,
+      action_payload: null,
+      follow_up_action_kind: null,
+      follow_up_action_label: null,
+      follow_up_action_payload: null,
+    };
+  }
+
+  if (availability?.install_state === 'failed' && availability?.installed === false) {
+    return {
+      level: 'warning',
+      title: `${titleCase(providerName)} Install Failed`,
+      message: availability.install_error
+        ? `TunnelMux could not finish installing ${binaryName}: ${availability.install_error}`
+        : `TunnelMux could not finish installing ${binaryName}. Retry install.`,
+      action_kind: 'install_provider',
+      action_label: retryInstallActionLabel(),
+      action_payload: providerName,
+      follow_up_action_kind: alternateProvider ? 'use_installed_provider' : 'recheck_provider',
+      follow_up_action_label: alternateProvider ? 'Use Installed Provider' : 'Recheck Provider',
+      follow_up_action_payload: alternateProvider ?? providerName,
+    };
+  }
+
   if (availability?.installed === false) {
-    const providerName = tunnel?.provider ?? availability.binary_name ?? 'provider';
-    const binaryName = availability.binary_name ?? providerName;
-    const guidance = getProviderInstallGuidance(providerName, platform);
-    const alternateProvider = resolveInstalledAlternativeProvider(
-      providerName,
-      providerAvailabilitySnapshot,
-    );
     return {
       level: 'warning',
       title: `${titleCase(providerName)} Missing`,
       message: `Install ${binaryName} to start this tunnel. TunnelMux could not find the ${binaryName} command in your PATH.`,
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: guidance.command,
+      action_kind: 'install_provider',
+      action_label: installProviderActionLabel(providerName),
+      action_payload: providerName,
       follow_up_action_kind: alternateProvider ? 'use_installed_provider' : 'recheck_provider',
       follow_up_action_label: alternateProvider ? 'Use Installed Provider' : 'Recheck Provider',
       follow_up_action_payload: alternateProvider ?? providerName,
@@ -168,6 +207,10 @@ export function summarizeHomeTunnelActions(
       ? shouldUseRestartLabel(tunnel?.state)
         ? 'Add Authtoken to Restart'
         : 'Add Authtoken to Start'
+      : providerSummary.action_kind === 'install_provider' && providerSummary.action_label === 'Retry Install'
+        ? 'Retry Install to Start'
+        : providerSummary.action_kind === null && providerSummary.title?.endsWith('Installing')
+          ? 'Installing…'
       : shouldUseRestartLabel(tunnel?.state)
         ? 'Install Provider to Restart'
         : 'Install Provider to Start';
@@ -267,6 +310,18 @@ export function summarizeDaemonUnavailableMessage(message) {
   return text;
 }
 
+export function summarizeDiagnosticsLoadError(sectionLabel, error) {
+  const section = String(sectionLabel ?? 'details').trim() || 'details';
+  const text = summarizeDaemonUnavailableMessage(normalizeErrorText(error));
+  const lower = text.toLowerCase();
+
+  if (isDiagnosticsDaemonUnavailableError(lower)) {
+    return `Local TunnelMux daemon is unavailable, so ${section} is unavailable right now.`;
+  }
+
+  return `Failed to load ${section}: ${text}`;
+}
+
 export function summarizeDaemonRecoveryAction(snapshot, settings) {
   if (snapshot?.connected || snapshot?.bootstrapping) {
     return null;
@@ -309,7 +364,27 @@ export function summarizeStartFailureRecovery({
 }) {
   const lower = String(message ?? '').toLowerCase();
 
-  if (lower.startsWith('install ') && lower.includes('could not find') && lower.includes('path')) {
+  if (
+    lower.includes('connected daemon could not use that binary path')
+    || lower.includes('another tunnelmux daemon is already using this port')
+  ) {
+    const action = summarizeDaemonRecoveryAction({ connected: false }, settings);
+    return {
+      preservesProviderRecovery: false,
+      recoveryTarget: null,
+      statusAction: action
+        ? {
+          ...action,
+          payload: null,
+        }
+        : null,
+    };
+  }
+
+  if (
+    (lower.startsWith('install ') && lower.includes('could not find') && lower.includes('path'))
+    || lower.includes('provider executable not found')
+  ) {
     return {
       preservesProviderRecovery: true,
       recoveryTarget: null,
@@ -581,13 +656,40 @@ export function summarizeEmptyStateProviderGuidance(
   }
 
   const installedProviders = resolveInstalledCreateTunnelProviders(providerAvailabilitySnapshot);
+  const defaultAvailability = providerAvailabilitySnapshot?.[DEFAULT_CREATE_TUNNEL_PROVIDER] ?? null;
+
+  if (defaultAvailability?.install_state === 'downloading') {
+    return {
+      message: `Installing ${DEFAULT_CREATE_TUNNEL_PROVIDER} for TunnelMux. Create Tunnel will unlock automatically when the download finishes.`,
+      action_kind: null,
+      action_label: null,
+      action_payload: null,
+      follow_up_action_kind: null,
+      follow_up_action_label: null,
+      follow_up_action_payload: null,
+    };
+  }
+
+  if (defaultAvailability?.install_state === 'failed' && installedProviders.length === 0) {
+    return {
+      message: defaultAvailability.install_error
+        ? `TunnelMux could not finish installing ${DEFAULT_CREATE_TUNNEL_PROVIDER}: ${defaultAvailability.install_error}`
+        : `TunnelMux could not finish installing ${DEFAULT_CREATE_TUNNEL_PROVIDER}. Retry install.`,
+      action_kind: 'install_provider',
+      action_label: retryInstallActionLabel(),
+      action_payload: DEFAULT_CREATE_TUNNEL_PROVIDER,
+      follow_up_action_kind: 'recheck_provider',
+      follow_up_action_label: 'Recheck Provider',
+      follow_up_action_payload: DEFAULT_CREATE_TUNNEL_PROVIDER,
+    };
+  }
 
   if (installedProviders.length === 0) {
     return {
       message: 'Cloudflared is not installed yet. TunnelMux recommends cloudflared for the quickest first tunnel.',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: getProviderInstallGuidance(DEFAULT_CREATE_TUNNEL_PROVIDER, platform).command,
+      action_kind: 'install_provider',
+      action_label: installProviderActionLabel(DEFAULT_CREATE_TUNNEL_PROVIDER),
+      action_payload: DEFAULT_CREATE_TUNNEL_PROVIDER,
       follow_up_action_kind: 'recheck_provider',
       follow_up_action_label: 'Recheck Provider',
       follow_up_action_payload: DEFAULT_CREATE_TUNNEL_PROVIDER,
@@ -598,9 +700,21 @@ export function summarizeEmptyStateProviderGuidance(
     if (installedProviders[0] === 'ngrok') {
       return {
         message: 'Ngrok is installed. Create Tunnel will preselect it, but you will need an authtoken before Start Tunnel works.',
-        action_kind: 'copy_install_command',
-        action_label: 'Copy cloudflared Install Command',
-        action_payload: getProviderInstallGuidance(DEFAULT_CREATE_TUNNEL_PROVIDER, platform).command,
+        action_kind: 'install_provider',
+        action_label: installProviderActionLabel(DEFAULT_CREATE_TUNNEL_PROVIDER),
+        action_payload: DEFAULT_CREATE_TUNNEL_PROVIDER,
+        follow_up_action_kind: null,
+        follow_up_action_label: null,
+        follow_up_action_payload: null,
+      };
+    }
+
+    if (providerAvailabilitySnapshot?.[installedProviders[0]]?.source === 'local_tools') {
+      return {
+        message: `${titleCase(installedProviders[0])} is installed for TunnelMux. Create Tunnel will preselect it.`,
+        action_kind: null,
+        action_label: null,
+        action_payload: null,
         follow_up_action_kind: null,
         follow_up_action_label: null,
         follow_up_action_payload: null,
@@ -726,6 +840,40 @@ export function summarizeDrawerProviderReadiness(
     providerAvailabilitySnapshot,
   );
 
+  if (availability.install_state === 'downloading') {
+    return {
+      level: 'info',
+      title: `${titleCase(providerName)} Installing`,
+      message: `Installing ${binaryName} for TunnelMux. Save and Start will unlock when the download finishes.`,
+      action_kind: null,
+      action_label: null,
+      action_payload: null,
+      follow_up_action_kind: null,
+      follow_up_action_label: null,
+      follow_up_action_payload: null,
+      start_disabled: true,
+      start_label: 'Installing…',
+    };
+  }
+
+  if (availability.install_state === 'failed' && availability.installed === false) {
+    return {
+      level: 'warning',
+      title: `${titleCase(providerName)} Install Failed`,
+      message: availability.install_error
+        ? `TunnelMux could not finish installing ${binaryName}: ${availability.install_error}`
+        : `TunnelMux could not finish installing ${binaryName}. Retry install.`,
+      action_kind: 'install_provider',
+      action_label: retryInstallActionLabel(),
+      action_payload: providerName,
+      follow_up_action_kind: alternateProvider ? 'use_installed_provider' : 'recheck_provider',
+      follow_up_action_label: alternateProvider ? 'Use Installed Provider' : 'Recheck Provider',
+      follow_up_action_payload: alternateProvider ?? providerName,
+      start_disabled: true,
+      start_label: 'Retry Install to Start',
+    };
+  }
+
   if (availability.installed === false) {
     const quickTunnelNote = providerName === 'cloudflared'
       ? ' Cloudflared is still the recommended quick-tunnel path for the common case, and quick tunnels work without a Cloudflare Tunnel Token.'
@@ -735,9 +883,9 @@ export function summarizeDrawerProviderReadiness(
       level: 'warning',
       title: `${titleCase(providerName)} Missing`,
       message: `Install ${binaryName} before using Save and Start. TunnelMux could not find the ${binaryName} command in your PATH.${quickTunnelNote}`,
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: getProviderInstallGuidance(providerName, platform).command,
+      action_kind: 'install_provider',
+      action_label: installProviderActionLabel(providerName),
+      action_payload: providerName,
       follow_up_action_kind: alternateProvider ? 'use_installed_provider' : 'recheck_provider',
       follow_up_action_label: alternateProvider ? 'Use Installed Provider' : 'Recheck Provider',
       follow_up_action_payload: alternateProvider ?? providerName,
@@ -765,7 +913,9 @@ export function summarizeDrawerProviderReadiness(
   return {
     level: 'info',
     title: `${titleCase(providerName)} Ready`,
-    message: `${binaryName} is installed. Save and Start will launch this tunnel after saving.`,
+    message: availability.source === 'local_tools'
+      ? `${binaryName} is installed for TunnelMux. Save and Start will launch this tunnel after saving.`
+      : `${binaryName} is installed. Save and Start will launch this tunnel after saving.`,
     action_kind: null,
     action_label: null,
     action_payload: null,
@@ -939,6 +1089,23 @@ function defaultPlatformString() {
     ?? globalThis?.navigator?.platform
     ?? globalThis?.navigator?.userAgent
     ?? '';
+}
+
+function normalizeErrorText(error) {
+  if (typeof error === 'string') {
+    return error.trim();
+  }
+  return String(error?.message ?? error ?? '').trim();
+}
+
+function isDiagnosticsDaemonUnavailableError(lower) {
+  return lower.includes('request failed')
+    || lower.includes('error sending request for url')
+    || lower.includes('connection refused')
+    || lower.includes('tcp connect error')
+    || lower.includes('dns error')
+    || lower.includes('operation timed out')
+    || lower.includes('timed out');
 }
 
 export function resolveDashboardStatus(snapshot) {

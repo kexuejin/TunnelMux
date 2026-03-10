@@ -1,4 +1,6 @@
 use super::*;
+use std::borrow::Cow;
+use std::path::Path;
 
 pub(super) async fn persist_from_runtime(state: &Arc<AppState>) -> Result<(), ApiError> {
     let snapshot = {
@@ -613,10 +615,8 @@ pub(super) async fn spawn_provider_process(
     request: &TunnelStartRequest,
 ) -> anyhow::Result<SpawnedTunnel> {
     ensure_tunnel_gateway_listener(state, &request.tunnel_id, &request.target_url).await?;
-    let provider_binary = match request.provider {
-        TunnelProvider::Cloudflared => state.cloudflared_bin.as_str(),
-        TunnelProvider::Ngrok => state.ngrok_bin.as_str(),
-    };
+    let provider_binary =
+        provider_binary_for_request(&state.cloudflared_bin, &state.ngrok_bin, request);
 
     let mut command = build_provider_command(&state.cloudflared_bin, &state.ngrok_bin, request)?;
 
@@ -626,9 +626,9 @@ pub(super) async fn spawn_provider_process(
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| provider_spawn_error(&request.provider, provider_binary, error))?;
+    let mut child = command.spawn().map_err(|error| {
+        provider_spawn_error(&request.provider, provider_binary.as_ref(), error)
+    })?;
     let process_id = child.id();
     let public_url = wait_for_provider_startup(
         &mut child,
@@ -651,9 +651,11 @@ fn build_provider_command(
     ngrok_bin: &str,
     request: &TunnelStartRequest,
 ) -> anyhow::Result<Command> {
+    let provider_binary = provider_binary_for_request(cloudflared_bin, ngrok_bin, request);
+
     let mut command = match request.provider {
         TunnelProvider::Cloudflared => {
-            let mut cmd = Command::new(cloudflared_bin);
+            let mut cmd = Command::new(provider_binary.as_ref());
             if let Some(token) = request
                 .metadata
                 .as_ref()
@@ -681,7 +683,7 @@ fn build_provider_command(
             cmd
         }
         TunnelProvider::Ngrok => {
-            let mut cmd = Command::new(ngrok_bin);
+            let mut cmd = Command::new(provider_binary.as_ref());
             cmd.args([
                 "http",
                 request.target_url.as_str(),
@@ -722,6 +724,66 @@ fn build_provider_command(
         .kill_on_drop(true);
 
     Ok(command)
+}
+
+fn provider_binary_for_request<'a>(
+    cloudflared_bin: &'a str,
+    ngrok_bin: &'a str,
+    request: &'a TunnelStartRequest,
+) -> Cow<'a, str> {
+    if let Some(path) = trusted_provider_binary_override(request) {
+        return Cow::Borrowed(path);
+    }
+
+    match request.provider {
+        TunnelProvider::Cloudflared => Cow::Borrowed(cloudflared_bin),
+        TunnelProvider::Ngrok => Cow::Borrowed(ngrok_bin),
+    }
+}
+
+fn trusted_provider_binary_override(request: &TunnelStartRequest) -> Option<&str> {
+    let path = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("providerBinaryPath"))
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())?;
+
+    let parsed = Path::new(path);
+    if !parsed.is_absolute() {
+        return None;
+    }
+
+    let expected_file = match request.provider {
+        TunnelProvider::Cloudflared => "cloudflared",
+        TunnelProvider::Ngrok => "ngrok",
+    };
+
+    if parsed.file_name() != Some(expected_file.as_ref()) {
+        return None;
+    }
+
+    let parent = parsed.parent()?;
+    if !trusted_provider_binary_parent(parent) {
+        return None;
+    }
+
+    Some(path)
+}
+
+fn trusted_provider_binary_parent(parent: &Path) -> bool {
+    if matches!(
+        parent.to_str(),
+        Some("/opt/homebrew/bin" | "/usr/local/bin" | "/usr/bin" | "/bin" | "/snap/bin")
+    ) {
+        return true;
+    }
+
+    let Some(grandparent) = parent.parent() else {
+        return false;
+    };
+
+    parent.file_name() == Some("bin".as_ref()) && grandparent.file_name() == Some("tools".as_ref())
 }
 
 pub(super) fn provider_spawn_error(
@@ -1071,6 +1133,81 @@ mod runtime_tests {
                 "--url",
                 "http://127.0.0.1:48080",
             ]
+        );
+    }
+
+    #[test]
+    fn provider_command_uses_binary_path_override_when_present() {
+        let request = TunnelStartRequest {
+            tunnel_id: "primary".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: Some(true),
+            metadata: Some(HashMap::from([(
+                "providerBinaryPath".to_string(),
+                "/tmp/tools/bin/cloudflared".to_string(),
+            )])),
+        };
+
+        let command = build_provider_command(
+            "/opt/homebrew/bin/cloudflared",
+            "/opt/homebrew/bin/ngrok",
+            &request,
+        )
+        .expect("command should build");
+
+        assert_eq!(
+            command.as_std().get_program().to_string_lossy(),
+            "/tmp/tools/bin/cloudflared"
+        );
+    }
+
+    #[test]
+    fn provider_command_accepts_homebrew_binary_path_override_when_present() {
+        let request = TunnelStartRequest {
+            tunnel_id: "primary".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: Some(true),
+            metadata: Some(HashMap::from([(
+                "providerBinaryPath".to_string(),
+                "/opt/homebrew/bin/cloudflared".to_string(),
+            )])),
+        };
+
+        let command =
+            build_provider_command("/usr/bin/cloudflared", "/opt/homebrew/bin/ngrok", &request)
+                .expect("command should build");
+
+        assert_eq!(
+            command.as_std().get_program().to_string_lossy(),
+            "/opt/homebrew/bin/cloudflared"
+        );
+    }
+
+    #[test]
+    fn provider_command_ignores_untrusted_binary_path_override() {
+        let request = TunnelStartRequest {
+            tunnel_id: "primary".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: Some(true),
+            metadata: Some(HashMap::from([(
+                "providerBinaryPath".to_string(),
+                "/tmp/evil/cloudflared".to_string(),
+            )])),
+        };
+
+        let command = build_provider_command(
+            "/opt/homebrew/bin/cloudflared",
+            "/opt/homebrew/bin/ngrok",
+            &request,
+        )
+        .expect("command should build");
+
+        assert_eq!(
+            command.as_std().get_program().to_string_lossy(),
+            "/opt/homebrew/bin/cloudflared"
         );
     }
 }

@@ -115,7 +115,7 @@ pub(super) async fn load_persisted_state(path: &Path) -> anyhow::Result<Persiste
     let raw = fs::read_to_string(path)
         .await
         .with_context(|| format!("failed to read state file: {}", path.display()))?;
-    let mut parsed: PersistedState = serde_json::from_str(&raw)
+    let mut parsed = parse_persisted_state(&raw)
         .with_context(|| format!("failed to parse state file: {}", path.display()))?;
 
     if parsed.current_tunnel_id.is_none() {
@@ -136,6 +136,38 @@ pub(super) async fn load_persisted_state(path: &Path) -> anyhow::Result<Persiste
     }
 
     Ok(parsed)
+}
+
+fn parse_persisted_state(raw: &str) -> anyhow::Result<PersistedState> {
+    match serde_json::from_str::<PersistedState>(raw) {
+        Ok(parsed) => Ok(parsed),
+        Err(primary_error) => {
+            legacy_persisted_state_to_current(raw).ok_or_else(|| primary_error.into())
+        }
+    }
+}
+
+fn legacy_persisted_state_to_current(raw: &str) -> Option<PersistedState> {
+    #[derive(Debug, Deserialize)]
+    struct LegacyPersistedState {
+        tunnel: Option<TunnelStatus>,
+        #[serde(default)]
+        routes: Vec<RouteRule>,
+        health_check: Option<HealthCheckSettings>,
+    }
+
+    let legacy = serde_json::from_str::<LegacyPersistedState>(raw).ok()?;
+    Some(PersistedState {
+        current_tunnel_id: Some("primary".to_string()),
+        tunnels: vec![PersistedTunnelState {
+            id: "primary".to_string(),
+            status: legacy
+                .tunnel
+                .unwrap_or_else(|| default_tunnel_status(TunnelState::Idle)),
+        }],
+        routes: legacy.routes,
+        health_check: legacy.health_check,
+    })
 }
 
 pub(super) async fn save_state_file(path: &Path, state: &PersistedState) -> anyhow::Result<()> {
@@ -160,4 +192,79 @@ pub(super) async fn save_state_file(path: &Path, state: &PersistedState) -> anyh
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[tokio::test]
+    async fn load_persisted_state_migrates_legacy_single_tunnel_shape() {
+        let path = unique_temp_path("legacy-state.json");
+        fs::write(
+            &path,
+            r#"{
+  "tunnel": {
+    "state": "running",
+    "provider": "cloudflared",
+    "target_url": "http://127.0.0.1:48080",
+    "public_base_url": "https://example.trycloudflare.com",
+    "started_at": "2026-03-07T11:56:10.037636+00:00",
+    "updated_at": "2026-03-07T11:56:10.037641+00:00",
+    "process_id": 99364,
+    "auto_restart": true,
+    "restart_count": 0,
+    "last_error": null
+  },
+  "routes": [],
+  "health_check": {
+    "interval_ms": 5000,
+    "timeout_ms": 2000,
+    "path": "/"
+  }
+}
+"#,
+        )
+        .await
+        .expect("legacy state fixture should write");
+
+        let persisted = load_persisted_state(&path)
+            .await
+            .expect("legacy state should load");
+
+        assert_eq!(persisted.current_tunnel_id.as_deref(), Some("primary"));
+        assert_eq!(persisted.tunnels.len(), 1);
+        assert_eq!(persisted.tunnels[0].id, "primary");
+        assert_eq!(
+            persisted.tunnels[0].status.provider,
+            Some(TunnelProvider::Cloudflared)
+        );
+        assert_eq!(
+            persisted.tunnels[0].status.target_url.as_deref(),
+            Some("http://127.0.0.1:48080")
+        );
+        assert_eq!(persisted.tunnels[0].status.state, TunnelState::Stopped);
+        assert_eq!(persisted.tunnels[0].status.process_id, None);
+        assert_eq!(
+            persisted.tunnels[0].status.last_error.as_deref(),
+            Some("daemon restarted; previous tunnel process was detached")
+        );
+        assert_eq!(
+            persisted.health_check,
+            Some(HealthCheckSettings {
+                interval_ms: 5000,
+                timeout_ms: 2000,
+                path: "/".to_string(),
+            })
+        );
+
+        let _ = fs::remove_file(&path).await;
+    }
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("tunnelmuxd-{unique}-{name}"))
+    }
 }

@@ -1,4 +1,10 @@
 use crate::daemon_manager::{self, DaemonStatusSnapshot};
+use crate::provider_installer::{
+    ProviderInstallManifestEntry, ProviderInstallSource, ProviderInstallStatus,
+    download_provider_archive_bytes, install_provider_from_bytes, load_provider_install_statuses,
+    provider_manifest_entry_for_current_platform, save_provider_install_statuses,
+    tools_root_from_base_dir,
+};
 use crate::settings::{GuiSettings, load_settings_from_dir, save_settings_to_dir};
 use crate::state::GuiAppState;
 use crate::view_models::{
@@ -12,6 +18,7 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     path::{Path, PathBuf},
+    process::Command,
 };
 use tauri::Manager;
 use tunnelmux_control_client::{ControlClientConfig, TunnelmuxControlClient};
@@ -64,11 +71,11 @@ async fn bootstrap_local_daemon_with_state<R: tauri::Runtime>(
                 .await
                 .map_err(command_error)
         }
-        SettingsSaveReconnectMode::ProbeConnection => probe_connection_from_settings_dir(
-            &settings_dir,
-        )
-        .await
-        .map(daemon_status_snapshot_from_connection),
+        SettingsSaveReconnectMode::ProbeConnection => {
+            probe_connection_from_settings_dir(&settings_dir)
+                .await
+                .map(daemon_status_snapshot_from_connection)
+        }
     }
 }
 
@@ -161,10 +168,138 @@ pub async fn load_tunnel_workspace(
 }
 
 #[tauri::command]
-pub fn load_provider_availability_snapshot() -> Result<ProviderAvailabilitySnapshotVm, String> {
-    Ok(build_provider_availability_snapshot(
-        ProviderAvailabilityProbe::detect(),
+pub fn load_provider_availability_snapshot(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<ProviderAvailabilitySnapshotVm, String> {
+    let live_install_statuses = state
+        .provider_install_statuses
+        .lock()
+        .expect("provider install statuses should lock")
+        .clone();
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    let base_snapshot = build_provider_availability_snapshot(
+        ProviderAvailabilityProbe::detect_for_settings_dir(&settings_dir),
+    );
+    let persisted_install_statuses =
+        load_provider_install_statuses(&settings_dir).unwrap_or_default();
+    let normalized_persisted_install_statuses =
+        normalize_persisted_provider_install_statuses(&base_snapshot, &persisted_install_statuses);
+    if normalized_persisted_install_statuses != persisted_install_statuses {
+        let _ =
+            save_provider_install_statuses(&settings_dir, &normalized_persisted_install_statuses);
+    }
+
+    Ok(merge_provider_install_statuses(
+        merge_provider_install_statuses(base_snapshot, &normalized_persisted_install_statuses),
+        &live_install_statuses,
     ))
+}
+
+#[tauri::command]
+pub async fn install_provider(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    provider: TunnelProvider,
+) -> Result<ProviderInstallStatus, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    let tools_root = tools_root_from_base_dir(&settings_dir);
+    let provider_key = provider_binary_name(&provider).to_string();
+
+    if let Some(manifest) = provider_manifest_entry_for_current_platform(&provider) {
+        let manifest_version = manifest.version.clone();
+        let mut persisted_statuses =
+            load_provider_install_statuses(&settings_dir).unwrap_or_default();
+        {
+            let mut statuses = state
+                .provider_install_statuses
+                .lock()
+                .expect("provider install statuses should lock");
+            if let Some(existing) = statuses.get(&provider_key) {
+                if existing.state == crate::provider_installer::ProviderInstallState::Downloading {
+                    return Ok(existing.clone());
+                }
+            }
+            statuses.insert(
+                provider_key.clone(),
+                ProviderInstallStatus {
+                    state: crate::provider_installer::ProviderInstallState::Downloading,
+                    source: ProviderInstallSource::Missing,
+                    resolved_path: None,
+                    version: Some(manifest_version.clone()),
+                    last_error: None,
+                },
+            );
+        }
+        persisted_statuses.insert(
+            provider_key.clone(),
+            ProviderInstallStatus {
+                state: crate::provider_installer::ProviderInstallState::Downloading,
+                source: ProviderInstallSource::Missing,
+                resolved_path: None,
+                version: Some(manifest_version.clone()),
+                last_error: None,
+            },
+        );
+        save_provider_install_statuses(&settings_dir, &persisted_statuses)
+            .map_err(command_error)?;
+
+        let install_statuses = state.provider_install_statuses.clone();
+        let settings_dir = settings_dir.clone();
+        tauri::async_runtime::spawn(async move {
+            let next_status = match install_manifest_to_tools_root_with_downloader(
+                manifest.clone(),
+                &tools_root,
+                |manifest| async move { download_provider_archive_bytes(&manifest).await },
+            )
+            .await
+            {
+                Ok(status) => status,
+                Err(error) => ProviderInstallStatus {
+                    state: crate::provider_installer::ProviderInstallState::Failed,
+                    source: ProviderInstallSource::Missing,
+                    resolved_path: None,
+                    version: Some(manifest.version.clone()),
+                    last_error: Some(error),
+                },
+            };
+
+            install_statuses
+                .lock()
+                .expect("provider install statuses should lock")
+                .insert(provider_key.clone(), next_status.clone());
+
+            let mut persisted_statuses =
+                load_provider_install_statuses(&settings_dir).unwrap_or_default();
+            match next_status.state {
+                crate::provider_installer::ProviderInstallState::Installed
+                | crate::provider_installer::ProviderInstallState::Idle => {
+                    persisted_statuses.remove(&provider_key);
+                }
+                _ => {
+                    persisted_statuses.insert(provider_key, next_status);
+                }
+            }
+            let _ = save_provider_install_statuses(&settings_dir, &persisted_statuses);
+        });
+
+        return Ok(ProviderInstallStatus {
+            state: crate::provider_installer::ProviderInstallState::Downloading,
+            source: ProviderInstallSource::Missing,
+            resolved_path: None,
+            version: Some(manifest_version),
+            last_error: None,
+        });
+    }
+
+    launch_system_provider_installer(&provider)?;
+    Ok(ProviderInstallStatus {
+        state: crate::provider_installer::ProviderInstallState::Idle,
+        source: ProviderInstallSource::SystemPath,
+        resolved_path: None,
+        version: None,
+        last_error: None,
+    })
 }
 
 #[tauri::command]
@@ -434,7 +569,7 @@ pub async fn start_tunnel_from_settings_dir(
     start_tunnel_from_settings_dir_with_provider_probe(
         settings_dir,
         input,
-        ProviderAvailabilityProbe::detect(),
+        ProviderAvailabilityProbe::detect_for_settings_dir(settings_dir),
     )
     .await
 }
@@ -444,14 +579,19 @@ async fn start_tunnel_from_settings_dir_with_provider_probe(
     input: StartTunnelInput,
     provider_probe: ProviderAvailabilityProbe,
 ) -> Result<DashboardSnapshot, String> {
-    ensure_provider_is_available(&input.provider, provider_probe)?;
+    ensure_provider_is_available(&input.provider, &provider_probe)?;
     let (settings, client) = load_client(settings_dir)?;
     let current_tunnel = settings.current_tunnel();
     let tunnel_id = current_tunnel
         .map(|tunnel| tunnel.id.clone())
         .ok_or_else(|| "no tunnel selected".to_string())?;
     ensure_tunnel_start_is_configured(current_tunnel, &input.provider)?;
-    let metadata = build_tunnel_metadata(current_tunnel, &input.provider);
+    let metadata = build_tunnel_metadata(
+        current_tunnel,
+        &input.provider,
+        provider_probe.availability(&input.provider),
+        settings.base_url == crate::settings::DEFAULT_BASE_URL,
+    );
     let request = TunnelStartRequest {
         tunnel_id,
         provider: input.provider.clone(),
@@ -661,7 +801,7 @@ pub async fn load_tunnel_workspace_from_settings_dir(
     settings_dir: &Path,
 ) -> Result<TunnelWorkspaceVm, String> {
     let settings = load_settings_from_dir(settings_dir).map_err(command_error)?;
-    let provider_probe = ProviderAvailabilityProbe::detect();
+    let provider_probe = ProviderAvailabilityProbe::detect_for_settings_dir(settings_dir);
 
     let daemon_workspace = if let Ok((_, client)) = load_client(settings_dir) {
         if client.health().await.is_ok() {
@@ -761,7 +901,7 @@ fn load_tunnel_workspace_from_settings_dir_without_daemon(
 ) -> Result<TunnelWorkspaceVm, String> {
     load_tunnel_workspace_from_settings_dir_without_daemon_with_provider_probe(
         settings_dir,
-        ProviderAvailabilityProbe::detect(),
+        ProviderAvailabilityProbe::detect_for_settings_dir(settings_dir),
     )
 }
 
@@ -791,13 +931,22 @@ fn build_tunnel_workspace(
         .map(|tunnel| {
             let summary = daemon_workspace
                 .and_then(|workspace| workspace.tunnels.iter().find(|item| item.id == tunnel.id));
+            let availability = provider_probe.availability(&tunnel.provider);
             TunnelProfileVm {
                 id: tunnel.id.clone(),
                 name: tunnel.name.clone(),
                 provider: provider_name(&tunnel.provider).to_string(),
                 provider_availability: ProviderAvailabilityVm {
                     binary_name: provider_binary_name(&tunnel.provider).to_string(),
-                    installed: provider_probe.installed(&tunnel.provider),
+                    installed: availability.installed(),
+                    source: provider_install_source_label(availability.source).to_string(),
+                    resolved_path: availability
+                        .resolved_path
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    install_state: None,
+                    install_error: None,
+                    install_version: None,
                 },
                 state: summary
                     .map(|item| format!("{:?}", item.state).to_lowercase())
@@ -823,28 +972,146 @@ fn build_provider_availability_snapshot(
     ProviderAvailabilitySnapshotVm {
         cloudflared: ProviderAvailabilityVm {
             binary_name: provider_binary_name(&TunnelProvider::Cloudflared).to_string(),
-            installed: provider_probe.cloudflared_installed,
+            installed: provider_probe.cloudflared.installed(),
+            source: provider_install_source_label(provider_probe.cloudflared.source).to_string(),
+            resolved_path: provider_probe
+                .cloudflared
+                .resolved_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            install_state: None,
+            install_error: None,
+            install_version: None,
         },
         ngrok: ProviderAvailabilityVm {
             binary_name: provider_binary_name(&TunnelProvider::Ngrok).to_string(),
-            installed: provider_probe.ngrok_installed,
+            installed: provider_probe.ngrok.installed(),
+            source: provider_install_source_label(provider_probe.ngrok.source).to_string(),
+            resolved_path: provider_probe
+                .ngrok
+                .resolved_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            install_state: None,
+            install_error: None,
+            install_version: None,
         },
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+fn merge_provider_install_statuses(
+    mut snapshot: ProviderAvailabilitySnapshotVm,
+    install_statuses: &HashMap<String, ProviderInstallStatus>,
+) -> ProviderAvailabilitySnapshotVm {
+    if let Some(status) = install_statuses.get("cloudflared") {
+        apply_install_status_to_availability(&mut snapshot.cloudflared, status);
+    }
+    if let Some(status) = install_statuses.get("ngrok") {
+        apply_install_status_to_availability(&mut snapshot.ngrok, status);
+    }
+    snapshot
+}
+
+fn normalize_persisted_provider_install_statuses(
+    snapshot: &ProviderAvailabilitySnapshotVm,
+    persisted_statuses: &HashMap<String, ProviderInstallStatus>,
+) -> HashMap<String, ProviderInstallStatus> {
+    let mut normalized = HashMap::new();
+
+    if let Some(status) = normalize_persisted_provider_install_status(
+        &snapshot.cloudflared,
+        persisted_statuses.get("cloudflared"),
+    ) {
+        normalized.insert("cloudflared".to_string(), status);
+    }
+
+    if let Some(status) = normalize_persisted_provider_install_status(
+        &snapshot.ngrok,
+        persisted_statuses.get("ngrok"),
+    ) {
+        normalized.insert("ngrok".to_string(), status);
+    }
+
+    normalized
+}
+
+fn normalize_persisted_provider_install_status(
+    availability: &ProviderAvailabilityVm,
+    status: Option<&ProviderInstallStatus>,
+) -> Option<ProviderInstallStatus> {
+    let status = status?;
+
+    if availability.installed {
+        return None;
+    }
+
+    match status.state {
+        crate::provider_installer::ProviderInstallState::Downloading => {
+            Some(ProviderInstallStatus {
+                state: crate::provider_installer::ProviderInstallState::Failed,
+                source: ProviderInstallSource::Missing,
+                resolved_path: None,
+                version: status.version.clone(),
+                last_error: Some(status.last_error.clone().unwrap_or_else(|| {
+                    "Installation was interrupted before completion. Retry install.".to_string()
+                })),
+            })
+        }
+        crate::provider_installer::ProviderInstallState::Failed => Some(status.clone()),
+        crate::provider_installer::ProviderInstallState::Installed
+        | crate::provider_installer::ProviderInstallState::Idle => None,
+    }
+}
+
+fn apply_install_status_to_availability(
+    availability: &mut ProviderAvailabilityVm,
+    status: &ProviderInstallStatus,
+) {
+    availability.install_state = Some(provider_install_state_label(status.state).to_string());
+    availability.install_error = status.last_error.clone();
+    availability.install_version = status.version.clone();
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderBinaryAvailability {
+    source: ProviderInstallSource,
+    resolved_path: Option<PathBuf>,
+}
+
+impl ProviderBinaryAvailability {
+    fn from_path(source: ProviderInstallSource, path: PathBuf) -> Self {
+        Self {
+            source,
+            resolved_path: Some(path),
+        }
+    }
+
+    fn missing() -> Self {
+        Self {
+            source: ProviderInstallSource::Missing,
+            resolved_path: None,
+        }
+    }
+
+    fn installed(&self) -> bool {
+        self.resolved_path.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderAvailabilityProbe {
-    cloudflared_installed: bool,
-    ngrok_installed: bool,
+    cloudflared: ProviderBinaryAvailability,
+    ngrok: ProviderBinaryAvailability,
 }
 
 impl ProviderAvailabilityProbe {
-    fn detect() -> Self {
-        Self::from_search_dirs(
+    fn detect_for_settings_dir(settings_dir: &Path) -> Self {
+        Self::from_search_dirs_with_local_tools(
             daemon_manager::provider_binary_search_dirs(
                 std::env::var_os("PATH").as_deref(),
                 std::iter::empty::<PathBuf>(),
             ),
+            tools_root_from_base_dir(settings_dir),
             std::env::var_os("PATHEXT").as_deref(),
         )
     }
@@ -859,39 +1126,113 @@ impl ProviderAvailabilityProbe {
         Self::from_search_dirs(search_dirs, pathext)
     }
 
+    #[cfg(test)]
     fn from_search_dirs(search_dirs: Vec<PathBuf>, pathext: Option<&OsStr>) -> Self {
+        Self::from_search_dirs_with_local_tools(
+            search_dirs,
+            PathBuf::from("__missing_local_tools__"),
+            pathext,
+        )
+    }
+
+    fn from_search_dirs_with_local_tools(
+        search_dirs: Vec<PathBuf>,
+        local_tools_root: PathBuf,
+        pathext: Option<&OsStr>,
+    ) -> Self {
+        let local_tools_bin = local_tools_root.join("bin");
         Self {
-            cloudflared_installed: daemon_manager::resolve_binary_in_dirs(
+            cloudflared: resolve_provider_availability(
                 "cloudflared",
+                local_tools_bin.clone(),
                 search_dirs.clone(),
                 pathext,
-            )
-            .is_some(),
-            ngrok_installed: daemon_manager::resolve_binary_in_dirs("ngrok", search_dirs, pathext)
-                .is_some(),
+            ),
+            ngrok: resolve_provider_availability("ngrok", local_tools_bin, search_dirs, pathext),
         }
     }
 
     fn installed(&self, provider: &TunnelProvider) -> bool {
+        self.availability(provider).installed()
+    }
+
+    fn availability(&self, provider: &TunnelProvider) -> &ProviderBinaryAvailability {
         match provider {
-            TunnelProvider::Cloudflared => self.cloudflared_installed,
-            TunnelProvider::Ngrok => self.ngrok_installed,
+            TunnelProvider::Cloudflared => &self.cloudflared,
+            TunnelProvider::Ngrok => &self.ngrok,
         }
+    }
+
+    #[cfg(test)]
+    fn from_install_flags(cloudflared_installed: bool, ngrok_installed: bool) -> Self {
+        Self {
+            cloudflared: if cloudflared_installed {
+                ProviderBinaryAvailability::from_path(
+                    ProviderInstallSource::SystemPath,
+                    PathBuf::from("/usr/bin/cloudflared"),
+                )
+            } else {
+                ProviderBinaryAvailability::missing()
+            },
+            ngrok: if ngrok_installed {
+                ProviderBinaryAvailability::from_path(
+                    ProviderInstallSource::SystemPath,
+                    PathBuf::from("/usr/bin/ngrok"),
+                )
+            } else {
+                ProviderBinaryAvailability::missing()
+            },
+        }
+    }
+}
+
+fn resolve_provider_availability(
+    binary_name: &str,
+    local_tools_bin: PathBuf,
+    search_dirs: Vec<PathBuf>,
+    pathext: Option<&OsStr>,
+) -> ProviderBinaryAvailability {
+    if let Some(path) =
+        daemon_manager::resolve_binary_in_dirs(binary_name, vec![local_tools_bin], pathext)
+    {
+        return ProviderBinaryAvailability::from_path(ProviderInstallSource::LocalTools, path);
+    }
+
+    if let Some(path) = daemon_manager::resolve_binary_in_dirs(binary_name, search_dirs, pathext) {
+        return ProviderBinaryAvailability::from_path(ProviderInstallSource::SystemPath, path);
+    }
+
+    ProviderBinaryAvailability::missing()
+}
+
+fn provider_install_source_label(source: ProviderInstallSource) -> &'static str {
+    match source {
+        ProviderInstallSource::LocalTools => "local_tools",
+        ProviderInstallSource::SystemPath => "system_path",
+        ProviderInstallSource::Missing => "missing",
+    }
+}
+
+fn provider_install_state_label(
+    state: crate::provider_installer::ProviderInstallState,
+) -> &'static str {
+    match state {
+        crate::provider_installer::ProviderInstallState::Idle => "idle",
+        crate::provider_installer::ProviderInstallState::Downloading => "downloading",
+        crate::provider_installer::ProviderInstallState::Installed => "installed",
+        crate::provider_installer::ProviderInstallState::Failed => "failed",
     }
 }
 
 fn ensure_provider_is_available(
     provider: &TunnelProvider,
-    provider_probe: ProviderAvailabilityProbe,
+    provider_probe: &ProviderAvailabilityProbe,
 ) -> Result<(), String> {
     if provider_probe.installed(provider) {
         return Ok(());
     }
 
-    let binary_name = provider_binary_name(provider);
-    Err(format!(
-        "Install {binary_name} to start this tunnel. TunnelMux could not find the {binary_name} command in your PATH."
-    ))
+    Err(missing_provider_install_message(provider))
 }
 
 fn ensure_tunnel_start_is_configured(
@@ -926,6 +1267,111 @@ fn provider_name(provider: &TunnelProvider) -> &'static str {
 
 fn provider_binary_name(provider: &TunnelProvider) -> &'static str {
     provider_name(provider)
+}
+
+fn missing_provider_install_message(provider: &TunnelProvider) -> String {
+    let binary_name = provider_binary_name(provider);
+    format!(
+        "Install {binary_name} to start this tunnel. TunnelMux could not find the {binary_name} command in your PATH."
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderInstallInvocation {
+    program: String,
+    args: Vec<String>,
+}
+
+fn provider_install_command(provider: &TunnelProvider) -> &'static str {
+    match provider {
+        TunnelProvider::Cloudflared => "brew install cloudflared",
+        TunnelProvider::Ngrok => "brew install ngrok/ngrok/ngrok",
+    }
+}
+
+fn launch_system_provider_installer(provider: &TunnelProvider) -> Result<(), String> {
+    let invocation = provider_install_invocation(provider)?;
+    Command::new(&invocation.program)
+        .args(&invocation.args)
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "failed to launch {} installer: {error}",
+                provider_binary_name(provider)
+            )
+        })?;
+    Ok(())
+}
+
+async fn install_manifest_to_tools_root_with_downloader<F, Fut>(
+    manifest: ProviderInstallManifestEntry,
+    tools_root: &Path,
+    downloader: F,
+) -> Result<ProviderInstallStatus, String>
+where
+    F: FnOnce(ProviderInstallManifestEntry) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Vec<u8>>>,
+{
+    let archive = downloader(manifest.clone()).await.map_err(command_error)?;
+    install_provider_from_bytes(tools_root, &manifest, &archive).map_err(command_error)
+}
+
+#[cfg(target_os = "macos")]
+fn provider_install_invocation(
+    provider: &TunnelProvider,
+) -> Result<ProviderInstallInvocation, String> {
+    let command = provider_install_command(provider);
+    let quoted = format!("\"{}\"", command.replace('\\', "\\\\").replace('"', "\\\""));
+
+    Ok(ProviderInstallInvocation {
+        program: "osascript".to_string(),
+        args: vec![
+            "-e".to_string(),
+            format!("tell application \"Terminal\" to do script {quoted}"),
+            "-e".to_string(),
+            "activate".to_string(),
+        ],
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn provider_install_invocation(
+    provider: &TunnelProvider,
+) -> Result<ProviderInstallInvocation, String> {
+    Ok(ProviderInstallInvocation {
+        program: "cmd".to_string(),
+        args: vec![
+            "/C".to_string(),
+            "start".to_string(),
+            String::new(),
+            "powershell".to_string(),
+            "-NoExit".to_string(),
+            "-Command".to_string(),
+            match provider {
+                TunnelProvider::Cloudflared => {
+                    "winget install --id Cloudflare.cloudflared".to_string()
+                }
+                TunnelProvider::Ngrok => "winget install --id ngrok.ngrok".to_string(),
+            },
+        ],
+    })
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn provider_install_invocation(
+    provider: &TunnelProvider,
+) -> Result<ProviderInstallInvocation, String> {
+    let url = match provider {
+        TunnelProvider::Cloudflared => {
+            "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+        }
+        TunnelProvider::Ngrok => "https://dashboard.ngrok.com/get-started/setup",
+    };
+
+    Ok(ProviderInstallInvocation {
+        program: "xdg-open".to_string(),
+        args: vec![url.to_string()],
+    })
 }
 
 fn next_tunnel_profile_id(profiles: &[crate::settings::TunnelProfileSettings]) -> String {
@@ -972,8 +1418,7 @@ fn derive_provider_status_summary(
     }
 
     for line in log_lines.iter().rev() {
-        if let Some(summary) = classify_provider_log_line(&provider, current_tunnel, line, routes)
-        {
+        if let Some(summary) = classify_provider_log_line(&provider, current_tunnel, line, routes) {
             return Some(summary);
         }
     }
@@ -1214,6 +1659,19 @@ fn friendly_start_error(
         return tunnel_local_service_url_recovery_message();
     }
 
+    if lower.contains("provider executable not found: /")
+        || (lower.contains("provider executable not found: ") && lower.contains(":\\"))
+    {
+        return format!(
+            "TunnelMux found {}, but the connected daemon could not use that binary path. Retry the local daemon or check whether another TunnelMux daemon is already using this port.",
+            provider_binary_name(&input.provider)
+        );
+    }
+
+    if lower.contains("provider executable not found") {
+        return missing_provider_install_message(&input.provider);
+    }
+
     if input.provider == TunnelProvider::Cloudflared
         && is_named_cloudflared_tunnel(current_tunnel)
         && is_cloudflared_named_tunnel_setup_error(&lower)
@@ -1287,8 +1745,19 @@ fn friendly_route_save_error(
 fn build_tunnel_metadata(
     tunnel: Option<&crate::settings::TunnelProfileSettings>,
     provider: &TunnelProvider,
+    availability: &ProviderBinaryAvailability,
+    include_system_provider_path: bool,
 ) -> Option<HashMap<String, String>> {
     let mut metadata = HashMap::new();
+
+    if availability.source == ProviderInstallSource::LocalTools
+        || (include_system_provider_path
+            && availability.source == ProviderInstallSource::SystemPath)
+    {
+        if let Some(path) = availability.resolved_path.as_ref() {
+            metadata.insert("providerBinaryPath".to_string(), path.display().to_string());
+        }
+    }
 
     match provider {
         TunnelProvider::Cloudflared => {
@@ -1319,10 +1788,13 @@ mod tests {
         extract::Query,
         routing::{get, post},
     };
+    use flate2::{Compression, write::GzEncoder};
     use std::{
         net::SocketAddr,
+        path::Path,
         sync::atomic::{AtomicU64, Ordering},
     };
+    use tar::{Builder, Header};
     use tokio::net::TcpListener;
     use tunnelmux_core::{TunnelStartRequest, TunnelStatus, TunnelStatusResponse};
 
@@ -1510,6 +1982,60 @@ mod tests {
                 },
             ),
             "Invalid Local Service URL. Review it on this tunnel, then retry."
+        );
+    }
+
+    #[test]
+    fn friendly_start_error_when_provider_executable_is_missing() {
+        let tunnel = crate::settings::TunnelProfileSettings {
+            id: "primary".to_string(),
+            name: "Main Tunnel".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            gateway_target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: true,
+            cloudflared_tunnel_token: None,
+            ngrok_authtoken: None,
+            ngrok_domain: None,
+        };
+
+        assert_eq!(
+            friendly_start_error(
+                "HTTP 500 Internal Server Error: provider executable not found: cloudflared (Cloudflared); install it or configure the daemon binary path".to_string(),
+                Some(&tunnel),
+                &StartTunnelInput {
+                    provider: TunnelProvider::Cloudflared,
+                    target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                },
+            ),
+            "Install cloudflared to start this tunnel. TunnelMux could not find the cloudflared command in your PATH."
+        );
+    }
+
+    #[test]
+    fn friendly_start_error_reports_daemon_path_mismatch_when_provider_path_was_resolved() {
+        let tunnel = crate::settings::TunnelProfileSettings {
+            id: "primary".to_string(),
+            name: "Main Tunnel".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            gateway_target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: true,
+            cloudflared_tunnel_token: None,
+            ngrok_authtoken: None,
+            ngrok_domain: None,
+        };
+
+        assert_eq!(
+            friendly_start_error(
+                "HTTP 500 Internal Server Error: provider executable not found: /opt/homebrew/bin/cloudflared (Cloudflared); install it or configure the daemon binary path".to_string(),
+                Some(&tunnel),
+                &StartTunnelInput {
+                    provider: TunnelProvider::Cloudflared,
+                    target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                },
+            ),
+            "TunnelMux found cloudflared, but the connected daemon could not use that binary path. Retry the local daemon or check whether another TunnelMux daemon is already using this port."
         );
     }
 
@@ -1728,10 +2254,7 @@ mod tests {
                 target_url: "http://127.0.0.1:48080".to_string(),
                 auto_restart: true,
             },
-            ProviderAvailabilityProbe {
-                cloudflared_installed: false,
-                ngrok_installed: true,
-            },
+            ProviderAvailabilityProbe::from_install_flags(false, true),
         )
         .await
         .expect_err("missing provider should be caught before the daemon call");
@@ -1739,6 +2262,97 @@ mod tests {
         assert_eq!(
             error,
             "Install cloudflared to start this tunnel. TunnelMux could not find the cloudflared command in your PATH."
+        );
+    }
+
+    #[tokio::test]
+    async fn install_provider_to_local_tools_reports_status() {
+        let temp_dir = prepare_temp_dir();
+        let tools_root = crate::provider_installer::tools_root_from_base_dir(&temp_dir);
+        let archive = build_test_provider_archive_bytes("cloudflared", b"#!/bin/sh\nexit 0\n");
+        let manifest = crate::provider_installer::ProviderInstallManifestEntry {
+            provider: TunnelProvider::Cloudflared,
+            version: "test-version".to_string(),
+            binary_name: "cloudflared".to_string(),
+            archive_name: "cloudflared-darwin-arm64.tgz".to_string(),
+            download_url: "https://example.invalid/cloudflared.tgz".to_string(),
+            sha256: crate::provider_installer::sha256_hex(&archive),
+        };
+
+        let status = install_manifest_to_tools_root_with_downloader(
+            manifest.clone(),
+            &tools_root,
+            move |_| {
+                let archive = archive.clone();
+                async move { Ok(archive) }
+            },
+        )
+        .await
+        .expect("install should succeed");
+
+        assert_eq!(
+            status.state,
+            crate::provider_installer::ProviderInstallState::Installed
+        );
+        assert_eq!(
+            status.source,
+            crate::provider_installer::ProviderInstallSource::LocalTools
+        );
+        assert!(Path::new(status.resolved_path.as_deref().expect("path")).exists());
+    }
+
+    #[tokio::test]
+    async fn install_provider_to_local_tools_surfaces_download_failures() {
+        let temp_dir = prepare_temp_dir();
+        let tools_root = crate::provider_installer::tools_root_from_base_dir(&temp_dir);
+        let manifest = crate::provider_installer::ProviderInstallManifestEntry {
+            provider: TunnelProvider::Ngrok,
+            version: "test-version".to_string(),
+            binary_name: "ngrok".to_string(),
+            archive_name: "ngrok-v3-3.37.1-darwin-arm64.tar.gz".to_string(),
+            download_url: "https://example.invalid/ngrok.tgz".to_string(),
+            sha256: "unused".to_string(),
+        };
+
+        let error =
+            install_manifest_to_tools_root_with_downloader(manifest, &tools_root, |_| async {
+                Err(anyhow::anyhow!("download exploded"))
+            })
+            .await
+            .expect_err("download failure should surface");
+
+        assert!(error.contains("download exploded"));
+    }
+
+    #[test]
+    fn persisted_downloading_install_status_becomes_retryable_failure_after_restart() {
+        let persisted = HashMap::from([(
+            "cloudflared".to_string(),
+            ProviderInstallStatus {
+                state: crate::provider_installer::ProviderInstallState::Downloading,
+                source: ProviderInstallSource::Missing,
+                resolved_path: None,
+                version: Some("2026.2.0".to_string()),
+                last_error: None,
+            },
+        )]);
+
+        let snapshot = normalize_persisted_provider_install_statuses(
+            &build_provider_availability_snapshot(ProviderAvailabilityProbe::from_install_flags(
+                false, false,
+            )),
+            &persisted,
+        );
+
+        assert_eq!(
+            snapshot.get("cloudflared").map(|status| status.state),
+            Some(crate::provider_installer::ProviderInstallState::Failed)
+        );
+        assert_eq!(
+            snapshot
+                .get("cloudflared")
+                .and_then(|status| status.last_error.as_deref()),
+            Some("Installation was interrupted before completion. Retry install.")
         );
     }
 
@@ -1772,10 +2386,7 @@ mod tests {
                 target_url: "http://127.0.0.1:48080".to_string(),
                 auto_restart: true,
             },
-            ProviderAvailabilityProbe {
-                cloudflared_installed: true,
-                ngrok_installed: true,
-            },
+            ProviderAvailabilityProbe::from_install_flags(true, true),
         )
         .await
         .expect_err("missing ngrok authtoken should be caught before the daemon call");
@@ -1813,10 +2424,7 @@ mod tests {
                 target_url: "http://127.0.0.1:48080".to_string(),
                 auto_restart: true,
             },
-            ProviderAvailabilityProbe {
-                cloudflared_installed: true,
-                ngrok_installed: true,
-            },
+            ProviderAvailabilityProbe::from_install_flags(true, true),
         )
         .await
         .expect_err("invalid reserved domain should be caught before the daemon call");
@@ -1873,11 +2481,12 @@ mod tests {
 
         assert!(snapshot.connected);
 
-        let payload = captured
-            .lock()
-            .await
-            .clone()
-            .expect("start request should be captured");
+        let payload = loop {
+            if let Some(payload) = captured.lock().await.clone() {
+                break payload;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        };
         assert_eq!(payload.provider, TunnelProvider::Ngrok);
         assert_eq!(payload.target_url, "http://127.0.0.1:28080");
         assert_eq!(payload.auto_restart, Some(false));
@@ -1958,6 +2567,102 @@ mod tests {
                 .and_then(|value| value.get("cloudflaredTunnelToken"))
                 .map(String::as_str),
             Some("cf-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn start_tunnel_uses_local_provider_binary_path_when_available() {
+        let temp_dir = prepare_temp_dir();
+        let tools_bin = temp_dir.join("tools").join("bin");
+        std::fs::create_dir_all(&tools_bin).expect("tools bin should be created");
+        let local_cloudflared = tools_bin.join("cloudflared");
+        write_fake_binary(&local_cloudflared);
+
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<TunnelStartRequest>));
+        let base_url = spawn_test_server(Router::new().route(
+            "/v1/tunnel/start",
+            axum::routing::post({
+                let captured = captured.clone();
+                move |payload| start_tunnel_handler(captured.clone(), payload)
+            }),
+        ))
+        .await;
+
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                current_tunnel_id: Some("primary".to_string()),
+                tunnels: vec![crate::settings::TunnelProfileSettings {
+                    id: "primary".to_string(),
+                    name: "Main Tunnel".to_string(),
+                    provider: TunnelProvider::Cloudflared,
+                    gateway_target_url: "http://127.0.0.1:48080".to_string(),
+                    auto_restart: true,
+                    cloudflared_tunnel_token: None,
+                    ngrok_authtoken: None,
+                    ngrok_domain: None,
+                }],
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        let probe = ProviderAvailabilityProbe::from_search_dirs_with_local_tools(
+            Vec::new(),
+            temp_dir.join("tools"),
+            None,
+        );
+
+        let snapshot = start_tunnel_from_settings_dir_with_provider_probe(
+            &temp_dir,
+            StartTunnelInput {
+                provider: TunnelProvider::Cloudflared,
+                target_url: "http://127.0.0.1:48080".to_string(),
+                auto_restart: true,
+            },
+            probe,
+        )
+        .await
+        .expect("start tunnel should succeed");
+
+        assert!(snapshot.connected);
+
+        let payload = captured
+            .lock()
+            .await
+            .clone()
+            .expect("start request should be captured");
+        assert_eq!(
+            payload
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("providerBinaryPath"))
+                .map(String::as_str),
+            local_cloudflared.to_str()
+        );
+    }
+
+    #[test]
+    fn build_tunnel_metadata_includes_system_provider_binary_path_for_default_local_daemon() {
+        let settings = GuiSettings::default();
+        let availability = ProviderBinaryAvailability::from_path(
+            ProviderInstallSource::SystemPath,
+            PathBuf::from("/opt/homebrew/bin/cloudflared"),
+        );
+
+        let metadata = build_tunnel_metadata(
+            settings.current_tunnel(),
+            &TunnelProvider::Cloudflared,
+            &availability,
+            true,
+        )
+        .expect("metadata should be built");
+
+        assert_eq!(
+            metadata.get("providerBinaryPath").map(String::as_str),
+            Some("/opt/homebrew/bin/cloudflared")
         );
     }
 
@@ -2414,8 +3119,7 @@ mod tests {
     async fn load_tunnel_workspace_returns_empty_when_tunnel_not_configured() {
         let temp_dir = prepare_temp_dir();
 
-        let workspace = load_tunnel_workspace_from_settings_dir(&temp_dir)
-            .await
+        let workspace = load_tunnel_workspace_from_settings_dir_without_daemon(&temp_dir)
             .expect("workspace should load");
 
         assert!(workspace.tunnels.is_empty());
@@ -2440,8 +3144,7 @@ mod tests {
         )
         .expect("settings should save");
 
-        let workspace = load_tunnel_workspace_from_settings_dir(&temp_dir)
-            .await
+        let workspace = load_tunnel_workspace_from_settings_dir_without_daemon(&temp_dir)
             .expect("workspace should load");
 
         assert_eq!(workspace.tunnels.len(), 1);
@@ -2481,10 +3184,7 @@ mod tests {
 
         let workspace = load_tunnel_workspace_from_settings_dir_without_daemon_with_provider_probe(
             &temp_dir,
-            ProviderAvailabilityProbe {
-                cloudflared_installed: true,
-                ngrok_installed: false,
-            },
+            ProviderAvailabilityProbe::from_install_flags(true, false),
         )
         .expect("workspace should load");
 
@@ -2495,11 +3195,16 @@ mod tests {
             workspace.tunnels[0].provider_availability.binary_name,
             "cloudflared"
         );
+        assert_eq!(
+            workspace.tunnels[0].provider_availability.source,
+            "system_path"
+        );
         assert!(!workspace.tunnels[1].provider_availability.installed);
         assert_eq!(
             workspace.tunnels[1].provider_availability.binary_name,
             "ngrok"
         );
+        assert_eq!(workspace.tunnels[1].provider_availability.source, "missing");
     }
 
     #[test]
@@ -2509,8 +3214,35 @@ mod tests {
 
         let probe = ProviderAvailabilityProbe::from_env(Some(temp_dir.as_os_str()), None);
 
-        assert!(probe.cloudflared_installed);
-        assert!(!probe.ngrok_installed);
+        assert!(probe.cloudflared.installed());
+        assert!(!probe.ngrok.installed());
+    }
+
+    #[test]
+    fn provider_availability_probe_prefers_local_tools_over_system_path() {
+        let temp_dir = prepare_temp_dir();
+        let tools_dir = temp_dir.join("tools").join("bin");
+        let common_dir = temp_dir.join("common-bin");
+        std::fs::create_dir_all(&tools_dir).expect("tools dir should be created");
+        std::fs::create_dir_all(&common_dir).expect("common dir should be created");
+        let local_binary = tools_dir.join("cloudflared");
+        let system_binary = common_dir.join("cloudflared");
+        write_fake_binary(&local_binary);
+        write_fake_binary(&system_binary);
+
+        let probe = ProviderAvailabilityProbe::from_search_dirs_with_local_tools(
+            vec![common_dir],
+            temp_dir.join("tools"),
+            None,
+        );
+        let snapshot = build_provider_availability_snapshot(probe);
+
+        assert!(snapshot.cloudflared.installed);
+        assert_eq!(snapshot.cloudflared.source, "local_tools");
+        assert_eq!(
+            snapshot.cloudflared.resolved_path.as_deref(),
+            local_binary.to_str()
+        );
     }
 
     #[test]
@@ -2523,7 +3255,7 @@ mod tests {
             Some(OsStr::new(".EXE;.CMD")),
         );
 
-        assert!(probe.ngrok_installed);
+        assert!(probe.ngrok.installed());
     }
 
     #[test]
@@ -2535,8 +3267,8 @@ mod tests {
 
         let probe = ProviderAvailabilityProbe::from_search_dirs(vec![common_dir], None);
 
-        assert!(probe.cloudflared_installed);
-        assert!(!probe.ngrok_installed);
+        assert!(probe.cloudflared.installed());
+        assert!(!probe.ngrok.installed());
     }
 
     #[test]
@@ -2544,8 +3276,8 @@ mod tests {
         let temp_dir = prepare_temp_dir();
 
         let before = ProviderAvailabilityProbe::from_env(Some(temp_dir.as_os_str()), None);
-        assert!(!before.cloudflared_installed);
-        assert!(!before.ngrok_installed);
+        assert!(!before.cloudflared.installed());
+        assert!(!before.ngrok.installed());
 
         write_fake_binary(&temp_dir.join("cloudflared"));
 
@@ -2558,15 +3290,111 @@ mod tests {
 
     #[test]
     fn provider_availability_snapshot_reports_both_supported_providers() {
-        let snapshot = build_provider_availability_snapshot(ProviderAvailabilityProbe {
-            cloudflared_installed: false,
-            ngrok_installed: true,
-        });
+        let snapshot = build_provider_availability_snapshot(
+            ProviderAvailabilityProbe::from_install_flags(false, true),
+        );
 
         assert_eq!(snapshot.cloudflared.binary_name, "cloudflared");
         assert!(!snapshot.cloudflared.installed);
+        assert_eq!(snapshot.cloudflared.source, "missing");
         assert_eq!(snapshot.ngrok.binary_name, "ngrok");
         assert!(snapshot.ngrok.installed);
+        assert_eq!(snapshot.ngrok.source, "system_path");
+    }
+
+    #[test]
+    fn provider_availability_snapshot_surfaces_downloading_install_status() {
+        let snapshot = merge_provider_install_statuses(
+            build_provider_availability_snapshot(ProviderAvailabilityProbe::from_install_flags(
+                false, false,
+            )),
+            &HashMap::from([(
+                "cloudflared".to_string(),
+                ProviderInstallStatus {
+                    state: crate::provider_installer::ProviderInstallState::Downloading,
+                    source: ProviderInstallSource::Missing,
+                    resolved_path: None,
+                    version: Some("2026.2.0".to_string()),
+                    last_error: None,
+                },
+            )]),
+        );
+
+        assert_eq!(
+            snapshot.cloudflared.install_state.as_deref(),
+            Some("downloading")
+        );
+        assert_eq!(
+            snapshot.cloudflared.install_version.as_deref(),
+            Some("2026.2.0")
+        );
+        assert_eq!(snapshot.cloudflared.install_error, None);
+    }
+
+    #[test]
+    fn provider_availability_snapshot_surfaces_failed_install_status() {
+        let snapshot = merge_provider_install_statuses(
+            build_provider_availability_snapshot(ProviderAvailabilityProbe::from_install_flags(
+                false, false,
+            )),
+            &HashMap::from([(
+                "cloudflared".to_string(),
+                ProviderInstallStatus {
+                    state: crate::provider_installer::ProviderInstallState::Failed,
+                    source: ProviderInstallSource::Missing,
+                    resolved_path: None,
+                    version: Some("2026.2.0".to_string()),
+                    last_error: Some("download exploded".to_string()),
+                },
+            )]),
+        );
+
+        assert_eq!(
+            snapshot.cloudflared.install_state.as_deref(),
+            Some("failed")
+        );
+        assert_eq!(
+            snapshot.cloudflared.install_error.as_deref(),
+            Some("download exploded")
+        );
+        assert_eq!(
+            snapshot.cloudflared.install_version.as_deref(),
+            Some("2026.2.0")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn provider_install_invocation_builds_macos_cloudflared_terminal_command() {
+        let invocation = provider_install_invocation(&TunnelProvider::Cloudflared)
+            .expect("cloudflared install invocation should exist");
+
+        assert_eq!(invocation.program, "osascript");
+        assert!(
+            invocation
+                .args
+                .iter()
+                .any(|arg| arg.contains("brew install cloudflared")),
+            "unexpected args: {:?}",
+            invocation.args
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn provider_install_invocation_builds_macos_ngrok_terminal_command() {
+        let invocation = provider_install_invocation(&TunnelProvider::Ngrok)
+            .expect("ngrok install invocation should exist");
+
+        assert_eq!(invocation.program, "osascript");
+        assert!(
+            invocation
+                .args
+                .iter()
+                .any(|arg| arg.contains("brew install ngrok/ngrok/ngrok")),
+            "unexpected args: {:?}",
+            invocation.args
+        );
     }
 
     #[tokio::test]
@@ -2736,7 +3564,10 @@ mod tests {
 
         let settings = load_settings_from_dir(&temp_dir).expect("settings should still load");
         assert_eq!(settings.current_tunnel_id.as_deref(), Some("primary"));
-        assert_eq!(settings.tunnels[0].ngrok_domain.as_deref(), Some("demo.ngrok.app"));
+        assert_eq!(
+            settings.tunnels[0].ngrok_domain.as_deref(),
+            Some("demo.ngrok.app")
+        );
     }
 
     #[test]
@@ -2783,7 +3614,10 @@ mod tests {
         let settings = load_settings_from_dir(&temp_dir).expect("settings should load");
         assert_eq!(settings.tunnels[0].provider, TunnelProvider::Ngrok);
         assert_eq!(settings.tunnels[0].name, "Main Tunnel");
-        assert_eq!(settings.tunnels[0].gateway_target_url, "http://127.0.0.1:48080");
+        assert_eq!(
+            settings.tunnels[0].gateway_target_url,
+            "http://127.0.0.1:48080"
+        );
         assert!(!settings.tunnels[0].auto_restart);
     }
 
@@ -2959,7 +3793,9 @@ mod tests {
         let summary = derive_provider_status_summary(
             &settings,
             Some(&tunnel),
-            &[String::from("Unauthorized: failed to get tunnel credentials")],
+            &[String::from(
+                "Unauthorized: failed to get tunnel credentials",
+            )],
             &[],
         )
         .expect("summary should be derived");
@@ -3519,6 +4355,22 @@ mod tests {
             std::fs::set_permissions(path, permissions)
                 .expect("fake binary permissions should update");
         }
+    }
+
+    fn build_test_provider_archive_bytes(binary_name: &str, binary_bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = Builder::new(&mut encoder);
+            let mut header = Header::new_gnu();
+            header.set_size(binary_bytes.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, binary_name, binary_bytes)
+                .expect("archive entry should append");
+            builder.finish().expect("archive should finish");
+        }
+        encoder.finish().expect("gzip encoder should finish")
     }
 
     fn next_temp_dir() -> PathBuf {

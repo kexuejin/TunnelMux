@@ -596,6 +596,10 @@ select {
   color: #cbd5e1;
 }
 
+#routes-empty .actions {
+  margin-top: 16px;
+}
+
 .compact-actions {
   margin-top: 10px;
   justify-content: flex-end;

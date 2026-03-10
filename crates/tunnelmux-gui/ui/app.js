@@ -24,6 +24,7 @@ import {
   summarizeStartFailureRecovery,
   summarizeDaemonRecoveryAction,
   summarizeDaemonUnavailableMessage,
+  summarizeDiagnosticsLoadError,
   summarizeDashboardGuidance,
   summarizeDrawerProviderReadiness,
   summarizeEmptyStateProviderGuidance,
@@ -72,6 +73,7 @@ const state = {
   providerStatusFollowUpActionPayload: null,
   providerAvailabilitySnapshot: null,
   daemonBootstrapping: false,
+  daemonConnected: false,
   dashboardConnected: false,
   dashboardTunnelState: 'offline',
   heroActionKind: null,
@@ -291,7 +293,7 @@ function bindEvents() {
   elements.closeTunnel?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelBackdrop?.addEventListener('click', closeTunnelDrawer);
   elements.tunnelProvider?.addEventListener('change', syncTunnelProviderFields);
-  elements.tunnelProviderInstallAction?.addEventListener('click', () => void copyTunnelProviderInstallCommand());
+  elements.tunnelProviderInstallAction?.addEventListener('click', () => void withBusy(handleTunnelProviderInstallAction));
   elements.tunnelProviderRecheckAction?.addEventListener('click', () => void withBusy(recheckTunnelDrawerProvider));
   elements.tunnelPickerTrigger?.addEventListener('click', toggleTunnelPicker);
   elements.deleteTunnel?.addEventListener('click', deleteTunnelProfile);
@@ -594,6 +596,23 @@ async function refreshProviderAvailabilitySnapshot() {
   return state.providerAvailabilitySnapshot;
 }
 
+function currentProviderInstallStatus(providerName) {
+  return state.providerAvailabilitySnapshot?.[providerName] ?? null;
+}
+
+async function waitForProviderInstallCompletion(providerName, attempts = 120) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const snapshot = await refreshProviderAvailabilitySnapshot();
+    const status = snapshot?.[providerName] ?? null;
+    if (!status || status.install_state !== 'downloading') {
+      return status;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  return currentProviderInstallStatus(providerName);
+}
+
 async function refreshTunnelWorkspace() {
   try {
     const workspace = await invoke('load_tunnel_workspace');
@@ -634,6 +653,52 @@ function getCurrentTunnelDetails(currentTunnel = getCurrentWorkspaceTunnel()) {
   );
 }
 
+function providerMissingFromMessage(message, fallbackProvider = null) {
+  const lower = String(message ?? '').toLowerCase();
+  if (!lower) {
+    return null;
+  }
+
+  const missingProviderError = lower.includes('provider executable not found')
+    || (lower.includes('could not find') && lower.includes('path'));
+  if (!missingProviderError) {
+    return null;
+  }
+
+  if (
+    lower.includes('cloudflared')
+  ) {
+    return 'cloudflared';
+  }
+
+  if (
+    lower.includes('ngrok')
+  ) {
+    return 'ngrok';
+  }
+
+  return fallbackProvider;
+}
+
+function markProviderUnavailable(providerName) {
+  if (!providerName) {
+    return;
+  }
+
+  state.providerAvailabilitySnapshot = {
+    ...(state.providerAvailabilitySnapshot ?? {}),
+    [providerName]: {
+      binary_name: state.providerAvailabilitySnapshot?.[providerName]?.binary_name ?? providerName,
+      installed: false,
+    },
+  };
+
+  syncProviderHints();
+  renderHomeProviderActions();
+  renderEmptyStateProviderGuidance();
+  renderTunnelDrawerProviderReadiness();
+}
+
 function currentProviderAvailabilitySummary() {
   return summarizeProviderAvailability(getCurrentTunnelDetails());
 }
@@ -650,10 +715,10 @@ function renderHomeProviderActions(currentTunnel = getCurrentTunnelDetails()) {
   }
 
   const actionState = summarizeHomeTunnelActions(currentTunnel, undefined, state.providerAvailabilitySnapshot);
-  elements.startTunnel.disabled = state.busy || Boolean(actionState.start_disabled);
+  elements.startTunnel.disabled = state.busy || Boolean(actionState.start_disabled) || state.daemonBootstrapping || !state.daemonConnected;
   elements.startTunnel.textContent = actionState.start_label ?? 'Start Tunnel';
 
-  elements.homeProviderAction.textContent = actionState.action_label ?? 'Copy Install Command';
+  elements.homeProviderAction.textContent = actionState.action_label ?? 'Install Provider';
   elements.homeProviderAction.hidden = !actionState.action_kind;
   elements.homeProviderAction.disabled = state.busy;
 
@@ -671,7 +736,7 @@ function renderEmptyStateProviderGuidance() {
   elements.emptyProviderCopy.textContent = summary?.message ?? '';
   elements.emptyProviderCopy.hidden = !summary?.message;
 
-  elements.emptyProviderAction.textContent = summary?.action_label ?? 'Copy Install Command';
+  elements.emptyProviderAction.textContent = summary?.action_label ?? 'Install Provider';
   elements.emptyProviderAction.hidden = !summary?.action_kind;
   elements.emptyProviderAction.disabled = state.busy;
 
@@ -832,7 +897,7 @@ function renderTunnelDrawerProviderReadiness() {
 
   if (elements.tunnelProviderInstallAction) {
     elements.tunnelProviderInstallAction.hidden = !readiness.action_kind;
-    elements.tunnelProviderInstallAction.textContent = readiness.action_label ?? 'Copy Install Command';
+    elements.tunnelProviderInstallAction.textContent = readiness.action_label ?? 'Install Provider';
     elements.tunnelProviderInstallAction.disabled = state.busy;
   }
 
@@ -848,21 +913,16 @@ function renderTunnelDrawerProviderReadiness() {
   }
 }
 
-async function copyTunnelProviderInstallCommand() {
+async function handleTunnelProviderInstallAction() {
   const readiness = summarizeDrawerProviderReadiness(
     elements.tunnelProvider?.value || 'cloudflared',
     state.providerAvailabilitySnapshot,
   );
 
-  if (!readiness.action_payload) {
-    renderStatus('No install command is available for this provider yet.', true);
-    return;
-  }
-
-  await copyTextValue(
+  await runProviderUiAction(
+    readiness.action_kind,
     readiness.action_payload,
-    'Install command copied.',
-    'Failed to copy install command',
+    'drawer',
   );
 }
 
@@ -1040,7 +1100,9 @@ async function saveTunnel({ startNow }) {
       if (!startResult.ok) {
         if (startResult.recoveryTarget) {
           openTunnelDrawer({ mode: 'edit', recoveryTarget: startResult.recoveryTarget ?? null });
+          return;
         }
+        closeTunnelDrawer();
         return;
       }
       closeTunnelDrawer();
@@ -1202,8 +1264,10 @@ function renderDaemonStatus(snapshot) {
   state.daemonBootstrapping = Boolean(snapshot?.bootstrapping);
   const ownership = snapshot?.ownership ?? 'unavailable';
   const connected = Boolean(snapshot?.connected);
+  state.daemonConnected = connected;
   const message = summarizeDaemonUnavailableMessage(snapshot?.message ?? '');
   const statusAction = summarizeDaemonRecoveryAction(snapshot, state.settings);
+  renderHomeProviderActions();
 
   if (state.daemonBootstrapping) {
     renderStatus(message || 'Starting local TunnelMux…', false, null);
@@ -1271,6 +1335,14 @@ async function startTunnel() {
       };
     }
 
+    await ensureLocalDaemonAndRefresh();
+    if (state.daemonBootstrapping || !state.daemonConnected) {
+      return {
+        ok: false,
+        recoveryTarget: null,
+      };
+    }
+
     const snapshot = await invoke('start_tunnel', {
       input: {
         provider: tunnel.provider,
@@ -1297,14 +1369,33 @@ async function startTunnel() {
     const message = formatError(error);
     await refreshProviderAvailabilitySnapshot();
     await refreshProviderStatusSummary();
+    const currentTunnel = getCurrentTunnelDetails() ?? getCurrentTunnelSettings();
+    const missingProvider = providerMissingFromMessage(message, currentTunnel?.provider ?? null);
+    if (missingProvider) {
+      markProviderUnavailable(missingProvider);
+    }
     const failure = summarizeStartFailureRecovery({
       message,
       settings: state.settings,
-      tunnel: getCurrentTunnelDetails() ?? getCurrentTunnelSettings(),
+      tunnel: currentTunnel,
     });
 
     if (failure.preservesProviderRecovery) {
-      const providerAvailabilitySummary = currentProviderAvailabilitySummary();
+      const providerAvailabilitySummary = currentProviderAvailabilitySummary()
+        ?? (missingProvider
+          ? summarizeProviderAvailability(
+            {
+              ...(currentTunnel ?? {}),
+              provider: missingProvider,
+              provider_availability: {
+                binary_name: missingProvider,
+                installed: false,
+              },
+            },
+            undefined,
+            state.providerAvailabilitySnapshot,
+          )
+          : null);
       if (providerAvailabilitySummary) {
         renderProviderStatusSummary(providerAvailabilitySummary);
         renderHomeProviderActions();
@@ -1687,7 +1778,7 @@ async function refreshDiagnosticsSummary() {
     renderDiagnosticsOverview('Open these details only when something looks wrong.');
     return true;
   } catch (error) {
-    renderDiagnosticsSummaryMeta(`Failed to load runtime summary: ${formatError(error)}`, true);
+    renderDiagnosticsSummaryMeta(summarizeDiagnosticsLoadError('runtime summary', error), true);
     renderDiagnosticsOverview('Troubleshooting is partially unavailable. Check the panel errors for details.', true);
     return false;
   } finally {
@@ -1708,7 +1799,7 @@ async function refreshUpstreamsHealth() {
     renderUpstreamsHealth(upstreams);
     return true;
   } catch (error) {
-    renderUpstreamsMeta(`Failed to load upstream health: ${formatError(error)}`, true);
+    renderUpstreamsMeta(summarizeDiagnosticsLoadError('upstream health', error), true);
     elements.upstreamsEmpty.hidden = !state.diagnostics.upstreams.length;
     return false;
   } finally {
@@ -1732,9 +1823,9 @@ async function refreshRecentLogs({ manual = false } = {}) {
     }
     return true;
   } catch (error) {
-    renderLogsMeta(`Failed to load recent logs: ${formatError(error)}`, true);
+    renderLogsMeta(summarizeDiagnosticsLoadError('recent logs', error), true);
     if (manual) {
-      renderStatus(`Failed to refresh logs: ${formatError(error)}`, true);
+      renderStatus(summarizeDiagnosticsLoadError('recent logs', error), true);
     }
     return false;
   } finally {
@@ -2018,6 +2109,36 @@ async function runProviderUiAction(actionKind, actionPayload, actionSource = 'ho
         'Install command copied.',
         'Failed to copy install command',
       );
+      break;
+    case 'install_provider':
+      if (!actionPayload) {
+        renderStatus('No provider install action is available yet.', true);
+        break;
+      }
+      try {
+        const installStatus = await invoke('install_provider', { provider: actionPayload });
+        await refreshTunnelWorkspace();
+        await refreshProviderStatusSummary();
+        if (installStatus?.state === 'downloading') {
+          renderStatus(`Installing ${actionPayload} for TunnelMux…`, false);
+          const finalStatus = await waitForProviderInstallCompletion(actionPayload);
+          await refreshTunnelWorkspace();
+          await refreshProviderStatusSummary();
+          if (finalStatus?.install_state === 'failed') {
+            renderStatus(`Failed to install ${actionPayload}: ${finalStatus.install_error ?? 'Unknown error.'}`, true);
+          } else if (finalStatus?.installed && finalStatus?.source === 'local_tools') {
+            renderStatus(`Installed ${actionPayload} for TunnelMux. Recheck complete.`, false);
+          } else {
+            renderStatus(`Opened the ${actionPayload} system installer. Finish installation, then recheck.`, false);
+          }
+        } else if (installStatus?.state === 'installed' && installStatus?.source === 'local_tools') {
+          renderStatus(`Installed ${actionPayload} for TunnelMux. Recheck complete.`, false);
+        } else {
+          renderStatus(`Opened the ${actionPayload} system installer. Finish installation, then recheck.`, false);
+        }
+      } catch (error) {
+        renderStatus(`Failed to start ${actionPayload} installation: ${formatError(error)}`, true);
+      }
       break;
     case 'edit_service':
       openServiceEditorForRoute(actionPayload);

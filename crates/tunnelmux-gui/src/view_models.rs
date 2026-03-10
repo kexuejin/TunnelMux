@@ -193,6 +193,11 @@ pub struct TunnelProfileVm {
 pub struct ProviderAvailabilityVm {
     pub binary_name: String,
     pub installed: bool,
+    pub source: String,
+    pub resolved_path: Option<String>,
+    pub install_state: Option<String>,
+    pub install_error: Option<String>,
+    pub install_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

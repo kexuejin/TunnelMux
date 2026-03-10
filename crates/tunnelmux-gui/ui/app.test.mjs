@@ -27,6 +27,7 @@ import {
   shouldShowErrorDetailsAction,
   summarizeDaemonRecoveryAction,
   summarizeDaemonUnavailableMessage,
+  summarizeDiagnosticsLoadError,
   summarizeDashboardGuidance,
   summarizeDrawerProviderReadiness,
   summarizeHomeTunnelActions,
@@ -119,12 +120,38 @@ test('summarizeProviderAvailability returns a current-tunnel warning when the pr
       level: 'warning',
       title: 'Cloudflared Missing',
       message: 'Install cloudflared to start this tunnel. TunnelMux could not find the cloudflared command in your PATH.',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: 'brew install cloudflared',
+      action_kind: 'install_provider',
+      action_label: 'Install cloudflared',
+      action_payload: 'cloudflared',
       follow_up_action_kind: 'recheck_provider',
       follow_up_action_label: 'Recheck Provider',
       follow_up_action_payload: 'cloudflared',
+    },
+  );
+});
+
+test('summarizeProviderAvailability returns the same install-first action for missing ngrok', () => {
+  assert.deepEqual(
+    summarizeProviderAvailability(
+      {
+        provider: 'ngrok',
+        provider_availability: {
+          binary_name: 'ngrok',
+          installed: false,
+        },
+      },
+      'macOS',
+    ),
+    {
+      level: 'warning',
+      title: 'Ngrok Missing',
+      message: 'Install ngrok to start this tunnel. TunnelMux could not find the ngrok command in your PATH.',
+      action_kind: 'install_provider',
+      action_label: 'Install ngrok',
+      action_payload: 'ngrok',
+      follow_up_action_kind: 'recheck_provider',
+      follow_up_action_label: 'Recheck Provider',
+      follow_up_action_payload: 'ngrok',
     },
   );
 });
@@ -182,9 +209,9 @@ test('summarizeProviderAvailability offers Use Installed Provider when the other
       level: 'warning',
       title: 'Cloudflared Missing',
       message: 'Install cloudflared to start this tunnel. TunnelMux could not find the cloudflared command in your PATH.',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: 'brew install cloudflared',
+      action_kind: 'install_provider',
+      action_label: 'Install cloudflared',
+      action_payload: 'cloudflared',
       follow_up_action_kind: 'use_installed_provider',
       follow_up_action_label: 'Use Installed Provider',
       follow_up_action_payload: 'ngrok',
@@ -208,9 +235,9 @@ test('summarizeHomeTunnelActions blocks hero start and exposes install plus rech
     {
       start_disabled: true,
       start_label: 'Install Provider to Restart',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: 'brew install ngrok/ngrok/ngrok',
+      action_kind: 'install_provider',
+      action_label: 'Install ngrok',
+      action_payload: 'ngrok',
       follow_up_action_kind: 'recheck_provider',
       follow_up_action_label: 'Recheck Provider',
       follow_up_action_payload: 'ngrok',
@@ -244,9 +271,9 @@ test('summarizeHomeTunnelActions surfaces Use Installed Provider when the altern
     {
       start_disabled: true,
       start_label: 'Install Provider to Restart',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: 'brew install cloudflared',
+      action_kind: 'install_provider',
+      action_label: 'Install cloudflared',
+      action_payload: 'cloudflared',
       follow_up_action_kind: 'use_installed_provider',
       follow_up_action_label: 'Use Installed Provider',
       follow_up_action_payload: 'ngrok',
@@ -339,9 +366,9 @@ test('summarizeEmptyStateProviderGuidance recommends cloudflared install when no
     ),
     {
       message: 'Cloudflared is not installed yet. TunnelMux recommends cloudflared for the quickest first tunnel.',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: 'brew install cloudflared',
+      action_kind: 'install_provider',
+      action_label: 'Install cloudflared',
+      action_payload: 'cloudflared',
       follow_up_action_kind: 'recheck_provider',
       follow_up_action_label: 'Recheck Provider',
       follow_up_action_payload: 'cloudflared',
@@ -366,9 +393,9 @@ test('summarizeEmptyStateProviderGuidance keeps ngrok-only onboarding honest and
     ),
     {
       message: 'Ngrok is installed. Create Tunnel will preselect it, but you will need an authtoken before Start Tunnel works.',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy cloudflared Install Command',
-      action_payload: 'brew install cloudflared',
+      action_kind: 'install_provider',
+      action_label: 'Install cloudflared',
+      action_payload: 'cloudflared',
       follow_up_action_kind: null,
       follow_up_action_label: null,
       follow_up_action_payload: null,
@@ -461,6 +488,29 @@ test('summarizeStartFailureRecovery reuses daemon recovery actions for start fai
       statusAction: {
         kind: 'open_settings',
         label: 'Open Settings',
+        payload: null,
+      },
+    },
+  );
+});
+
+test('summarizeStartFailureRecovery routes daemon provider-path mismatches back to daemon recovery', () => {
+  assert.deepEqual(
+    summarizeStartFailureRecovery({
+      message: 'TunnelMux found cloudflared, but the connected daemon could not use that binary path. Retry the local daemon or check whether another TunnelMux daemon is already using this port.',
+      settings: {
+        base_url: 'http://127.0.0.1:4765',
+      },
+      tunnel: {
+        provider: 'cloudflared',
+      },
+    }),
+    {
+      preservesProviderRecovery: false,
+      recoveryTarget: null,
+      statusAction: {
+        kind: 'retry_local_daemon',
+        label: 'Retry Local Daemon',
         payload: null,
       },
     },
@@ -705,9 +755,9 @@ test('summarizeDrawerProviderReadiness disables save and start when the selected
       level: 'warning',
       title: 'Cloudflared Missing',
       message: 'Install cloudflared before using Save and Start. TunnelMux could not find the cloudflared command in your PATH. Cloudflared is still the recommended quick-tunnel path for the common case, and quick tunnels work without a Cloudflare Tunnel Token.',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: 'brew install cloudflared',
+      action_kind: 'install_provider',
+      action_label: 'Install cloudflared',
+      action_payload: 'cloudflared',
       follow_up_action_kind: 'recheck_provider',
       follow_up_action_label: 'Recheck Provider',
       follow_up_action_payload: 'cloudflared',
@@ -737,11 +787,39 @@ test('summarizeDrawerProviderReadiness keeps install guidance visible and offers
       level: 'warning',
       title: 'Cloudflared Missing',
       message: 'Install cloudflared before using Save and Start. TunnelMux could not find the cloudflared command in your PATH. Cloudflared is still the recommended quick-tunnel path for the common case, and quick tunnels work without a Cloudflare Tunnel Token.',
-      action_kind: 'copy_install_command',
-      action_label: 'Copy Install Command',
-      action_payload: 'brew install cloudflared',
+      action_kind: 'install_provider',
+      action_label: 'Install cloudflared',
+      action_payload: 'cloudflared',
       follow_up_action_kind: 'use_installed_provider',
       follow_up_action_label: 'Use Installed Provider',
+      follow_up_action_payload: 'ngrok',
+      start_disabled: true,
+      start_label: 'Install Provider to Start',
+    },
+  );
+});
+
+test('summarizeDrawerProviderReadiness gives missing ngrok the same install-first action', () => {
+  assert.deepEqual(
+    summarizeDrawerProviderReadiness(
+      'ngrok',
+      {
+        ngrok: {
+          binary_name: 'ngrok',
+          installed: false,
+        },
+      },
+      'macOS',
+    ),
+    {
+      level: 'warning',
+      title: 'Ngrok Missing',
+      message: 'Install ngrok before using Save and Start. TunnelMux could not find the ngrok command in your PATH.',
+      action_kind: 'install_provider',
+      action_label: 'Install ngrok',
+      action_payload: 'ngrok',
+      follow_up_action_kind: 'recheck_provider',
+      follow_up_action_label: 'Recheck Provider',
       follow_up_action_payload: 'ngrok',
       start_disabled: true,
       start_label: 'Install Provider to Start',
@@ -808,6 +886,111 @@ test('summarizeDrawerProviderReadiness keeps save and start available when the s
       follow_up_action_payload: null,
       start_disabled: false,
       start_label: 'Save and Start',
+    },
+  );
+});
+
+test('summarizeDrawerProviderReadiness explains when a provider was installed for TunnelMux locally', () => {
+  assert.deepEqual(
+    summarizeDrawerProviderReadiness(
+      'cloudflared',
+      {
+        cloudflared: {
+          binary_name: 'cloudflared',
+          installed: true,
+          source: 'local_tools',
+          resolved_path: '/Users/demo/Library/Application Support/com.tunnelmux.gui/tools/bin/cloudflared',
+        },
+      },
+      'macOS',
+    ),
+    {
+      level: 'info',
+      title: 'Cloudflared Ready',
+      message: 'cloudflared is installed for TunnelMux. Save and Start will launch this tunnel after saving.',
+      action_kind: null,
+      action_label: null,
+      action_payload: null,
+      follow_up_action_kind: null,
+      follow_up_action_label: null,
+      follow_up_action_payload: null,
+      start_disabled: false,
+      start_label: 'Save and Start',
+    },
+  );
+});
+
+test('summarizeDrawerProviderReadiness shows installing state while TunnelMux is downloading a provider', () => {
+  assert.deepEqual(
+    summarizeDrawerProviderReadiness(
+      'cloudflared',
+      {
+        cloudflared: {
+          binary_name: 'cloudflared',
+          installed: false,
+          source: 'missing',
+          resolved_path: null,
+          install_state: 'downloading',
+          install_error: null,
+          install_version: '2026.2.0',
+        },
+      },
+      'macOS',
+    ),
+    {
+      level: 'info',
+      title: 'Cloudflared Installing',
+      message: 'Installing cloudflared for TunnelMux. Save and Start will unlock when the download finishes.',
+      action_kind: null,
+      action_label: null,
+      action_payload: null,
+      follow_up_action_kind: null,
+      follow_up_action_label: null,
+      follow_up_action_payload: null,
+      start_disabled: true,
+      start_label: 'Installing…',
+    },
+  );
+});
+
+test('summarizeDrawerProviderReadiness offers retry install when a local install failed', () => {
+  assert.deepEqual(
+    summarizeDrawerProviderReadiness(
+      'cloudflared',
+      {
+        cloudflared: {
+          binary_name: 'cloudflared',
+          installed: false,
+          source: 'missing',
+          resolved_path: null,
+          install_state: 'failed',
+          install_error: 'download exploded',
+          install_version: '2026.2.0',
+        },
+        ngrok: {
+          binary_name: 'ngrok',
+          installed: true,
+          source: 'system_path',
+          resolved_path: '/opt/homebrew/bin/ngrok',
+          install_state: null,
+          install_error: null,
+          install_version: null,
+        },
+      },
+      'macOS',
+    ),
+    {
+      level: 'warning',
+      title: 'Cloudflared Install Failed',
+      message: 'TunnelMux could not finish installing cloudflared: download exploded',
+      action_kind: 'install_provider',
+      action_label: 'Retry Install',
+      action_payload: 'cloudflared',
+      follow_up_action_kind: 'use_installed_provider',
+      follow_up_action_label: 'Use Installed Provider',
+      follow_up_action_payload: 'ngrok',
+      start_disabled: true,
+      start_label: 'Retry Install to Start',
     },
   );
 });
@@ -1300,6 +1483,24 @@ test('summarizeDaemonUnavailableMessage translates missing tunnelmuxd startup fa
   assert.equal(
     summarizeDaemonUnavailableMessage('Could not start local TunnelMux: tunnelmuxd binary could not be found in bundled resources or PATH'),
     'TunnelMux could not start its local daemon because the tunnelmuxd component is unavailable. Reinstall the TunnelMux app, or install tunnelmuxd separately and make sure it is on your PATH.',
+  );
+});
+
+test('summarizeDiagnosticsLoadError maps daemon request failures to friendly diagnostics copy', () => {
+  assert.equal(
+    summarizeDiagnosticsLoadError(
+      'upstream health',
+      'request failed:\n  http://127.0.0.1:4765/v1/upstreams/health',
+    ),
+    'Local TunnelMux daemon is unavailable, so upstream health is unavailable right now.',
+  );
+
+  assert.equal(
+    summarizeDiagnosticsLoadError(
+      'recent logs',
+      'failed to parse successful response body: {"ok":true}',
+    ),
+    'Failed to load recent logs: failed to parse successful response body: {"ok":true}',
   );
 });
 
@@ -1853,7 +2054,9 @@ test('renderDaemonStatus keeps managed-daemon bootstrapping on a pending path an
   const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 
   assert.match(appJs, /daemonBootstrapping: false,/);
+  assert.match(appJs, /daemonConnected: false,/);
   assert.match(appJs, /state\.daemonBootstrapping = Boolean\(snapshot\?\.bootstrapping\);[\s\S]*if \(state\.daemonBootstrapping\) \{[\s\S]*renderStatus\(message \|\| 'Starting local TunnelMux…', false, null\);[\s\S]*return;[\s\S]*\}/);
+  assert.match(appJs, /function renderDaemonStatus\(snapshot\) \{[\s\S]*state\.daemonConnected = connected;[\s\S]*renderHomeProviderActions\(\);/);
   assert.match(appJs, /async function refreshTunnelWorkspace\(\) \{[\s\S]*catch \(error\) \{[\s\S]*if \(state\.daemonBootstrapping\) \{[\s\S]*return;[\s\S]*\}[\s\S]*renderStatus\(`Failed to load tunnels: \$\{formatError\(error\)\}`, true\);/);
   assert.match(appJs, /async function refreshDashboard\(\) \{[\s\S]*catch \(error\) \{[\s\S]*if \(state\.daemonBootstrapping\) \{[\s\S]*return;[\s\S]*\}[\s\S]*renderStatus\(`Failed to refresh dashboard: \$\{formatError\(error\)\}`, true\);/);
   assert.match(appJs, /async function refreshRoutes\(\) \{[\s\S]*catch \(error\) \{[\s\S]*if \(state\.daemonBootstrapping\) \{[\s\S]*return;[\s\S]*\}[\s\S]*renderRoutes\(\{ routes: \[], message: `Failed to load services: \$\{formatError\(error\)\}` \}\);/);
@@ -1876,8 +2079,31 @@ test('save-and-start failures keep the drawer open and reuse status-action paylo
   assert.match(appJs, /if \(!startResult\.ok\) \{/);
   assert.match(appJs, /if \(startResult\.recoveryTarget\) \{/);
   assert.match(appJs, /openTunnelDrawer\(\{ mode: 'edit', recoveryTarget: startResult\.recoveryTarget \?\? null \}\);/);
+  assert.match(appJs, /if \(!startResult\.ok\) \{[\s\S]*if \(startResult\.recoveryTarget\) \{[\s\S]*openTunnelDrawer\(\{ mode: 'edit', recoveryTarget: startResult\.recoveryTarget \?\? null \}\);[\s\S]*return;[\s\S]*\}[\s\S]*closeTunnelDrawer\(\);[\s\S]*return;[\s\S]*\}/);
   assert.match(appJs, /const failure = summarizeStartFailureRecovery\(\{/);
   assert.match(appJs, /renderStatus\(`Failed to start tunnel: \$\{message\}`, true, failure\.statusAction\);/);
+});
+
+test('startTunnel ensures the local daemon before requesting tunnel start and aborts when the daemon stays unavailable', () => {
+  const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+
+  assert.match(appJs, /async function startTunnel\(\) \{[\s\S]*await ensureLocalDaemonAndRefresh\(\);[\s\S]*if \(state\.daemonBootstrapping \|\| !state\.daemonConnected\) \{[\s\S]*return \{[\s\S]*ok: false,[\s\S]*recoveryTarget: null,[\s\S]*\};[\s\S]*\}[\s\S]*const snapshot = await invoke\('start_tunnel'/);
+});
+
+test('home start action stays disabled while the daemon is unavailable or still bootstrapping', () => {
+  const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+
+  assert.match(appJs, /elements\.startTunnel\.disabled = state\.busy \|\| Boolean\(actionState\.start_disabled\) \|\| state\.daemonBootstrapping \|\| !state\.daemonConnected;/);
+});
+
+test('provider install actions invoke the backend installer instead of copy-only clipboard flows', () => {
+  const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+
+  assert.match(appJs, /case 'install_provider':[\s\S]*await invoke\('install_provider', \{ provider: actionPayload \}\);/);
+  assert.match(appJs, /case 'install_provider':[\s\S]*const installStatus = await invoke\('install_provider', \{ provider: actionPayload \}\);/);
+  assert.match(appJs, /case 'install_provider':[\s\S]*installStatus\?\.state === 'installed' && installStatus\?\.source === 'local_tools'/);
+  assert.match(appJs, /case 'install_provider':[\s\S]*renderStatus\(`Installed \$\{actionPayload\} for TunnelMux\.[\s\S]*\);/);
+  assert.match(appJs, /case 'install_provider':[\s\S]*renderStatus\(`Opened the \$\{actionPayload\} system installer\.[\s\S]*\);/);
 });
 
 test('provider-status actions edit a single unreachable service directly and highlight multi-service recovery', () => {
@@ -1972,6 +2198,22 @@ test('index empty-state copy follows the easy path', () => {
   assert.match(appJs, /emptyProviderFollowUpAction\?\.addEventListener\('click', \(\) => withBusy\(handleEmptyProviderFollowUpAction\)\)/);
   assert.match(appJs, /await runProviderUiAction\(summary\.follow_up_action_kind, summary\.follow_up_action_payload, 'empty'\);/);
   assert.match(appJs, /renderEmptyStateProviderGuidance\(\);/);
+});
+
+test('services empty state gives the Add Service action more vertical separation', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+
+  assert.match(html, /<div id="routes-empty" class="empty-state">[\s\S]*<div class="actions">[\s\S]*id="new-route-empty"/);
+  assert.match(css, /#routes-empty \.actions \{[\s\S]*margin-top: 16px;/);
+});
+
+test('diagnostics panels route request errors through the shared diagnostics copy helper', () => {
+  const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+
+  assert.match(appJs, /renderDiagnosticsSummaryMeta\(summarizeDiagnosticsLoadError\('runtime summary', error\), true\);/);
+  assert.match(appJs, /renderUpstreamsMeta\(summarizeDiagnosticsLoadError\('upstream health', error\), true\);/);
+  assert.match(appJs, /renderLogsMeta\(summarizeDiagnosticsLoadError\('recent logs', error\), true\);/);
 });
 
 test('shouldShowErrorDetailsAction only enables the action for error states', () => {

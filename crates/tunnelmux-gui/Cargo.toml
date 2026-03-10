@@ -15,16 +15,20 @@ build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
+flate2 = "1.1"
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri = { version = "2.10.3" }
+sha2 = "0.10"
+tar = "0.4"
+tauri = { version = "2.10.3", features = [] }
 tokio.workspace = true
 tunnelmux-control-client.workspace = true
 tunnelmux-core.workspace = true
 url.workspace = true
 
 [build-dependencies]
-tauri-build = { version = "2.5.6" }
+tauri-build = { version = "2.5.6", features = [] }
 
 [lib]
 name = "tunnelmux_gui"
@@ -36,4 +40,5 @@ path = "src/main.rs"
 
 [dev-dependencies]
 axum.workspace = true
+tempfile = "3.14"
 tokio.workspace = true

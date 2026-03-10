@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod daemon_manager;
+pub mod provider_installer;
 pub mod settings;
 pub mod state;
 pub mod view_models;
@@ -22,6 +23,7 @@ pub fn run() {
             commands::probe_connection,
             commands::load_tunnel_workspace,
             commands::load_provider_availability_snapshot,
+            commands::install_provider,
             commands::save_tunnel_profile,
             commands::select_tunnel_profile,
             commands::delete_tunnel_profile,
