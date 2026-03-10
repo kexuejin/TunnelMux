@@ -2207,13 +2207,14 @@ mod tests {
         )
         .expect("settings should save");
 
-        let error = start_tunnel_from_settings_dir(
+        let error = start_tunnel_from_settings_dir_with_provider_probe(
             &temp_dir,
             StartTunnelInput {
                 provider: TunnelProvider::Cloudflared,
                 target_url: "http://127.0.0.1:18080".to_string(),
                 auto_restart: true,
             },
+            ProviderAvailabilityProbe::from_install_flags(true, false),
         )
         .await
         .expect_err("start should fail against unreachable daemon");
@@ -2468,13 +2469,14 @@ mod tests {
         )
         .expect("settings should save");
 
-        let snapshot = start_tunnel_from_settings_dir(
+        let snapshot = start_tunnel_from_settings_dir_with_provider_probe(
             &temp_dir,
             StartTunnelInput {
                 provider: TunnelProvider::Ngrok,
                 target_url: "http://127.0.0.1:28080".to_string(),
                 auto_restart: false,
             },
+            ProviderAvailabilityProbe::from_install_flags(false, true),
         )
         .await
         .expect("start tunnel should succeed");
@@ -2542,13 +2544,14 @@ mod tests {
         )
         .expect("settings should save");
 
-        let snapshot = start_tunnel_from_settings_dir(
+        let snapshot = start_tunnel_from_settings_dir_with_provider_probe(
             &temp_dir,
             StartTunnelInput {
                 provider: TunnelProvider::Cloudflared,
                 target_url: "http://127.0.0.1:48080".to_string(),
                 auto_restart: true,
             },
+            ProviderAvailabilityProbe::from_install_flags(true, false),
         )
         .await
         .expect("start tunnel should succeed");

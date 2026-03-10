@@ -394,15 +394,21 @@ mod tests {
     #[test]
     fn manifest_lookup_for_supported_providers() {
         let cloudflared =
-            provider_manifest_entry_for_current_platform(&TunnelProvider::Cloudflared)
-                .expect("cloudflared manifest entry should exist");
-        let ngrok = provider_manifest_entry_for_current_platform(&TunnelProvider::Ngrok)
-            .expect("ngrok manifest entry should exist");
+            provider_manifest_entry_for_current_platform(&TunnelProvider::Cloudflared);
+        let ngrok = provider_manifest_entry_for_current_platform(&TunnelProvider::Ngrok);
 
-        assert_eq!(cloudflared.provider, TunnelProvider::Cloudflared);
-        assert_eq!(ngrok.provider, TunnelProvider::Ngrok);
-        assert!(!cloudflared.version.is_empty());
-        assert!(!ngrok.version.is_empty());
+        if cfg!(target_os = "macos") {
+            let cloudflared = cloudflared.expect("cloudflared manifest entry should exist");
+            let ngrok = ngrok.expect("ngrok manifest entry should exist");
+
+            assert_eq!(cloudflared.provider, TunnelProvider::Cloudflared);
+            assert_eq!(ngrok.provider, TunnelProvider::Ngrok);
+            assert!(!cloudflared.version.is_empty());
+            assert!(!ngrok.version.is_empty());
+        } else {
+            assert_eq!(cloudflared, None);
+            assert_eq!(ngrok, None);
+        }
     }
 
     #[test]
