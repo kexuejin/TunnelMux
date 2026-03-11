@@ -1,4 +1,5 @@
 /target
+/target-codex
 .DS_Store
 
 # Rust
