@@ -4,6 +4,10 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-11
+
+- Add a system tray icon to the GUI, with close-to-hide behavior and a minimal Show/Hide + Quit menu.
+
 ## [0.2.0] - 2026-03-08
 
 - Add true tunnel-scoped daemon runtime state so multiple tunnel profiles can coexist with independent status, restart, and route ownership.
