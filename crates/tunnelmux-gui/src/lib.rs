@@ -3,13 +3,45 @@ pub mod daemon_manager;
 pub mod provider_installer;
 pub mod settings;
 pub mod state;
+pub mod tray;
 pub mod view_models;
 
 pub fn run() {
     tauri::Builder::default()
         .manage(state::GuiAppState::default())
         .setup(|app| {
+            use std::sync::atomic::Ordering;
+
+            use tauri::Manager;
+
             let app_handle = app.handle().clone();
+
+            let exit_requested = app.state::<state::GuiAppState>().exit_requested.clone();
+            let tray_ready = match tray::install_tray(&app_handle, exit_requested.clone()) {
+                Ok(()) => true,
+                Err(err) => {
+                    eprintln!("failed to initialize system tray: {err}");
+                    false
+                }
+            };
+
+            if tray_ready {
+                if let Some(main_window) = app.get_webview_window("main") {
+                    main_window.on_window_event({
+                        let main_window = main_window.clone();
+                        let exit_requested = exit_requested.clone();
+                        move |event| {
+                            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                                if !exit_requested.load(Ordering::SeqCst) {
+                                    api.prevent_close();
+                                    let _ = main_window.hide();
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+
             tauri::async_runtime::spawn(async move {
                 let _ = commands::bootstrap_local_daemon(&app_handle).await;
             });
@@ -40,5 +72,15 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("failed to build TunnelMux GUI")
-        .run(|_, _| {});
+        .run(|app, event| {
+            use std::sync::atomic::Ordering;
+
+            use tauri::Manager;
+
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app.try_state::<state::GuiAppState>() {
+                    state.exit_requested.store(true, Ordering::SeqCst);
+                }
+            }
+        });
 }
