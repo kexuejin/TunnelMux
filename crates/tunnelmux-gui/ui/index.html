@@ -193,6 +193,10 @@
               <span>Health Check Path</span>
               <input id="route-health-check-path" type="text" placeholder="/healthz" />
             </label>
+            <label class="checkbox-row">
+              <input id="route-health-check-enabled" type="checkbox" checked />
+              <span>Enable health check</span>
+            </label>
 
             <label class="field">
               <span>Fallback Local URL</span>
@@ -295,8 +299,12 @@
                 <span>Cloudflare Tunnel Token</span>
                 <input id="tunnel-cloudflared-tunnel-token" type="password" placeholder="Optional" />
               </label>
+              <label class="field">
+                <span>Public Hostname</span>
+                <input id="tunnel-cloudflared-public-hostname" type="text" placeholder="openai.example.com" />
+              </label>
               <p class="panel-subtle">
-                Leave this empty for a quick tunnel. Add a tunnel token to run a stable named tunnel.
+                Leave the token empty for a quick tunnel. For a named tunnel, add the token and hostname you configured in Cloudflare.
               </p>
             </div>
 

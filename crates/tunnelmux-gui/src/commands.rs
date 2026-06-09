@@ -2865,6 +2865,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3000".to_string(),
                 fallback_upstream_url: String::new(),
                 health_check_path: String::new(),
+                health_check_enabled: true,
                 enabled: true,
             },
         )

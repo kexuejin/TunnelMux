@@ -551,6 +551,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3000".to_string(),
                 fallback_upstream_url: None,
                 health_check_path: None,
+                health_check_enabled: None,
                 enabled: Some(true),
             })
             .await

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CONTROL_ADDR: &str = "127.0.0.1:4765";
 pub const DEFAULT_GATEWAY_TARGET_URL: &str = "http://127.0.0.1:18080";
+pub const DISABLED_HEALTH_CHECK_SENTINEL: &str = "/__disabled__";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +98,20 @@ pub struct RouteRule {
     pub enabled: bool,
 }
 
+pub fn route_health_check_enabled(route: &RouteRule) -> bool {
+    route.health_check_path.as_deref() != Some(DISABLED_HEALTH_CHECK_SENTINEL)
+}
+
+pub fn effective_route_health_check_path(
+    route: &RouteRule,
+    default_health_check_path: &str,
+) -> String {
+    route
+        .health_check_path
+        .clone()
+        .unwrap_or_else(|| default_health_check_path.to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateRouteRequest {
     pub tunnel_id: String,
@@ -107,6 +122,8 @@ pub struct CreateRouteRequest {
     pub upstream_url: String,
     pub fallback_upstream_url: Option<String>,
     pub health_check_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check_enabled: Option<bool>,
     pub enabled: Option<bool>,
 }
 

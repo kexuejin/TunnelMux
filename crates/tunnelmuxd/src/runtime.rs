@@ -182,6 +182,9 @@ pub(super) async fn refresh_upstream_health(
 
     let mut upstreams = HashSet::new();
     for route in &routes {
+        if !route_health_check_enabled(route) {
+            continue;
+        }
         let route_health_check_path = effective_route_health_check_path(route, &settings.path);
         upstreams.insert(upstream_health_key(
             &route.upstream_url,

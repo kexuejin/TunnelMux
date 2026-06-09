@@ -1,13 +1,13 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use tauri::{
+    AppHandle, Manager, Runtime,
     image::Image,
     menu::{MenuBuilder, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, Runtime,
 };
 
 const TRAY_ID: &str = "main";
@@ -18,13 +18,7 @@ pub fn install_tray<R: Runtime>(
     app: &AppHandle<R>,
     exit_requested: Arc<AtomicBool>,
 ) -> tauri::Result<()> {
-    let toggle = MenuItem::with_id(
-        app,
-        MENU_TOGGLE_ID,
-        "Show/Hide Window",
-        true,
-        None::<&str>,
-    )?;
+    let toggle = MenuItem::with_id(app, MENU_TOGGLE_ID, "Show/Hide Window", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, MENU_QUIT_ID, "Quit", true, None::<&str>)?;
     let menu = MenuBuilder::new(app).item(&toggle).item(&quit).build()?;
 

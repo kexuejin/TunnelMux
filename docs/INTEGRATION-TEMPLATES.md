@@ -56,6 +56,7 @@ curl -fsSL "${auth_header[@]}" \
         "upstream_url": "http://127.0.0.1:3000",
         "fallback_upstream_url": "http://127.0.0.1:3001",
         "health_check_path": "/healthz",
+        "health_check_enabled": true,
         "enabled": true
       }
     ]
@@ -104,6 +105,7 @@ async function upsertRoute() {
       upstream_url: "http://127.0.0.1:3000",
       fallback_upstream_url: "http://127.0.0.1:3001",
       health_check_path: "/healthz",
+      health_check_enabled: true,
       enabled: true,
       upsert: true,
     }),
@@ -150,6 +152,7 @@ requests.put(
         "upstream_url": "http://127.0.0.1:3000",
         "fallback_upstream_url": "http://127.0.0.1:3001",
         "health_check_path": "/healthz",
+        "health_check_enabled": True,
         "enabled": True,
         "upsert": True,
     },

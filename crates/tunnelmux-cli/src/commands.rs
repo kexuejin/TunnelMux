@@ -166,6 +166,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 upstream_url,
                 fallback_upstream_url,
                 health_check_path,
+                health_check_enabled: Some(true),
                 enabled: Some(!disabled),
             };
             let routes: RoutesResponse = control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
@@ -377,6 +378,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                             .ok_or_else(|| anyhow!("missing --upstream-url"))?,
                         fallback_upstream_url,
                         health_check_path,
+                        health_check_enabled: Some(true),
                         enabled: Some(!disabled),
                     }
                 };
@@ -466,6 +468,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         upstream_url,
                         fallback_upstream_url,
                         health_check_path,
+                        health_check_enabled: Some(true),
                         enabled: Some(!disabled),
                     }
                 };

@@ -28,6 +28,7 @@ pub(super) fn default_provider_log_file() -> PathBuf {
 }
 
 fn route_rule_to_create_request(route: RouteRule) -> CreateRouteRequest {
+    let health_check_enabled = route_health_check_enabled(&route);
     CreateRouteRequest {
         tunnel_id: route.tunnel_id,
         id: route.id,
@@ -37,6 +38,7 @@ fn route_rule_to_create_request(route: RouteRule) -> CreateRouteRequest {
         upstream_url: route.upstream_url,
         fallback_upstream_url: route.fallback_upstream_url,
         health_check_path: route.health_check_path,
+        health_check_enabled: Some(health_check_enabled),
         enabled: Some(route.enabled),
     }
 }

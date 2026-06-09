@@ -549,18 +549,22 @@ pub(super) async fn match_route(
         let settings = state.health_check_settings.read().await;
         settings.path.clone()
     };
-    let route_health_check_path =
-        effective_route_health_check_path(&route, &default_health_check_path);
     let forwarded_path = rewrite_path(&path, &route);
     let targets = {
         let health_map = state.upstream_health.lock().await;
+        let route_health_check_path =
+            effective_route_health_check_path(&route, &default_health_check_path);
         ordered_upstream_targets(&route, &route_health_check_path, &health_map)
             .into_iter()
             .map(|upstream_url| {
-                let health = health_map.get(&upstream_health_key(
-                    &upstream_url,
-                    &route_health_check_path,
-                ));
+                let health = route_health_check_enabled(&route)
+                    .then(|| {
+                        health_map.get(&upstream_health_key(
+                            &upstream_url,
+                            &route_health_check_path,
+                        ))
+                    })
+                    .flatten();
                 RouteMatchTarget {
                     upstream_url,
                     healthy: health.map(|item| item.healthy),
@@ -575,9 +579,10 @@ pub(super) async fn match_route(
         host,
         path,
         matched: true,
-        route: Some(route),
+        route: Some(route.clone()),
         forwarded_path: Some(forwarded_path),
-        health_check_path: Some(route_health_check_path),
+        health_check_path: route_health_check_enabled(&route)
+            .then(|| effective_route_health_check_path(&route, &default_health_check_path)),
         targets,
     }))
 }

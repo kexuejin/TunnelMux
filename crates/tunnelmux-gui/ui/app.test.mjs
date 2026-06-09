@@ -73,6 +73,16 @@ test('formatCurrentTunnelUrl prefers public url and falls back to provider-speci
   assert.equal(
     formatCurrentTunnelUrl({
       provider: 'cloudflared',
+      ngrok_domain: 'openai.example.com',
+      state: 'running',
+      public_base_url: null,
+    }),
+    'https://openai.example.com',
+  );
+
+  assert.equal(
+    formatCurrentTunnelUrl({
+      provider: 'cloudflared',
       state: 'running',
       public_base_url: null,
     }),
@@ -2025,7 +2035,7 @@ test('save flows reuse Start Tunnel follow-through only when saving makes starti
   const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 
   assert.match(appJs, /const statusAction = summarizeStartReadyStatusAction\(getCurrentTunnelDetails\(\)\);[\s\S]*renderStatus\(statusAction \? 'Tunnel saved\. Start Tunnel is available\.' : 'Tunnel saved\.', false, statusAction\);/);
-  assert.match(appJs, /const startAction = previousEnabledServices === 0 && nextEnabledServices > 0[\s\S]*summarizeStartReadyStatusAction\(getCurrentTunnelDetails\(\)\)[\s\S]*if \(startAction\) \{[\s\S]*renderStatus\('Service saved\. Start Tunnel to keep going\.', false, startAction\);[\s\S]*\}[\s\S]*const shareAction = summarizeShareStatusAction\([\s\S]*public_url: getCurrentTunnelDetails\(\)\?\.public_base_url \?\? '',[\s\S]*renderStatus\(summarizeRouteSaveStatus\([\s\S]*public_url: getCurrentTunnelDetails\(\)\?\.public_base_url \?\? '',[\s\S]*\), false, shareAction\);/);
+  assert.match(appJs, /const startAction = previousEnabledServices === 0 && nextEnabledServices > 0[\s\S]*summarizeStartReadyStatusAction\(getCurrentTunnelDetails\(\)\)[\s\S]*if \(startAction\) \{[\s\S]*renderStatus\('Service saved\. Start Tunnel to keep going\.', false, startAction\);[\s\S]*\}[\s\S]*const shareAction = summarizeShareStatusAction\([\s\S]*public_url: resolveCurrentTunnelShareableUrl\(\),[\s\S]*renderStatus\(summarizeRouteSaveStatus\([\s\S]*public_url: resolveCurrentTunnelShareableUrl\(\),[\s\S]*\), false, shareAction\);/);
 });
 
 

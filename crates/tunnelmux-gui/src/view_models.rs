@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tunnelmux_core::{
-    CreateRouteRequest, DiagnosticsResponse, RouteRule, TunnelLogsResponse, TunnelState,
-    UpstreamHealthEntry,
+    CreateRouteRequest, DISABLED_HEALTH_CHECK_SENTINEL, DiagnosticsResponse, RouteRule,
+    TunnelLogsResponse, TunnelState, UpstreamHealthEntry, route_health_check_enabled,
 };
 use url::Url;
 
@@ -15,6 +15,7 @@ pub struct RouteViewModel {
     pub upstream_url: String,
     pub fallback_upstream_url: Option<String>,
     pub health_check_path: Option<String>,
+    pub health_check_enabled: bool,
     pub enabled: bool,
     pub display_match: String,
 }
@@ -23,6 +24,7 @@ impl From<RouteRule> for RouteViewModel {
     fn from(route: RouteRule) -> Self {
         let host = route.match_host.as_deref().unwrap_or("*");
         let path = route.match_path_prefix.as_deref().unwrap_or("/");
+        let health_check_enabled = route_health_check_enabled(&route);
         Self {
             display_match: format!("{host}{path}"),
             tunnel_id: route.tunnel_id,
@@ -32,7 +34,10 @@ impl From<RouteRule> for RouteViewModel {
             strip_path_prefix: route.strip_path_prefix,
             upstream_url: route.upstream_url,
             fallback_upstream_url: route.fallback_upstream_url,
-            health_check_path: route.health_check_path,
+            health_check_path: route
+                .health_check_path
+                .filter(|path| path != DISABLED_HEALTH_CHECK_SENTINEL),
+            health_check_enabled,
             enabled: route.enabled,
         }
     }
@@ -222,6 +227,7 @@ pub struct RouteFormData {
     pub upstream_url: String,
     pub fallback_upstream_url: String,
     pub health_check_path: String,
+    pub health_check_enabled: bool,
     pub enabled: bool,
 }
 
@@ -236,6 +242,7 @@ impl Default for RouteFormData {
             upstream_url: String::new(),
             fallback_upstream_url: String::new(),
             health_check_path: String::new(),
+            health_check_enabled: true,
             enabled: true,
         }
     }
@@ -252,6 +259,7 @@ impl RouteFormData {
             upstream_url: self.upstream_url.trim().to_string(),
             fallback_upstream_url: empty_to_none(&self.fallback_upstream_url),
             health_check_path: empty_to_none(&self.health_check_path),
+            health_check_enabled: Some(self.health_check_enabled),
             enabled: Some(self.enabled),
         }
     }
@@ -356,6 +364,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3000".to_string(),
                 fallback_upstream_url: None,
                 health_check_path: None,
+                health_check_enabled: Some(true),
                 enabled: Some(true),
             }
         );
@@ -371,6 +380,20 @@ mod tests {
         .into_create_request("primary");
 
         assert_eq!(request.id, "docs");
+    }
+
+    #[test]
+    fn route_form_data_uses_explicit_disabled_health_check_flag_when_health_checks_off() {
+        let request = RouteFormData {
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            health_check_path: "/healthz".to_string(),
+            health_check_enabled: false,
+            ..RouteFormData::default()
+        }
+        .into_create_request("primary");
+
+        assert_eq!(request.health_check_path.as_deref(), Some("/healthz"));
+        assert_eq!(request.health_check_enabled, Some(false));
     }
 
     #[test]

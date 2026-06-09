@@ -30,6 +30,12 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      - name: Stage GUI daemon sidecar
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-gnu -p tunnelmuxd
+          bash scripts/stage-gui-daemon-binary.sh crates/tunnelmux-gui x86_64-unknown-linux-gnu
+
       - name: Format check
         run: cargo fmt --all --check
 

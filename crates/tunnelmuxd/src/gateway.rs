@@ -1,4 +1,5 @@
 use super::*;
+use tokio_stream::StreamExt;
 
 pub(super) async fn proxy_request_for_tunnel(
     State(gateway_state): State<Arc<TunnelGatewayState>>,
@@ -364,16 +365,17 @@ pub(super) async fn build_http_proxy_response(
 ) -> Result<Response, ApiError> {
     let status = upstream_response.status();
     let upstream_headers = upstream_response.headers().clone();
-    let upstream_body = upstream_response.bytes().await.map_err(|err| {
-        ApiError::internal(format!("failed reading upstream response body: {err}"))
-    })?;
+    let upstream_body = upstream_response.bytes_stream().map(|chunk| {
+        chunk
+            .map_err(|err| std::io::Error::other(format!("upstream response stream failed: {err}")))
+    });
 
     let mut response_builder = Response::builder().status(status);
     if let Some(headers_map) = response_builder.headers_mut() {
         copy_headers_from_upstream(headers_map, &upstream_headers);
     }
     response_builder
-        .body(Body::from(upstream_body))
+        .body(Body::from_stream(upstream_body))
         .map_err(|err| ApiError::internal(format!("failed to build proxy response: {err}")))
 }
 
@@ -440,16 +442,6 @@ pub(super) fn should_failover_status(status: StatusCode) -> bool {
     status.is_server_error()
 }
 
-pub(super) fn effective_route_health_check_path(
-    route: &RouteRule,
-    default_health_check_path: &str,
-) -> String {
-    route
-        .health_check_path
-        .clone()
-        .unwrap_or_else(|| default_health_check_path.to_string())
-}
-
 pub(super) fn upstream_health_key(
     upstream_url: &str,
     health_check_path: &str,
@@ -476,6 +468,10 @@ pub(super) fn ordered_upstream_targets(
         return vec![primary];
     };
 
+    if !route_health_check_enabled(route) {
+        return vec![primary, fallback];
+    }
+
     let primary_health = health_map
         .get(&upstream_health_key(&primary, route_health_check_path))
         .map(|item| item.healthy);
@@ -496,6 +492,9 @@ pub(super) fn collect_upstream_health_entries(
 ) -> Vec<UpstreamHealthEntry> {
     let mut upstreams = HashSet::new();
     for route in routes {
+        if !route_health_check_enabled(route) {
+            continue;
+        }
         let route_health_check_path =
             effective_route_health_check_path(route, default_health_check_path);
         upstreams.insert(upstream_health_key(

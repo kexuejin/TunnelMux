@@ -27,10 +27,11 @@ export function formatHomeProviderHint(tunnel) {
   const gatewayTarget = tunnel?.gateway_target_url ?? DEFAULT_GUI_GATEWAY_TARGET_URL;
   const restartLabel = tunnel?.auto_restart ? 'enabled' : 'disabled';
   const cloudflaredMode = tunnel?.cloudflared_tunnel_token ? 'named tunnel' : 'quick tunnel';
+  const cloudflaredHostname = String(tunnel?.ngrok_domain ?? '').trim();
   const installedByTunnelMux = tunnel?.provider_availability?.source === 'local_tools';
 
   if (provider === 'cloudflared') {
-    return `${provider}${installedByTunnelMux ? ' (installed for TunnelMux)' : ''} ${cloudflaredMode} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
+    return `${provider}${installedByTunnelMux ? ' (installed for TunnelMux)' : ''} ${cloudflaredMode} targets ${gatewayTarget}${cloudflaredHostname ? ` • hostname ${cloudflaredHostname}` : ''} • auto restart ${restartLabel}.`;
   }
 
   return `${provider}${installedByTunnelMux ? ' (installed for TunnelMux)' : ''} targets ${gatewayTarget} • auto restart ${restartLabel}.`;
@@ -47,6 +48,10 @@ export function formatCurrentTunnelUrl(tunnel) {
   const publicBaseUrl = tunnel?.public_base_url ?? '';
   if (publicBaseUrl) {
     return publicBaseUrl;
+  }
+  const cloudflaredHostname = String(tunnel?.ngrok_domain ?? '').trim();
+  if (tunnel?.provider === 'cloudflared' && cloudflaredHostname) {
+    return `https://${cloudflaredHostname}`;
   }
   if (tunnel?.provider === 'cloudflared' && tunnel?.state === 'running') {
     return 'Managed in Cloudflare';

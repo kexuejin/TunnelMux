@@ -212,6 +212,7 @@ function bindElements() {
   elements.routeEnabled = document.getElementById('route-enabled');
   elements.routeMatchHost = document.getElementById('route-match-host');
   elements.routeHealthCheckPath = document.getElementById('route-health-check-path');
+  elements.routeHealthCheckEnabled = document.getElementById('route-health-check-enabled');
   elements.routeFallbackUpstreamUrl = document.getElementById('route-fallback-upstream-url');
   elements.serviceAdvanced = document.getElementById('service-advanced');
   elements.serviceExposureMode = document.getElementById('service-exposure-mode');
@@ -234,6 +235,7 @@ function bindElements() {
   elements.tunnelAutoRestart = document.getElementById('tunnel-auto-restart');
   elements.tunnelCloudflaredFields = document.getElementById('tunnel-cloudflared-fields');
   elements.tunnelCloudflaredTunnelToken = document.getElementById('tunnel-cloudflared-tunnel-token');
+  elements.tunnelCloudflaredPublicHostname = document.getElementById('tunnel-cloudflared-public-hostname');
   elements.tunnelNgrokFields = document.getElementById('tunnel-ngrok-fields');
   elements.tunnelNgrokAuthtoken = document.getElementById('tunnel-ngrok-authtoken');
   elements.tunnelNgrokDomain = document.getElementById('tunnel-ngrok-domain');
@@ -653,6 +655,22 @@ function getCurrentTunnelDetails(currentTunnel = getCurrentWorkspaceTunnel()) {
   );
 }
 
+function resolveCurrentTunnelShareableUrl(tunnel = getCurrentTunnelDetails()) {
+  const publicBaseUrl = String(tunnel?.public_base_url ?? '').trim();
+  if (publicBaseUrl) {
+    return publicBaseUrl;
+  }
+
+  if (tunnel?.provider === 'cloudflared' && tunnel?.cloudflared_tunnel_token) {
+    const hostname = String(tunnel?.ngrok_domain ?? '').trim();
+    if (hostname) {
+      return `https://${hostname}`;
+    }
+  }
+
+  return '';
+}
+
 function providerMissingFromMessage(message, fallbackProvider = null) {
   const lower = String(message ?? '').toLowerCase();
   if (!lower) {
@@ -844,6 +862,7 @@ function populateTunnelFields(tunnel, recoveryTarget = null) {
   elements.tunnelGatewayTargetUrl.value = tunnel?.gateway_target_url ?? 'http://127.0.0.1:48080';
   elements.tunnelAutoRestart.checked = Boolean(tunnel?.auto_restart ?? true);
   elements.tunnelCloudflaredTunnelToken.value = tunnel?.cloudflared_tunnel_token ?? '';
+  elements.tunnelCloudflaredPublicHostname.value = tunnel?.provider === 'cloudflared' ? (tunnel?.ngrok_domain ?? '') : '';
   elements.tunnelNgrokAuthtoken.value = tunnel?.ngrok_authtoken ?? '';
   elements.tunnelNgrokDomain.value = tunnel?.ngrok_domain ?? '';
   elements.tunnelAdvanced.open = shouldOpenTunnelAdvanced(tunnel, recoveryTarget);
@@ -1083,7 +1102,9 @@ function collectTunnelProfile() {
     auto_restart: elements.tunnelAutoRestart.checked ?? defaults.auto_restart,
     cloudflared_tunnel_token: elements.tunnelCloudflaredTunnelToken.value || null,
     ngrok_authtoken: elements.tunnelNgrokAuthtoken.value || null,
-    ngrok_domain: elements.tunnelNgrokDomain.value || null,
+    ngrok_domain: (elements.tunnelProvider.value || defaults.provider) === 'cloudflared'
+      ? (elements.tunnelCloudflaredPublicHostname.value.trim() || null)
+      : (elements.tunnelNgrokDomain.value.trim() || null),
   };
 }
 
@@ -1354,7 +1375,7 @@ async function startTunnel() {
     await refreshTunnelWorkspace();
     const currentTunnelDetails = getCurrentTunnelDetails();
     const statusAction = summarizeStartSuccessAction({
-      public_url: currentTunnelDetails?.public_base_url ?? snapshot?.tunnel?.public_base_url ?? '',
+      public_url: resolveCurrentTunnelShareableUrl(currentTunnelDetails),
       enabled_services: currentTunnelDetails?.enabled_route_count ?? snapshot?.tunnel?.enabled_route_count ?? state.routeCache.filter((route) => route.enabled).length,
       route_count: currentTunnelDetails?.route_count ?? snapshot?.tunnel?.route_count ?? state.routeCache.length,
       named_cloudflared: Boolean(currentTunnelDetails?.cloudflared_tunnel_token),
@@ -1442,6 +1463,7 @@ async function saveRoute() {
         upstream_url: elements.routeUpstreamUrl.value,
         fallback_upstream_url: elements.routeFallbackUpstreamUrl.value,
         health_check_path: elements.routeHealthCheckPath.value,
+        health_check_enabled: elements.routeHealthCheckEnabled.checked,
         enabled: elements.routeEnabled.checked,
       },
     });
@@ -1460,12 +1482,12 @@ async function saveRoute() {
       return;
     }
     const shareAction = summarizeShareStatusAction({
-      public_url: getCurrentTunnelDetails()?.public_base_url ?? '',
+      public_url: resolveCurrentTunnelShareableUrl(),
       enabled_services: nextEnabledServices,
     });
     renderStatus(summarizeRouteSaveStatus({
       tunnel_state: state.dashboardTunnelState,
-      public_url: getCurrentTunnelDetails()?.public_base_url ?? '',
+      public_url: resolveCurrentTunnelShareableUrl(),
       previous_enabled_services: previousEnabledServices,
       next_enabled_services: nextEnabledServices,
       message: snapshot?.message,
@@ -1534,6 +1556,7 @@ async function toggleRouteEnabled(id) {
         upstream_url: route.upstream_url,
         fallback_upstream_url: route.fallback_upstream_url ?? '',
         health_check_path: route.health_check_path ?? '',
+        health_check_enabled: route.health_check_enabled ?? true,
         enabled: !route.enabled,
       },
     });
@@ -1547,16 +1570,17 @@ async function toggleRouteEnabled(id) {
 
 function renderDashboard(snapshot) {
   const tunnel = snapshot?.tunnel ?? null;
+  const currentTunnelDetails = getCurrentTunnelDetails();
   const connected = Boolean(snapshot?.connected);
-  const publicUrl = tunnel?.public_base_url ?? '';
+  const publicUrl = resolveCurrentTunnelShareableUrl(currentTunnelDetails);
   const tunnelState = tunnel?.state ?? (connected ? 'idle' : 'offline');
   const routeCount = Number(tunnel?.route_count ?? state.routeCache.length);
   const enabledServices = Number(tunnel?.enabled_route_count ?? state.routeCache.filter((route) => route.enabled).length);
   state.dashboardConnected = connected;
   state.dashboardTunnelState = tunnelState;
   const namedCloudflared =
-    tunnel?.provider === 'cloudflared' &&
-    Boolean(snapshot?.settings?.cloudflared_tunnel_token);
+    currentTunnelDetails?.provider === 'cloudflared' &&
+    Boolean(currentTunnelDetails?.cloudflared_tunnel_token);
   const guidance = summarizeDashboardGuidance({
     connected,
     public_url: publicUrl,
@@ -1963,9 +1987,15 @@ function populateRouteForm(route) {
   elements.routeUpstreamUrl.value = route.upstream_url ?? '';
   elements.routeFallbackUpstreamUrl.value = route.fallback_upstream_url ?? '';
   elements.routeHealthCheckPath.value = route.health_check_path ?? '';
+  elements.routeHealthCheckEnabled.checked = Boolean(route.health_check_enabled ?? true);
   elements.routeEnabled.checked = Boolean(route.enabled);
   elements.serviceExposureMode.value = route.match_host ? 'subdomain' : 'path';
-  elements.serviceAdvanced.open = Boolean(route.match_host || route.fallback_upstream_url || route.health_check_path);
+  elements.serviceAdvanced.open = Boolean(
+    route.match_host
+      || route.fallback_upstream_url
+      || route.health_check_path
+      || route.health_check_enabled === false
+  );
   applyExposureMode();
   elements.saveRoute.textContent = 'Update Service';
 }
@@ -1983,6 +2013,7 @@ function resetRouteForm() {
   elements.routeUpstreamUrl.value = '';
   elements.routeFallbackUpstreamUrl.value = '';
   elements.routeHealthCheckPath.value = '';
+  elements.routeHealthCheckEnabled.checked = true;
   elements.routeEnabled.checked = true;
   elements.serviceExposureMode.value = 'path';
   elements.serviceAdvanced.open = false;

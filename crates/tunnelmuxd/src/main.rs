@@ -49,12 +49,13 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
-    DEFAULT_GATEWAY_TARGET_URL, DashboardResponse, DeleteRouteResponse, DiagnosticsResponse,
-    ErrorResponse, HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse,
-    MetricsResponse, ReloadSettingsResponse, RouteMatchResponse, RouteMatchTarget, RouteRule,
-    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState,
-    TunnelStatus, TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
-    UpstreamsHealthResponse,
+    DEFAULT_GATEWAY_TARGET_URL, DISABLED_HEALTH_CHECK_SENTINEL, DashboardResponse,
+    DeleteRouteResponse, DiagnosticsResponse, ErrorResponse, HealthCheckSettings,
+    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
+    RouteMatchResponse, RouteMatchTarget, RouteRule, RoutesResponse, TunnelLogsResponse,
+    TunnelProvider, TunnelStartRequest, TunnelState, TunnelStatus, TunnelStatusResponse,
+    UpdateHealthCheckSettingsRequest, UpstreamHealthEntry, UpstreamsHealthResponse,
+    effective_route_health_check_path, route_health_check_enabled,
 };
 use url::Url;
 
@@ -635,10 +636,15 @@ fn normalize_route_request(request: CreateRouteRequest) -> Result<RouteRule, Api
     let match_path_prefix = normalize_optional(request.match_path_prefix);
     let strip_path_prefix = normalize_optional(request.strip_path_prefix);
     let fallback_upstream_url = normalize_optional(request.fallback_upstream_url);
-    let health_check_path = normalize_optional(request.health_check_path)
-        .map(|value| normalize_health_check_path(&value))
-        .transpose()
-        .map_err(|err| ApiError::bad_request(format!("invalid health_check_path: {err}")))?;
+    let health_check_enabled = request.health_check_enabled.unwrap_or(true);
+    let health_check_path = if health_check_enabled {
+        normalize_optional(request.health_check_path)
+            .map(|value| normalize_health_check_path(&value))
+            .transpose()
+            .map_err(|err| ApiError::bad_request(format!("invalid health_check_path: {err}")))?
+    } else {
+        Some(DISABLED_HEALTH_CHECK_SENTINEL.to_string())
+    };
 
     if match_host.is_none() && match_path_prefix.is_none() {
         return Err(ApiError::bad_request(
@@ -1024,9 +1030,11 @@ fn tunnel_is_configured(status: &TunnelStatus) -> bool {
 mod tests {
     use super::*;
     use axum::Router;
+    use axum::body::Bytes;
     use axum::http::HeaderMap;
     use axum::http::Method;
     use axum::http::header::CONNECTION;
+    use axum::http::header::CONTENT_TYPE;
     use axum::http::header::UPGRADE;
     use futures_util::{SinkExt, StreamExt};
     use reqwest::Client as ReqwestClient;
@@ -1226,6 +1234,32 @@ mod tests {
             .await
             .expect("bind upstream listener");
         let addr = listener.local_addr().expect("upstream addr");
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{}", addr), task)
+    }
+
+    async fn spawn_streaming_upstream_server() -> (String, tokio::task::JoinHandle<()>) {
+        let app = Router::new().fallback(get(|| async {
+            let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(4);
+            tokio::spawn(async move {
+                let _ = sender
+                    .send(Ok(Bytes::from_static(b"event: upstream.ready\n\n")))
+                    .await;
+                sleep(Duration::from_secs(60)).await;
+            });
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(ReceiverStream::new(receiver)))
+                .expect("streaming response should build")
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind streaming upstream listener");
+        let addr = listener.local_addr().expect("streaming upstream addr");
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
@@ -1528,6 +1562,49 @@ mod tests {
         secondary_gateway_task.abort();
         primary_upstream_task.abort();
         secondary_upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn gateway_forwards_streaming_upstream_before_body_completes() {
+        let (upstream_base_url, upstream_task) = spawn_streaming_upstream_server().await;
+        let state = test_state_with_routes(
+            vec![RouteRule {
+                tunnel_id: "primary".to_string(),
+                id: "streaming".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/stream".to_string()),
+                strip_path_prefix: None,
+                upstream_url: upstream_base_url,
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+            }],
+            None,
+        );
+        let (gateway_base_url, gateway_task) =
+            spawn_gateway_test_server_for_tunnel(state, "primary").await;
+
+        let client = ReqwestClient::new();
+        let response = client
+            .get(format!("{gateway_base_url}/stream"))
+            .send()
+            .await
+            .expect("gateway request should receive response headers");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut body = response.bytes_stream();
+        let first_chunk = timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("gateway should forward first streaming chunk before upstream completes")
+            .expect("stream should yield a chunk")
+            .expect("stream chunk should be valid");
+        assert_eq!(
+            first_chunk,
+            Bytes::from_static(b"event: upstream.ready\n\n")
+        );
+
+        gateway_task.abort();
+        upstream_task.abort();
     }
 
     #[tokio::test]
@@ -1853,6 +1930,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3010".to_string(),
                 fallback_upstream_url: Some("http://127.0.0.1:3011".to_string()),
                 health_check_path: Some("/healthz".to_string()),
+                health_check_enabled: None,
                 enabled: Some(false),
             })
             .send()
@@ -1911,6 +1989,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3000".to_string(),
                 fallback_upstream_url: None,
                 health_check_path: None,
+                health_check_enabled: None,
                 enabled: Some(true),
             })
             .send()
@@ -1938,6 +2017,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3000".to_string(),
                 fallback_upstream_url: None,
                 health_check_path: None,
+                health_check_enabled: None,
                 enabled: Some(true),
             })
             .send()
@@ -1965,6 +2045,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3000".to_string(),
                 fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
                 health_check_path: Some("/healthz".to_string()),
+                health_check_enabled: None,
                 enabled: Some(true),
             })
             .send()
@@ -2019,6 +2100,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:4000".to_string(),
                 fallback_upstream_url: None,
                 health_check_path: None,
+                health_check_enabled: None,
                 enabled: Some(true),
             })
             .send()
@@ -2257,6 +2339,7 @@ mod tests {
                     upstream_url: "http://127.0.0.1:3001".to_string(),
                     fallback_upstream_url: None,
                     health_check_path: None,
+                    health_check_enabled: None,
                     enabled: Some(true),
                 }],
                 replace: Some(true),
@@ -2331,6 +2414,7 @@ mod tests {
                         upstream_url: "http://127.0.0.1:3011".to_string(),
                         fallback_upstream_url: None,
                         health_check_path: None,
+                        health_check_enabled: None,
                         enabled: Some(false),
                     },
                     CreateRouteRequest {
@@ -2342,6 +2426,7 @@ mod tests {
                         upstream_url: "http://127.0.0.1:3002".to_string(),
                         fallback_upstream_url: None,
                         health_check_path: Some("/ready".to_string()),
+                        health_check_enabled: None,
                         enabled: Some(true),
                     },
                 ],
@@ -2448,6 +2533,7 @@ mod tests {
                     upstream_url: "http://127.0.0.1:3000".to_string(),
                     fallback_upstream_url: None,
                     health_check_path: None,
+                    health_check_enabled: None,
                     enabled: Some(true),
                 }],
                 replace: Some(false),
@@ -4222,6 +4308,58 @@ mod tests {
     }
 
     #[test]
+    fn collect_upstream_health_entries_skips_disabled_health_checks() {
+        let routes = vec![RouteRule {
+            tunnel_id: "primary".to_string(),
+            id: "svc-a".to_string(),
+            match_host: None,
+            match_path_prefix: Some("/a".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: None,
+            health_check_path: Some(DISABLED_HEALTH_CHECK_SENTINEL.to_string()),
+            enabled: true,
+        }];
+
+        let entries = collect_upstream_health_entries(&routes, "/", &HashMap::new());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn ordered_upstream_targets_does_not_fail_over_when_health_checks_disabled() {
+        let route = RouteRule {
+            tunnel_id: "primary".to_string(),
+            id: "svc-a".to_string(),
+            match_host: None,
+            match_path_prefix: Some("/a".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
+            health_check_path: Some(DISABLED_HEALTH_CHECK_SENTINEL.to_string()),
+            enabled: true,
+        };
+        let health = HashMap::from([
+            (
+                upstream_health_key("http://127.0.0.1:3000", "/"),
+                test_health(false),
+            ),
+            (
+                upstream_health_key("http://127.0.0.1:3001", "/"),
+                test_health(true),
+            ),
+        ]);
+
+        let targets = ordered_upstream_targets(&route, "/", &health);
+        assert_eq!(
+            targets,
+            vec![
+                "http://127.0.0.1:3000".to_string(),
+                "http://127.0.0.1:3001".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn normalize_route_request_accepts_fallback_upstream_url() {
         let route = normalize_route_request(CreateRouteRequest {
             tunnel_id: "primary".to_string(),
@@ -4232,6 +4370,7 @@ mod tests {
             upstream_url: "http://127.0.0.1:3000".to_string(),
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: None,
+            health_check_enabled: None,
             enabled: Some(true),
         })
         .expect("route should be accepted");
@@ -4252,6 +4391,7 @@ mod tests {
             upstream_url: "http://127.0.0.1:3000".to_string(),
             fallback_upstream_url: Some("tcp://127.0.0.1:3001".to_string()),
             health_check_path: None,
+            health_check_enabled: None,
             enabled: Some(true),
         })
         .expect_err("route should be rejected");
@@ -4269,10 +4409,34 @@ mod tests {
             upstream_url: "http://127.0.0.1:3000".to_string(),
             fallback_upstream_url: None,
             health_check_path: Some("healthz".to_string()),
+            health_check_enabled: None,
             enabled: Some(true),
         })
         .expect("route should be accepted");
         assert_eq!(route.health_check_path.as_deref(), Some("/healthz"));
+    }
+
+    #[test]
+    fn normalize_route_request_maps_disabled_health_check_flag_to_compatibility_sentinel() {
+        let route = normalize_route_request(CreateRouteRequest {
+            tunnel_id: "primary".to_string(),
+            id: "service-a".to_string(),
+            match_host: Some("demo.local".to_string()),
+            match_path_prefix: Some("/".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: None,
+            health_check_path: Some("/healthz".to_string()),
+            health_check_enabled: Some(false),
+            enabled: Some(true),
+        })
+        .expect("route should be accepted");
+
+        assert_eq!(
+            route.health_check_path.as_deref(),
+            Some(DISABLED_HEALTH_CHECK_SENTINEL)
+        );
+        assert!(!route_health_check_enabled(&route));
     }
 
     #[test]
@@ -4286,6 +4450,7 @@ mod tests {
             upstream_url: "http://127.0.0.1:3000".to_string(),
             fallback_upstream_url: None,
             health_check_path: Some("/healthz?bad=1".to_string()),
+            health_check_enabled: None,
             enabled: Some(true),
         })
         .expect_err("route should be rejected");

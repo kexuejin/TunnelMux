@@ -5,6 +5,9 @@
 # Rust
 **/*.rs.bk
 
+# Local bundled binaries
+/crates/tunnelmux-gui/bin/
+
 # Local environment
 .env
 .env.*

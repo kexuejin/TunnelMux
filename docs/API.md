@@ -117,9 +117,12 @@ curl -N -H "Authorization: Bearer dev-token" \
   "upstream_url": "http://127.0.0.1:3000",
   "fallback_upstream_url": "http://127.0.0.1:3001",
   "health_check_path": "/healthz",
+  "health_check_enabled": true,
   "enabled": true
 }
 ```
+
+`health_check_enabled` is optional and defaults to `true`. Set it to `false` to keep the route enabled while excluding its upstreams from active health probing and health-based fallback ordering.
 
 `GET /v1/routes` example:
 

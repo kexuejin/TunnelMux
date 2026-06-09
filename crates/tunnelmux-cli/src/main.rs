@@ -14,7 +14,7 @@ use tunnelmux_core::{
     ErrorResponse, HealthCheckSettingsResponse, HealthResponse, MetricsResponse,
     ReloadSettingsResponse, RouteMatchResponse, RoutesResponse, TunnelLogsResponse, TunnelProvider,
     TunnelStartRequest, TunnelState, TunnelStatusResponse, UpdateHealthCheckSettingsRequest,
-    UpstreamsHealthResponse,
+    UpstreamsHealthResponse, route_health_check_enabled,
 };
 
 mod client;
@@ -915,6 +915,7 @@ fn ensure_unique_route_ids(routes: &[CreateRouteRequest]) -> anyhow::Result<()> 
 }
 
 fn route_rule_to_create_request(route: &tunnelmux_core::RouteRule) -> CreateRouteRequest {
+    let health_check_enabled = route_health_check_enabled(route);
     CreateRouteRequest {
         tunnel_id: route.tunnel_id.clone(),
         id: route.id.clone(),
@@ -923,7 +924,10 @@ fn route_rule_to_create_request(route: &tunnelmux_core::RouteRule) -> CreateRout
         strip_path_prefix: route.strip_path_prefix.clone(),
         upstream_url: route.upstream_url.clone(),
         fallback_upstream_url: route.fallback_upstream_url.clone(),
-        health_check_path: route.health_check_path.clone(),
+        health_check_path: health_check_enabled
+            .then(|| route.health_check_path.clone())
+            .flatten(),
+        health_check_enabled: Some(health_check_enabled),
         enabled: Some(route.enabled),
     }
 }
@@ -1558,7 +1562,27 @@ mod tests {
         assert_eq!(payload.upstream_url, route.upstream_url);
         assert_eq!(payload.fallback_upstream_url, route.fallback_upstream_url);
         assert_eq!(payload.health_check_path, route.health_check_path);
+        assert_eq!(payload.health_check_enabled, Some(true));
         assert_eq!(payload.enabled, Some(false));
+    }
+
+    #[test]
+    fn route_rule_to_create_request_exports_disabled_health_check_without_sentinel_path() {
+        let route = tunnelmux_core::RouteRule {
+            tunnel_id: "primary".to_string(),
+            id: "svc-a".to_string(),
+            match_host: Some("demo.local".to_string()),
+            match_path_prefix: Some("/".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: None,
+            health_check_path: Some(tunnelmux_core::DISABLED_HEALTH_CHECK_SENTINEL.to_string()),
+            enabled: true,
+        };
+
+        let payload = route_rule_to_create_request(&route);
+        assert_eq!(payload.health_check_path, None);
+        assert_eq!(payload.health_check_enabled, Some(false));
     }
 
     #[test]
@@ -1588,6 +1612,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3000".to_string(),
                 fallback_upstream_url: None,
                 health_check_path: None,
+                health_check_enabled: None,
                 enabled: Some(true),
             },
             CreateRouteRequest {
@@ -1599,6 +1624,7 @@ mod tests {
                 upstream_url: "http://127.0.0.1:3001".to_string(),
                 fallback_upstream_url: None,
                 health_check_path: None,
+                health_check_enabled: None,
                 enabled: Some(true),
             },
         ];
@@ -1915,6 +1941,7 @@ mod tests {
             upstream_url: "http://127.0.0.1:3000".to_string(),
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: Some("/healthz".to_string()),
+            health_check_enabled: Some(true),
             enabled: Some(true),
         };
 

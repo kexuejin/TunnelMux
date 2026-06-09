@@ -3,10 +3,7 @@ use crate::provider_installer::ProviderInstallStatus;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{
-        atomic::AtomicBool,
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
 #[derive(Debug, Clone)]

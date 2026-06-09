@@ -346,11 +346,23 @@ select {
   color: inherit;
 }
 
+input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
 .checkbox-row {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 16px;
+  flex-wrap: nowrap;
+}
+
+.checkbox-row span {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .actions {
