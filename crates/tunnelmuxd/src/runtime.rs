@@ -659,6 +659,11 @@ fn build_provider_command(
     let mut command = match request.provider {
         TunnelProvider::Cloudflared => {
             let mut cmd = Command::new(provider_binary.as_ref());
+            if let Some(protocol) = cloudflared_protocol_for_request(request) {
+                cmd.args(["tunnel", "--protocol", protocol]);
+            } else {
+                cmd.arg("tunnel");
+            }
             if let Some(token) = request
                 .metadata
                 .as_ref()
@@ -667,7 +672,6 @@ fn build_provider_command(
                 .filter(|item| !item.is_empty())
             {
                 cmd.args([
-                    "tunnel",
                     "--no-autoupdate",
                     "run",
                     "--token",
@@ -677,7 +681,6 @@ fn build_provider_command(
                 ]);
             } else {
                 cmd.args([
-                    "tunnel",
                     "--no-autoupdate",
                     "--url",
                     request.target_url.as_str(),
@@ -727,6 +730,19 @@ fn build_provider_command(
         .kill_on_drop(true);
 
     Ok(command)
+}
+
+fn cloudflared_protocol_for_request(request: &TunnelStartRequest) -> Option<&'static str> {
+    request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("cloudflaredProtocol"))
+        .map(|item| item.trim().to_ascii_lowercase())
+        .and_then(|protocol| match protocol.as_str() {
+            "http2" => Some("http2"),
+            "quic" => Some("quic"),
+            _ => None,
+        })
 }
 
 fn provider_binary_for_request<'a>(
@@ -1133,6 +1149,88 @@ mod runtime_tests {
                 "run",
                 "--token",
                 "cf-token",
+                "--url",
+                "http://127.0.0.1:48080",
+            ]
+        );
+    }
+
+    #[test]
+    fn cloudflared_command_accepts_valid_protocol_metadata() {
+        let request = TunnelStartRequest {
+            tunnel_id: "primary".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: Some(true),
+            metadata: Some(HashMap::from([
+                (
+                    "cloudflaredTunnelToken".to_string(),
+                    "cf-token".to_string(),
+                ),
+                ("cloudflaredProtocol".to_string(), "http2".to_string()),
+            ])),
+        };
+
+        let command = build_provider_command(
+            "/opt/homebrew/bin/cloudflared",
+            "/opt/homebrew/bin/ngrok",
+            &request,
+        )
+        .expect("command should build");
+
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            vec![
+                "tunnel",
+                "--protocol",
+                "http2",
+                "--no-autoupdate",
+                "run",
+                "--token",
+                "cf-token",
+                "--url",
+                "http://127.0.0.1:48080",
+            ]
+        );
+    }
+
+    #[test]
+    fn cloudflared_command_ignores_invalid_protocol_metadata() {
+        let request = TunnelStartRequest {
+            tunnel_id: "primary".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: Some(true),
+            metadata: Some(HashMap::from([(
+                "cloudflaredProtocol".to_string(),
+                "ftp".to_string(),
+            )])),
+        };
+
+        let command = build_provider_command(
+            "/opt/homebrew/bin/cloudflared",
+            "/opt/homebrew/bin/ngrok",
+            &request,
+        )
+        .expect("command should build");
+
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            vec![
+                "tunnel",
+                "--no-autoupdate",
                 "--url",
                 "http://127.0.0.1:48080",
             ]

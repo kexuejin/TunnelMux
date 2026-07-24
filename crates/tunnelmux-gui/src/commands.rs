@@ -1761,6 +1761,7 @@ fn build_tunnel_metadata(
 
     match provider {
         TunnelProvider::Cloudflared => {
+            metadata.insert("cloudflaredProtocol".to_string(), "http2".to_string());
             if let Some(value) =
                 tunnel.and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_deref())
             {
@@ -2666,6 +2667,25 @@ mod tests {
         assert_eq!(
             metadata.get("providerBinaryPath").map(String::as_str),
             Some("/opt/homebrew/bin/cloudflared")
+        );
+    }
+
+    #[test]
+    fn build_tunnel_metadata_defaults_cloudflared_to_http2_protocol() {
+        let settings = GuiSettings::default();
+        let availability = ProviderAvailabilityProbe::from_install_flags(true, false).cloudflared;
+
+        let metadata = build_tunnel_metadata(
+            settings.current_tunnel(),
+            &TunnelProvider::Cloudflared,
+            &availability,
+            false,
+        )
+        .expect("metadata should be built");
+
+        assert_eq!(
+            metadata.get("cloudflaredProtocol").map(String::as_str),
+            Some("http2")
         );
     }
 
