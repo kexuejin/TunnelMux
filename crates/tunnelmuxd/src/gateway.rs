@@ -787,7 +787,9 @@ pub(super) fn is_hop_by_hop_header(name: &HeaderName) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::rewrite_root_paths;
+    use http_body_util::BodyExt;
+
+    use super::{build_http_proxy_response, rewrite_root_paths};
 
     #[test]
     fn rewrite_prefixes_html_refs_and_manifest_urls() {
@@ -833,5 +835,58 @@ mod tests {
     fn rewrite_is_a_noop_for_plain_text() {
         let body = "the /api path and /assets path are words here";
         assert_eq!(rewrite_root_paths(body, "/deepseek"), body);
+    }
+
+    #[tokio::test]
+    async fn build_http_proxy_response_rewrites_uncompressed_html_when_route_enables_it() {
+        let upstream = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(200)
+                .header("content-type", "text/html; charset=utf-8")
+                .body("<script src=\"/assets/index.js\"></script>".to_string())
+                .expect("build upstream response"),
+        );
+        let response = build_http_proxy_response(upstream, Some("/deepseek"))
+            .await
+            .expect("proxy response");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("src=\"/deepseek/assets/index.js\""), "rewritten body: {body}");
+    }
+
+    #[tokio::test]
+    async fn build_http_proxy_response_skips_rewrite_for_content_encoded_bodies() {
+        // A compressed upstream body must not be rewritten as plain text: the
+        // encoded bytes are forwarded untouched so the client can decode them.
+        let upstream = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(200)
+                .header("content-type", "text/html; charset=utf-8")
+                .header("content-encoding", "gzip")
+                .body("<script src=\"/assets/index.js\"></script>".to_string())
+                .expect("build upstream response"),
+        );
+        let response = build_http_proxy_response(upstream, Some("/deepseek"))
+            .await
+            .expect("proxy response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-encoding").and_then(|v| v.to_str().ok()),
+            Some("gzip")
+        );
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(!body.contains("/deepseek"), "encoded body must be untouched: {body}");
+        assert!(body.contains("<script src=\"/assets/index.js\"></script>"));
     }
 }
