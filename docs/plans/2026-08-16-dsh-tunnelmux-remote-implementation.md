@@ -15,8 +15,8 @@
 
 ## 阶段 2：TunnelMux 隧道适配器
 - [ ] src/tunnelmux.ts：HTTP 客户端（fetch 4765，可选 Bearer token），start/status/stop/health 封装。
-- [ ] TunnelMuxTunnelManager：stopped→starting→running→failed 状态机；轮询 status 等 public_base_url（30s 超时/1s 间隔）；意外退出退避重启（5s→60s 指数，仅运行中）；daemon 不可达 → failed 不重启；dispose 停止。
-- [ ] 依赖注入 factory/timers/pollMs；单测（假 HTTP）：start→running、URL 超时、意外退出退避、daemon 不可达、stop。
+- [ ] TunnelMuxTunnelManager：stopped→starting→running→failed 状态机；POST /v1/tunnel/start 同步返回 public_base_url（tunnel_id 固定 "dsh-remote"，auto_restart: true），null 时兜底查一次 status；**不自己重启**（daemon auto_restart 管），仅轮询 status（5s 间隔）做面板呈现；daemon 不可达 → failed 不重启；dispose 停止。
+- [ ] 依赖注入 factory/timers/pollMs；单测（假 HTTP）：start 同步返回 URL、URL 为 null 兜底、状态轮询呈现、daemon 不可达、stop。
 
 ## 阶段 3：宿主路由与围栏
 - [ ] src/routes.ts：/api/pair/issue|accept|stop|heartbeat|status|events 路由族；loopback fence + LAN/public fence；accept per-IP 限流（10 次/30s）；payload schema 校验；SSE fan-out。

@@ -37,16 +37,17 @@
 
 ## 4. TunnelMux 隧道适配器（核心差异点）
 
-替代 dsh-remote-web-ui 的 TunnelManager，纯 HTTP 驱动 4765 API，生命周期语义一致：
-`stopped → starting → running(public_base_url) → failed(退避重启)`
+替代 dsh-remote-web-ui 的 TunnelManager，纯 HTTP 驱动 4765 API。
+**重要修正（2026-08-16 对照 api.rs/runtime.rs 实现）**：`POST /v1/tunnel/start` 是**同步等待** provider 启动并提取公网 URL 的（`runtime.rs::wait_for_provider_startup`），响应直接带 `public_base_url`，插件**不需要轮询 status 等 URL**；且 daemon 自带 `auto_restart` + `pending_restarts` + `--max-auto-restarts` 自动重启，**插件绝不自己重启**（避免与 daemon 打架），只做状态呈现。
+生命周期：`stopped → starting(调用 start) → running(响应带回 public_base_url) → 观察 status`
 
 | 事件 | 调用 |
 |---|---|
-| 启动 | POST /v1/tunnel/start {provider, target_url, auto_restart} |
-| 等待公网 URL | 轮询 GET /v1/tunnel/status 至 public_base_url（超时 30s，间隔 1s） |
-| 意外退出检测 | 轮询 status：running → stopped/error 或 last_error 非空 |
-| 退避重启 | 指数 5s→60s（仅运行中意外退出） |
-| 停止/清理 | POST /v1/tunnel/stop；dispose 时确保 stop |
+| 启动 | POST /v1/tunnel/start {tunnel_id: "dsh-remote", provider, target_url, auto_restart: true}（tunnel_id 必填，插件固定用 "dsh-remote"） |
+| 拿公网 URL | 直接读 start 响应 public_base_url；为 null 时兜底查一次 GET /v1/tunnel/status |
+| 状态观察 | 轮询 GET /v1/tunnel/status（间隔 5s）：running/stopped/error + last_error，仅用于面板呈现 |
+| 重启策略 | 交给 daemon auto_restart（true）；插件不重启 |
+| 停止/清理 | POST /v1/tunnel/stop {tunnel_id: "dsh-remote"}；dispose 时确保 stop |
 
 - 每次轮询带 /v1/health，暴露 daemonOk；daemon 不可达 → failed + "daemon unreachable"，不重启。
 - 依赖注入：factory（HTTP 客户端）、timers、pollMs 可注入，可无网络单测。
