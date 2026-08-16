@@ -40,6 +40,8 @@ fn route_rule_to_create_request(route: RouteRule) -> CreateRouteRequest {
         health_check_path: route.health_check_path,
         health_check_enabled: Some(health_check_enabled),
         enabled: Some(route.enabled),
+        forward_host_header: Some(route.forward_host_header),
+        rewrite_response_paths: Some(route.rewrite_response_paths),
     }
 }
 

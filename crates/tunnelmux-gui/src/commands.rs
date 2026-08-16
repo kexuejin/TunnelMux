@@ -2887,6 +2887,8 @@ mod tests {
                 health_check_path: String::new(),
                 health_check_enabled: true,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         )
         .await
@@ -2973,6 +2975,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             tunnelmux_core::RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -2984,6 +2988,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: false,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ]));
         let base_url = spawn_routes_server(routes.clone()).await;
@@ -3691,6 +3697,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             tunnelmux_core::RouteRule {
                 tunnel_id: "tunnel-2".to_string(),
@@ -3702,6 +3710,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ]));
         let deleted_tunnels = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
@@ -3980,6 +3990,8 @@ mod tests {
             fallback_upstream_url: None,
             health_check_path: None,
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         }];
 
         let summary = derive_provider_status_summary(
@@ -4020,6 +4032,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             tunnelmux_core::RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -4031,6 +4045,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ];
 
@@ -4254,6 +4270,8 @@ mod tests {
             fallback_upstream_url: request.fallback_upstream_url,
             health_check_path: request.health_check_path,
             enabled: request.enabled.unwrap_or(true),
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
         tauri_state.0.lock().await.push(route.clone());
         Json(route)
@@ -4310,6 +4328,8 @@ mod tests {
             fallback_upstream_url: request.fallback_upstream_url,
             health_check_path: request.health_check_path,
             enabled: request.enabled.unwrap_or(true),
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
         let mut routes = tauri_state.0.lock().await;
         if let Some(existing) = routes.iter_mut().find(|item| item.id == id) {

@@ -214,6 +214,8 @@ function bindElements() {
   elements.routeHealthCheckPath = document.getElementById('route-health-check-path');
   elements.routeHealthCheckEnabled = document.getElementById('route-health-check-enabled');
   elements.routeFallbackUpstreamUrl = document.getElementById('route-fallback-upstream-url');
+  elements.routeForwardHostHeader = document.getElementById('route-forward-host-header');
+  elements.routeRewriteResponsePaths = document.getElementById('route-rewrite-response-paths');
   elements.serviceAdvanced = document.getElementById('service-advanced');
   elements.serviceExposureMode = document.getElementById('service-exposure-mode');
   elements.serviceHostField = document.getElementById('service-host-field');
@@ -1465,6 +1467,8 @@ async function saveRoute() {
         health_check_path: elements.routeHealthCheckPath.value,
         health_check_enabled: elements.routeHealthCheckEnabled.checked,
         enabled: elements.routeEnabled.checked,
+        forward_host_header: elements.routeForwardHostHeader.checked,
+        rewrite_response_paths: elements.routeRewriteResponsePaths.checked,
       },
     });
     const nextEnabledServices = Array.isArray(snapshot?.routes)
@@ -1558,6 +1562,8 @@ async function toggleRouteEnabled(id) {
         health_check_path: route.health_check_path ?? '',
         health_check_enabled: route.health_check_enabled ?? true,
         enabled: !route.enabled,
+        forward_host_header: route.forward_host_header ?? false,
+        rewrite_response_paths: route.rewrite_response_paths ?? false,
       },
     });
     renderRoutes(snapshot);
@@ -1989,12 +1995,16 @@ function populateRouteForm(route) {
   elements.routeHealthCheckPath.value = route.health_check_path ?? '';
   elements.routeHealthCheckEnabled.checked = Boolean(route.health_check_enabled ?? true);
   elements.routeEnabled.checked = Boolean(route.enabled);
+  elements.routeForwardHostHeader.checked = Boolean(route.forward_host_header ?? false);
+  elements.routeRewriteResponsePaths.checked = Boolean(route.rewrite_response_paths ?? false);
   elements.serviceExposureMode.value = route.match_host ? 'subdomain' : 'path';
   elements.serviceAdvanced.open = Boolean(
     route.match_host
       || route.fallback_upstream_url
       || route.health_check_path
       || route.health_check_enabled === false
+      || route.forward_host_header === true
+      || route.rewrite_response_paths === true
   );
   applyExposureMode();
   elements.saveRoute.textContent = 'Update Service';
@@ -2015,6 +2025,8 @@ function resetRouteForm() {
   elements.routeHealthCheckPath.value = '';
   elements.routeHealthCheckEnabled.checked = true;
   elements.routeEnabled.checked = true;
+  elements.routeForwardHostHeader.checked = false;
+  elements.routeRewriteResponsePaths.checked = false;
   elements.serviceExposureMode.value = 'path';
   elements.serviceAdvanced.open = false;
   elements.saveRoute.textContent = 'Save Service';

@@ -688,6 +688,8 @@ fn normalize_route_request(request: CreateRouteRequest) -> Result<RouteRule, Api
         fallback_upstream_url,
         health_check_path,
         enabled: request.enabled.unwrap_or(true),
+        forward_host_header: request.forward_host_header.unwrap_or(false),
+        rewrite_response_paths: request.rewrite_response_paths.unwrap_or(false),
     })
 }
 
@@ -1074,6 +1076,8 @@ mod tests {
             fallback_upstream_url: None,
             health_check_path: None,
             enabled,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         }
     }
 
@@ -1399,6 +1403,8 @@ mod tests {
                         fallback_upstream_url: None,
                         health_check_path: None,
                         enabled: true,
+                        forward_host_header: false,
+                        rewrite_response_paths: false,
                     }],
                     health_check: Some(HealthCheckSettings {
                         interval_ms: 5_000,
@@ -1508,6 +1514,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "tunnel-2".to_string(),
@@ -1519,6 +1527,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -1578,6 +1588,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -1740,6 +1752,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: Some("/readyz".to_string()),
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 }],
                 health_check: Some(HealthCheckSettings {
                     interval_ms: 7_500,
@@ -1818,6 +1832,8 @@ mod tests {
                     fallback_upstream_url: Some("http://127.0.0.1:4001".to_string()),
                     health_check_path: Some("/readyz".to_string()),
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 }],
                 health_check: Some(HealthCheckSettings {
                     interval_ms: 7_500,
@@ -1913,6 +1929,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -1932,6 +1950,8 @@ mod tests {
                 health_check_path: Some("/healthz".to_string()),
                 health_check_enabled: None,
                 enabled: Some(false),
+                forward_host_header: None,
+                rewrite_response_paths: None,
             })
             .send()
             .await
@@ -1972,6 +1992,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -1991,6 +2013,8 @@ mod tests {
                 health_check_path: None,
                 health_check_enabled: None,
                 enabled: Some(true),
+                forward_host_header: None,
+                rewrite_response_paths: None,
             })
             .send()
             .await
@@ -2019,6 +2043,8 @@ mod tests {
                 health_check_path: None,
                 health_check_enabled: None,
                 enabled: Some(true),
+                forward_host_header: None,
+                rewrite_response_paths: None,
             })
             .send()
             .await
@@ -2047,6 +2073,8 @@ mod tests {
                 health_check_path: Some("/healthz".to_string()),
                 health_check_enabled: None,
                 enabled: Some(true),
+                forward_host_header: None,
+                rewrite_response_paths: None,
             })
             .send()
             .await
@@ -2083,6 +2111,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -2102,6 +2132,8 @@ mod tests {
                 health_check_path: None,
                 health_check_enabled: None,
                 enabled: Some(true),
+                forward_host_header: None,
+                rewrite_response_paths: None,
             })
             .send()
             .await
@@ -2129,6 +2161,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "tunnel-2".to_string(),
@@ -2140,6 +2174,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -2178,6 +2214,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "tunnel-2".to_string(),
@@ -2189,6 +2227,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -2226,6 +2266,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "primary".to_string(),
@@ -2237,6 +2279,8 @@ mod tests {
                     fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -2321,6 +2365,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -2341,6 +2387,8 @@ mod tests {
                     health_check_path: None,
                     health_check_enabled: None,
                     enabled: Some(true),
+                    forward_host_header: None,
+                    rewrite_response_paths: None,
                 }],
                 replace: Some(true),
                 dry_run: Some(true),
@@ -2383,6 +2431,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "primary".to_string(),
@@ -2394,6 +2444,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -2416,6 +2468,8 @@ mod tests {
                         health_check_path: None,
                         health_check_enabled: None,
                         enabled: Some(false),
+                        forward_host_header: None,
+                        rewrite_response_paths: None,
                     },
                     CreateRouteRequest {
                         tunnel_id: "primary".to_string(),
@@ -2428,6 +2482,8 @@ mod tests {
                         health_check_path: Some("/ready".to_string()),
                         health_check_enabled: None,
                         enabled: Some(true),
+                        forward_host_header: None,
+                        rewrite_response_paths: None,
                     },
                 ],
                 replace: Some(true),
@@ -2480,6 +2536,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -2515,6 +2573,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -2535,6 +2595,8 @@ mod tests {
                     health_check_path: None,
                     health_check_enabled: None,
                     enabled: Some(true),
+                    forward_host_header: None,
+                    rewrite_response_paths: None,
                 }],
                 replace: Some(false),
                 dry_run: Some(true),
@@ -2569,6 +2631,8 @@ mod tests {
                 fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
                 health_check_path: Some("/ready".to_string()),
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -2619,6 +2683,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "tunnel-2".to_string(),
@@ -2630,6 +2696,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -2756,6 +2824,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -3098,6 +3168,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -3227,6 +3299,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -3276,6 +3350,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: Some("/ready".to_string()),
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "tunnel-2".to_string(),
@@ -3287,6 +3363,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: Some("/ready".to_string()),
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -3334,6 +3412,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -3380,6 +3460,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }],
             None,
         );
@@ -3433,6 +3515,8 @@ mod tests {
                     fallback_upstream_url: Some("http://127.0.0.1:4201".to_string()),
                     health_check_path: Some("/healthz".to_string()),
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 }],
                 health_check: Some(HealthCheckSettings {
                     interval_ms: 9_000,
@@ -3670,6 +3754,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "primary".to_string(),
@@ -3681,6 +3767,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: false,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -3742,6 +3830,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "tunnel-2".to_string(),
@@ -3753,6 +3843,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 RouteRule {
                     tunnel_id: "tunnel-2".to_string(),
@@ -3764,6 +3856,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: false,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
             None,
@@ -4035,6 +4129,8 @@ mod tests {
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: None,
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
         let mut health = HashMap::new();
         health.insert(test_health_key(&route.upstream_url, "/"), test_health(true));
@@ -4071,6 +4167,8 @@ mod tests {
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: None,
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
         let mut health = HashMap::new();
         health.insert(
@@ -4110,6 +4208,8 @@ mod tests {
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: None,
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
         let health = HashMap::new();
 
@@ -4135,6 +4235,8 @@ mod tests {
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: Some("/ready".to_string()),
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
         let mut health = HashMap::new();
         health.insert(test_health_key(&route.upstream_url, "/"), test_health(true));
@@ -4186,6 +4288,8 @@ mod tests {
                 fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -4197,6 +4301,8 @@ mod tests {
                 fallback_upstream_url: Some("http://127.0.0.1:3002".to_string()),
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ];
         let mut health = HashMap::new();
@@ -4250,6 +4356,8 @@ mod tests {
                 fallback_upstream_url: Some("http://127.0.0.1:3000".to_string()),
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -4261,6 +4369,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ];
         let health = HashMap::new();
@@ -4284,6 +4394,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: Some("/ready".to_string()),
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -4295,6 +4407,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ];
         let health = HashMap::new();
@@ -4319,6 +4433,8 @@ mod tests {
             fallback_upstream_url: None,
             health_check_path: Some(DISABLED_HEALTH_CHECK_SENTINEL.to_string()),
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         }];
 
         let entries = collect_upstream_health_entries(&routes, "/", &HashMap::new());
@@ -4337,6 +4453,8 @@ mod tests {
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: Some(DISABLED_HEALTH_CHECK_SENTINEL.to_string()),
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
         let health = HashMap::from([
             (
@@ -4372,6 +4490,8 @@ mod tests {
             health_check_path: None,
             health_check_enabled: None,
             enabled: Some(true),
+            forward_host_header: None,
+            rewrite_response_paths: None,
         })
         .expect("route should be accepted");
         assert_eq!(
@@ -4393,6 +4513,8 @@ mod tests {
             health_check_path: None,
             health_check_enabled: None,
             enabled: Some(true),
+            forward_host_header: None,
+            rewrite_response_paths: None,
         })
         .expect_err("route should be rejected");
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
@@ -4411,6 +4533,8 @@ mod tests {
             health_check_path: Some("healthz".to_string()),
             health_check_enabled: None,
             enabled: Some(true),
+            forward_host_header: None,
+            rewrite_response_paths: None,
         })
         .expect("route should be accepted");
         assert_eq!(route.health_check_path.as_deref(), Some("/healthz"));
@@ -4429,6 +4553,8 @@ mod tests {
             health_check_path: Some("/healthz".to_string()),
             health_check_enabled: Some(false),
             enabled: Some(true),
+            forward_host_header: None,
+            rewrite_response_paths: None,
         })
         .expect("route should be accepted");
 
@@ -4452,6 +4578,8 @@ mod tests {
             health_check_path: Some("/healthz?bad=1".to_string()),
             health_check_enabled: None,
             enabled: Some(true),
+            forward_host_header: None,
+            rewrite_response_paths: None,
         })
         .expect_err("route should be rejected");
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
@@ -4476,6 +4604,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -4487,6 +4617,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ];
 
@@ -4502,6 +4634,8 @@ mod tests {
                 fallback_upstream_url: Some("http://127.0.0.1:3011".to_string()),
                 health_check_path: Some("/healthz".to_string()),
                 enabled: false,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         );
 
@@ -4523,6 +4657,8 @@ mod tests {
             fallback_upstream_url: None,
             health_check_path: None,
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         }];
 
         let updated = replace_route(
@@ -4537,6 +4673,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         );
         assert!(!updated);
@@ -4555,6 +4693,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -4566,6 +4706,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ];
         assert!(ensure_unique_route_ids(&routes).is_err());
@@ -4584,6 +4726,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -4595,6 +4739,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ];
         let incoming = vec![
@@ -4608,6 +4754,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: false,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
             RouteRule {
                 tunnel_id: "primary".to_string(),
@@ -4619,6 +4767,8 @@ mod tests {
                 fallback_upstream_url: None,
                 health_check_path: None,
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             },
         ];
 
@@ -4641,6 +4791,8 @@ mod tests {
             fallback_upstream_url: None,
             health_check_path: None,
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         }];
         let incoming = vec![RouteRule {
             tunnel_id: "primary".to_string(),
@@ -4652,6 +4804,8 @@ mod tests {
             fallback_upstream_url: None,
             health_check_path: None,
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         }];
 
         let applied = apply_route_rules(&existing, incoming, true);

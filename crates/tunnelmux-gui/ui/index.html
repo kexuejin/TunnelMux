@@ -202,6 +202,15 @@
               <span>Fallback Local URL</span>
               <input id="route-fallback-upstream-url" type="text" placeholder="http://127.0.0.1:3001" />
             </label>
+
+            <label class="checkbox-row">
+              <input id="route-forward-host-header" type="checkbox" />
+              <span>Forward original Host header (for upstreams that validate same-origin, e.g. DeepSeek Harness)</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="route-rewrite-response-paths" type="checkbox" />
+              <span>Rewrite HTML/JS so root-relative URLs carry the Public Path prefix</span>
+            </label>
           </details>
         </div>
 

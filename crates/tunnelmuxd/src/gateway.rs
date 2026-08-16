@@ -91,7 +91,7 @@ pub(super) async fn proxy_request_for_tunnel(
                     continue;
                 }
 
-                return build_http_proxy_response(response).await;
+                return build_http_proxy_response(response, rewrite_prefix_for(&route).as_deref()).await;
             }
             Err(err) => {
                 if has_more_target {
@@ -104,7 +104,7 @@ pub(super) async fn proxy_request_for_tunnel(
                 }
 
                 if let Some(response) = last_response {
-                    return build_http_proxy_response(response).await;
+                    return build_http_proxy_response(response, rewrite_prefix_for(&route).as_deref()).await;
                 }
                 return Err(err);
             }
@@ -112,7 +112,7 @@ pub(super) async fn proxy_request_for_tunnel(
     }
 
     if let Some(response) = last_response {
-        return build_http_proxy_response(response).await;
+        return build_http_proxy_response(response, rewrite_prefix_for(&route).as_deref()).await;
     }
     if let Some(err) = last_error {
         return Err(err);
@@ -246,7 +246,7 @@ pub(super) async fn proxy_websocket_request(
             .uri(upstream_uri)
             .version(version);
         if let Some(upstream_headers) = upstream_builder.headers_mut() {
-            copy_headers_for_websocket_upstream(upstream_headers, &headers);
+            copy_headers_for_websocket_upstream(upstream_headers, &headers, route.forward_host_header);
         }
         let upstream_request = upstream_builder.body(Body::empty()).map_err(|err| {
             ApiError::internal(format!("failed to build websocket upstream request: {err}"))
@@ -352,7 +352,7 @@ pub(super) async fn send_http_upstream(
 ) -> Result<reqwest::Response, ApiError> {
     let upstream_url = build_upstream_url(upstream_base_url, route, path, query)?;
     let mut upstream_request = state.proxy_client.request(method.clone(), upstream_url);
-    upstream_request = copy_headers_to_upstream(upstream_request, headers);
+    upstream_request = copy_headers_to_upstream(upstream_request, headers, route.forward_host_header);
     upstream_request = upstream_request.body(body.clone());
 
     upstream_request.send().await.map_err(|err| {
@@ -362,9 +362,40 @@ pub(super) async fn send_http_upstream(
 
 pub(super) async fn build_http_proxy_response(
     upstream_response: reqwest::Response,
+    rewrite_prefix: Option<&str>,
 ) -> Result<Response, ApiError> {
     let status = upstream_response.status();
     let upstream_headers = upstream_response.headers().clone();
+
+    if let Some(prefix) = rewrite_prefix {
+        let is_rewritable = upstream_headers
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|content_type| is_rewritable_content_type(content_type));
+        let encoded = upstream_headers.contains_key(reqwest::header::CONTENT_ENCODING);
+        if is_rewritable && !encoded {
+            // The whole body must be visible to rewrite root-relative URLs;
+            // text/html and JavaScript responses are bounded by the client
+            // bundle sizes DSH serves (a few hundred KB).
+            let bytes = upstream_response
+                .bytes()
+                .await
+                .map_err(|err| ApiError::internal(format!("failed reading upstream response: {err}")))?;
+            let rewritten = rewrite_root_paths(&String::from_utf8_lossy(&bytes), prefix);
+            let mut response_builder = Response::builder().status(status);
+            if let Some(headers_map) = response_builder.headers_mut() {
+                copy_headers_from_upstream(headers_map, &upstream_headers);
+                headers_map.insert(
+                    reqwest::header::CONTENT_LENGTH,
+                    rewritten.len().to_string().parse().expect("byte length fits header"),
+                );
+            }
+            return response_builder
+                .body(Body::from(rewritten))
+                .map_err(|err| ApiError::internal(format!("failed to build proxy response: {err}")));
+        }
+    }
+
     let upstream_body = upstream_response.bytes_stream().map(|chunk| {
         chunk
             .map_err(|err| std::io::Error::other(format!("upstream response stream failed: {err}")))
@@ -377,6 +408,89 @@ pub(super) async fn build_http_proxy_response(
     response_builder
         .body(Body::from_stream(upstream_body))
         .map_err(|err| ApiError::internal(format!("failed to build proxy response: {err}")))
+}
+
+/** Whether a response content type carries text a root-URL rewrite may touch. */
+fn is_rewritable_content_type(content_type: &str) -> bool {
+    let normalized = content_type.to_ascii_lowercase();
+    normalized.starts_with("text/html")
+        || normalized.starts_with("text/javascript")
+        || normalized.starts_with("application/javascript")
+}
+
+/**
+ * Prefix root-relative URL references with a mount path: `src`/`href` and
+ * `"url":` JSON values in HTML, and `/api` references in JavaScript (fetch,
+ * SSE, and WebSocket paths). Protocol-relative (`//host`), scheme-absolute
+ * (`https://…`), and already-prefixed references are left alone.
+ * @param body - the upstream response body.
+ * @param prefix - the mount prefix (leading slash, no trailing slash).
+ */
+pub(super) fn rewrite_root_paths(body: &str, prefix: &str) -> String {
+    let prefix_inner = prefix.strip_prefix('/').unwrap_or(prefix);
+    let mut out = guarded_replace(body, &["src=\"/", "href=\"/"], prefix_inner, |b, at, len| {
+        // Guard: not protocol-relative (`//`) and not already prefixed.
+        !b[at + len..].starts_with(b"/") && !b[at + len..].starts_with(prefix_inner.as_bytes())
+    });
+    out = guarded_replace(&out, &["\"url\":\"/"], prefix_inner, |b, at, len| {
+        !b[at + len..].starts_with(b"/") && !b[at + len..].starts_with(prefix_inner.as_bytes())
+    });
+    out = guarded_replace(&out, &["\"/", "'/", "`/"], prefix_inner, |b, at, len| {
+        // A quoted root slash whose path is `api` (fetch, SSE, WebSocket, or the
+        // bare `/api` RPC channel); the prefix lands between the slash and `api`.
+        // An already-prefixed `/api` (`"/deepseek/api`) has `deepseek` right
+        // after the slash, so `api` never follows — no double-prefix.
+        let rest = &b[at + len..];
+        rest.starts_with(b"api")
+            && matches!(b.get(at + len + 3), Some(b'"') | Some(b'\'') | Some(b'/') | Some(b'`'))
+    });
+    out
+}
+
+/**
+ * One guarded replacement pass: at every occurrence of any marker, append the
+ * marker verbatim plus `prefix_inner/` when `valid` allows it, else append the
+ * marker unchanged. The marker includes the leading quote (for `"/api`) or the
+ * trailing slash (for `src="/`), so the inserted prefix keeps the URL well-formed.
+ */
+fn guarded_replace(
+    body: &str,
+    markers: &[&str],
+    prefix_inner: &str,
+    valid: impl Fn(&[u8], usize, usize) -> bool,
+) -> String {
+    let b = body.as_bytes();
+    let mut out = Vec::with_capacity(b.len() + 32);
+    let mut i = 0;
+    'outer: while i < b.len() {
+        for marker in markers {
+            let m = marker.as_bytes();
+            if b[i..].starts_with(m) {
+                out.extend_from_slice(m);
+                if valid(b, i, m.len()) {
+                    out.extend_from_slice(prefix_inner.as_bytes());
+                    out.push(b'/');
+                }
+                i += m.len();
+                continue 'outer;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8(out).expect("guarded replacement preserves UTF-8")
+}
+
+/** The response-rewrite mount prefix for a route, when enabled and mounted. */
+pub(super) fn rewrite_prefix_for(route: &RouteRule) -> Option<String> {
+    if !route.rewrite_response_paths {
+        return None;
+    }
+    route
+        .match_path_prefix
+        .as_ref()
+        .filter(|prefix| !prefix.is_empty())
+        .cloned()
 }
 
 pub(super) async fn build_ws_handshake_failure_response(
@@ -612,9 +726,13 @@ pub(super) fn select_route<'a>(
 pub(super) fn copy_headers_to_upstream(
     mut builder: reqwest::RequestBuilder,
     headers: &HeaderMap,
+    forward_host_header: bool,
 ) -> reqwest::RequestBuilder {
     for (name, value) in headers {
-        if is_hop_by_hop_header(name) || name.as_str().eq_ignore_ascii_case("host") {
+        if is_hop_by_hop_header(name) {
+            continue;
+        }
+        if name.as_str().eq_ignore_ascii_case("host") && !forward_host_header {
             continue;
         }
         builder = builder.header(name, value);
@@ -622,9 +740,13 @@ pub(super) fn copy_headers_to_upstream(
     builder
 }
 
-pub(super) fn copy_headers_for_websocket_upstream(target: &mut HeaderMap, source: &HeaderMap) {
+pub(super) fn copy_headers_for_websocket_upstream(
+    target: &mut HeaderMap,
+    source: &HeaderMap,
+    forward_host_header: bool,
+) {
     for (name, value) in source {
-        if name.as_str().eq_ignore_ascii_case("host") {
+        if name.as_str().eq_ignore_ascii_case("host") && !forward_host_header {
             continue;
         }
         target.insert(name, value.clone());
@@ -661,4 +783,55 @@ pub(super) fn is_hop_by_hop_header(name: &HeaderName) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rewrite_root_paths;
+
+    #[test]
+    fn rewrite_prefixes_html_refs_and_manifest_urls() {
+        let html = concat!(
+            "<link href=\"/manifest.webmanifest\">",
+            "<script src=\"/assets/index.js\"></script>",
+            "<script>window.__DSH_BOOT__ = {\"rev\":\"x\",\"entries\":[{\"url\":\"/plugins/a/client.js?rev=x\"}]}</script>",
+        );
+        let out = rewrite_root_paths(html, "/deepseek");
+        assert!(out.contains("href=\"/deepseek/manifest.webmanifest\""));
+        assert!(out.contains("src=\"/deepseek/assets/index.js\""));
+        assert!(out.contains("\"url\":\"/deepseek/plugins/a/client.js?rev=x\""));
+    }
+
+    #[test]
+    fn rewrite_prefixes_js_api_references_in_all_quote_forms() {
+        let js = r#"fetch("/api/session.list")"#;
+        let js = format!(
+            r#"{js}; const a = '/api/events.mux'; const b = `/api/${{method}}`; const c = rpc.call("/api", "goals/create");"#
+        );
+        let out = rewrite_root_paths(&js, "/deepseek");
+        assert!(out.contains(r#""/deepseek/api/session.list""#));
+        assert!(out.contains(r#"'/deepseek/api/events.mux'"#));
+        assert!(out.contains("`/deepseek/api/${method}`"));
+        assert!(out.contains(r#""/deepseek/api""#));
+    }
+
+    #[test]
+    fn rewrite_leaves_protocol_relative_scheme_absolute_and_prefixed_urls_alone() {
+        let html = concat!(
+            "<script src=\"//cdn.example/lib.js\"></script>",
+            "<link href=\"https://cdn.example/style.css\">",
+            "<script src=\"/deepseek/assets/keep.js\"></script>",
+        );
+        let out = rewrite_root_paths(html, "/deepseek");
+        assert!(out.contains("src=\"//cdn.example/lib.js\""));
+        assert!(out.contains("href=\"https://cdn.example/style.css\""));
+        assert!(out.contains("src=\"/deepseek/assets/keep.js\""));
+        assert_eq!(out.matches("/deepseek/assets").count(), 1);
+    }
+
+    #[test]
+    fn rewrite_is_a_noop_for_plain_text() {
+        let body = "the /api path and /assets path are words here";
+        assert_eq!(rewrite_root_paths(body, "/deepseek"), body);
+    }
 }

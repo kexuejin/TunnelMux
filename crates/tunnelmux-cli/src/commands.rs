@@ -146,6 +146,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             host,
             path_prefix,
             strip_path_prefix,
+            forward_host_header,
+            rewrite_response_paths,
             disabled,
             provider,
             target_url,
@@ -168,6 +170,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 health_check_path,
                 health_check_enabled: Some(true),
                 enabled: Some(!disabled),
+                forward_host_header: Some(forward_host_header),
+                rewrite_response_paths: Some(rewrite_response_paths),
             };
             let routes: RoutesResponse = control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
             let existing_route = routes.routes.iter().find(|item| item.id == id).cloned();
@@ -362,6 +366,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 host,
                 path_prefix,
                 strip_path_prefix,
+                forward_host_header,
+                rewrite_response_paths,
                 disabled,
                 from_json,
             } => {
@@ -380,6 +386,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         health_check_path,
                         health_check_enabled: Some(true),
                         enabled: Some(!disabled),
+                        forward_host_header: Some(forward_host_header),
+                        rewrite_response_paths: Some(rewrite_response_paths),
                     }
                 };
                 let route: tunnelmux_core::RouteRule =
@@ -449,6 +457,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 host,
                 path_prefix,
                 strip_path_prefix,
+                forward_host_header,
+                rewrite_response_paths,
                 disabled,
                 upsert,
                 from_json,
@@ -470,6 +480,8 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         health_check_path,
                         health_check_enabled: Some(true),
                         enabled: Some(!disabled),
+                        forward_host_header: Some(forward_host_header),
+                        rewrite_response_paths: Some(rewrite_response_paths),
                     }
                 };
                 let route: tunnelmux_core::RouteRule = control_client

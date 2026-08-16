@@ -553,6 +553,8 @@ mod tests {
                 health_check_path: None,
                 health_check_enabled: None,
                 enabled: Some(true),
+                forward_host_header: None,
+                rewrite_response_paths: None,
             })
             .await
             .expect_err("create route should fail");

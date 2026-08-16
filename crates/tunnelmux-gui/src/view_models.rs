@@ -229,6 +229,10 @@ pub struct RouteFormData {
     pub health_check_path: String,
     pub health_check_enabled: bool,
     pub enabled: bool,
+    #[serde(default)]
+    pub forward_host_header: bool,
+    #[serde(default)]
+    pub rewrite_response_paths: bool,
 }
 
 impl Default for RouteFormData {
@@ -244,6 +248,8 @@ impl Default for RouteFormData {
             health_check_path: String::new(),
             health_check_enabled: true,
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         }
     }
 }
@@ -261,6 +267,8 @@ impl RouteFormData {
             health_check_path: empty_to_none(&self.health_check_path),
             health_check_enabled: Some(self.health_check_enabled),
             enabled: Some(self.enabled),
+            forward_host_header: Some(self.forward_host_header),
+            rewrite_response_paths: Some(self.rewrite_response_paths),
         }
     }
 }
@@ -366,6 +374,8 @@ mod tests {
                 health_check_path: None,
                 health_check_enabled: Some(true),
                 enabled: Some(true),
+                forward_host_header: Some(false),
+                rewrite_response_paths: Some(false),
             }
         );
     }

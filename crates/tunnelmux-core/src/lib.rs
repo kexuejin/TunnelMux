@@ -96,6 +96,18 @@ pub struct RouteRule {
     pub fallback_upstream_url: Option<String>,
     pub health_check_path: Option<String>,
     pub enabled: bool,
+    /// Forward the request's original Host header to the upstream instead of
+    /// the upstream's own authority. Needed by upstreams that validate Host
+    /// against a public tunnel domain (same-origin / DNS-rebinding fences).
+    #[serde(default)]
+    pub forward_host_header: bool,
+    /// Rewrite upstream response bodies so root-relative URLs carry the
+    /// `match_path_prefix` mount (subpath hosting): `src`/`href` and the
+    /// boot-manifest `url` in HTML, and `/api` references in JavaScript. A
+    /// no-op when `match_path_prefix` is unset; already-prefixed references
+    /// are left alone.
+    #[serde(default)]
+    pub rewrite_response_paths: bool,
 }
 
 pub fn route_health_check_enabled(route: &RouteRule) -> bool {
@@ -125,6 +137,10 @@ pub struct CreateRouteRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_enabled: Option<bool>,
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_host_header: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewrite_response_paths: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

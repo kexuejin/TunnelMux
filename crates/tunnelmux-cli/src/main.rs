@@ -112,6 +112,20 @@ enum Command {
         #[arg(long)]
         strip_path_prefix: Option<String>,
 
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Forward the original Host header to the upstream"
+        )]
+        forward_host_header: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Rewrite upstream HTML/JS so root-relative URLs carry the path prefix"
+        )]
+        rewrite_response_paths: bool,
+
         #[arg(long, default_value_t = false)]
         disabled: bool,
 
@@ -292,6 +306,20 @@ enum RoutesCommand {
         #[arg(long)]
         strip_path_prefix: Option<String>,
 
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Forward the original Host header to the upstream"
+        )]
+        forward_host_header: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Rewrite upstream HTML/JS so root-relative URLs carry the path prefix"
+        )]
+        rewrite_response_paths: bool,
+
         #[arg(long, default_value_t = false)]
         disabled: bool,
 
@@ -306,6 +334,8 @@ enum RoutesCommand {
                 "host",
                 "path_prefix",
                 "strip_path_prefix",
+                "forward_host_header",
+                "rewrite_response_paths",
                 "disabled"
             ]
         )]
@@ -334,6 +364,20 @@ enum RoutesCommand {
         #[arg(long)]
         strip_path_prefix: Option<String>,
 
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Forward the original Host header to the upstream"
+        )]
+        forward_host_header: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Rewrite upstream HTML/JS so root-relative URLs carry the path prefix"
+        )]
+        rewrite_response_paths: bool,
+
         #[arg(long, default_value_t = false)]
         disabled: bool,
 
@@ -354,6 +398,8 @@ enum RoutesCommand {
                 "host",
                 "path_prefix",
                 "strip_path_prefix",
+                "forward_host_header",
+                "rewrite_response_paths",
                 "disabled"
             ]
         )]
@@ -929,6 +975,8 @@ fn route_rule_to_create_request(route: &tunnelmux_core::RouteRule) -> CreateRout
             .flatten(),
         health_check_enabled: Some(health_check_enabled),
         enabled: Some(route.enabled),
+        forward_host_header: Some(route.forward_host_header),
+        rewrite_response_paths: Some(route.rewrite_response_paths),
     }
 }
 
@@ -1391,6 +1439,8 @@ mod tests {
                     fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
                     health_check_path: Some("/healthz".to_string()),
                     enabled: true,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
                 tunnelmux_core::RouteRule {
                     tunnel_id: "primary".to_string(),
@@ -1402,6 +1452,8 @@ mod tests {
                     fallback_upstream_url: None,
                     health_check_path: None,
                     enabled: false,
+                    forward_host_header: false,
+                    rewrite_response_paths: false,
                 },
             ],
         };
@@ -1432,6 +1484,8 @@ mod tests {
                 fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
                 health_check_path: Some("/ready".to_string()),
                 enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
             }),
             forwarded_path: Some("/v1/ping".to_string()),
             health_check_path: Some("/ready".to_string()),
@@ -1552,6 +1606,8 @@ mod tests {
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: Some("/healthz".to_string()),
             enabled: false,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
 
         let payload = route_rule_to_create_request(&route);
@@ -1578,6 +1634,8 @@ mod tests {
             fallback_upstream_url: None,
             health_check_path: Some(tunnelmux_core::DISABLED_HEALTH_CHECK_SENTINEL.to_string()),
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
 
         let payload = route_rule_to_create_request(&route);
@@ -1614,6 +1672,8 @@ mod tests {
                 health_check_path: None,
                 health_check_enabled: None,
                 enabled: Some(true),
+                forward_host_header: None,
+                rewrite_response_paths: None,
             },
             CreateRouteRequest {
                 tunnel_id: "primary".to_string(),
@@ -1626,6 +1686,8 @@ mod tests {
                 health_check_path: None,
                 health_check_enabled: None,
                 enabled: Some(true),
+                forward_host_header: None,
+                rewrite_response_paths: None,
             },
         ];
         assert!(ensure_unique_route_ids(&routes).is_err());
@@ -1943,6 +2005,8 @@ mod tests {
             health_check_path: Some("/healthz".to_string()),
             health_check_enabled: Some(true),
             enabled: Some(true),
+            forward_host_header: Some(false),
+            rewrite_response_paths: Some(false),
         };
 
         assert_eq!(
@@ -1960,6 +2024,8 @@ mod tests {
             fallback_upstream_url: Some("http://127.0.0.1:3001".to_string()),
             health_check_path: Some("/healthz".to_string()),
             enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
         };
         assert_eq!(
             infer_expose_route_action(Some(&unchanged), &desired),
