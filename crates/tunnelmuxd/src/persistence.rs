@@ -179,6 +179,7 @@ fn legacy_persisted_state_to_current(raw: &str) -> Option<PersistedState> {
         }],
         routes: legacy.routes,
         health_check: legacy.health_check,
+        route_access: HashMap::new(),
     })
 }
 

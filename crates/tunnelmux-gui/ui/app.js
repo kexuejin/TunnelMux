@@ -216,6 +216,7 @@ function bindElements() {
   elements.routeFallbackUpstreamUrl = document.getElementById('route-fallback-upstream-url');
   elements.routeForwardHostHeader = document.getElementById('route-forward-host-header');
   elements.routeRewriteResponsePaths = document.getElementById('route-rewrite-response-paths');
+  elements.routeRequireAccessCode = document.getElementById('route-require-access-code');
   elements.serviceAdvanced = document.getElementById('service-advanced');
   elements.serviceExposureMode = document.getElementById('service-exposure-mode');
   elements.serviceHostField = document.getElementById('service-host-field');
@@ -1519,6 +1520,7 @@ async function saveRoute() {
         enabled: elements.routeEnabled.checked,
         forward_host_header: elements.routeForwardHostHeader.checked,
         rewrite_response_paths: elements.routeRewriteResponsePaths.checked,
+        require_access_code: elements.routeRequireAccessCode.value.trim() || null,
       },
     });
     const nextEnabledServices = Array.isArray(snapshot?.routes)
@@ -2077,6 +2079,7 @@ function resetRouteForm() {
   elements.routeEnabled.checked = true;
   elements.routeForwardHostHeader.checked = false;
   elements.routeRewriteResponsePaths.checked = false;
+  elements.routeRequireAccessCode.value = '';
   elements.serviceExposureMode.value = 'path';
   elements.serviceAdvanced.open = false;
   elements.saveRoute.textContent = 'Save Service';

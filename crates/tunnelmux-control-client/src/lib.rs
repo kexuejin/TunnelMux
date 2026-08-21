@@ -3,6 +3,7 @@ use reqwest::{Client, RequestBuilder, Response, StatusCode as ReqwestStatusCode}
 use serde::de::DeserializeOwned;
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, AuthStatusResponse, AuthUnlockRequest, CreateRouteRequest,
+    SetRouteAccessRequest, SetRouteAccessResponse,
     DashboardResponse, DeleteRouteResponse, DeleteTunnelResponse, DiagnosticsResponse, ErrorResponse,
     HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
     RouteMatchResponse, RouteRule, RoutesResponse, TunnelDeleteRequest, TunnelLogsResponse,
@@ -253,6 +254,15 @@ impl TunnelmuxControlClient {
         payload: &ApplyRoutesRequest,
     ) -> anyhow::Result<ApplyRoutesResponse> {
         self.post("/v1/routes/apply", payload).await
+    }
+
+    /// Set or clear the gateway access gate (access code) for one route.
+    /// Passing empty access code + no ttl clears the gate.
+    pub async fn set_route_access(
+        &self,
+        payload: &SetRouteAccessRequest,
+    ) -> anyhow::Result<SetRouteAccessResponse> {
+        self.put("/v1/routes/access", payload).await
     }
 
     pub async fn upstreams_health(&self) -> anyhow::Result<UpstreamsHealthResponse> {

@@ -1,6 +1,82 @@
 use super::*;
 use tokio_stream::StreamExt;
 
+/// Return the route access cookie name: `tunnelmux_access_<route_id>`.
+fn route_access_cookie_name(route_id: &str) -> String {
+    format!("tunnelmux_access_{route_id}")
+}
+
+/// If the route requires an access code and the request is not authorized,
+/// return a gate response (HTML form for browsers, 401 otherwise). Returns
+/// `None` when the request is allowed through.
+pub(super) async fn route_access_gate_response(
+    state: &Arc<AppState>,
+    route: &RouteRule,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    let config = {
+        let runtime = state.runtime.lock().await;
+        runtime.persisted.route_access.get(&route.id).cloned()
+    };
+    let required = config
+        .as_ref()
+        .and_then(|c| c.require_access_code.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let Some(code) = required else {
+        return None;
+    };
+
+    let cookie_name = route_access_cookie_name(&route.id);
+    let cookie_ok = extract_cookie(headers, &cookie_name) == Some(code);
+    let bearer_ok = extract_bearer_token(headers) == Some(code);
+    if cookie_ok || bearer_ok {
+        return None;
+    }
+
+    let accepts_html = headers
+        .get(reqwest::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/html"));
+    if *method == Method::GET && accepts_html {
+        let html = format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">
+            <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+            <title>Access required</title></head><body>
+            <h1>Restricted</h1><p>Enter the access code for this service.</p>
+            <form method=\"post\" action=\"/\"><input type=\"password\" name=\"code\" autocomplete=\"off\">
+            <button type=\"submit\">Unlock</button></form></body></html>");
+        return Some(
+            axum::response::Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("content-type", "text/html; charset=utf-8")
+                .body(axum::body::Body::from(html))
+                .expect("build gate response"),
+        );
+    }
+    Some(
+        ApiError {
+            status: StatusCode::UNAUTHORIZED,
+            message: "this service requires an access code".to_string(),
+        }
+        .into_response(),
+    )
+}
+
+/// Read one cookie value by name from a request Cookie header.
+fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    let all = headers.get(reqwest::header::COOKIE)?.to_str().ok()?;
+    for part in all.split(';') {
+        let part = part.trim();
+        if let Some((key, value)) = part.split_once('=') {
+            if key.trim() == name {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
 pub(super) async fn proxy_request_for_tunnel(
     State(gateway_state): State<Arc<TunnelGatewayState>>,
     request: Request,
@@ -43,6 +119,10 @@ pub(super) async fn proxy_request_for_tunnel(
             });
         }
     };
+
+    if let Some(gate_response) = route_access_gate_response(state, &route, &method, &headers).await {
+        return Ok(gate_response);
+    }
 
     if is_websocket_upgrade_request(&method, &headers) {
         return proxy_websocket_request(&state, request, route, &path, query.as_deref()).await;

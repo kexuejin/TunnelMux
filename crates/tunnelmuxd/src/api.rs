@@ -1,5 +1,8 @@
 use super::*;
-use tunnelmux_core::{TunnelProfileSummary, TunnelWorkspaceResponse};
+use tunnelmux_core::{
+    RouteAccessConfig, SetRouteAccessRequest, SetRouteAccessResponse, TunnelProfileSummary,
+    TunnelWorkspaceResponse,
+};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct TunnelQuery {
@@ -1355,6 +1358,43 @@ pub(super) async fn delete_route(
 
     persist_from_runtime(&state).await?;
     Ok(Json(DeleteRouteResponse { removed: true }))
+}
+pub(super) async fn set_route_access(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<SetRouteAccessRequest>,
+) -> Result<Json<SetRouteAccessResponse>, ApiError> {
+    let route_id = request.route_id.trim().to_string();
+    if route_id.is_empty() {
+        return Err(ApiError::bad_request("route_id is required"));
+    }
+    let require_access_code = request
+        .require_access_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let cookie_ttl_ms = request.cookie_ttl_ms.filter(|v| *v > 0);
+    let mut runtime = state.runtime.lock().await;
+    if require_access_code.is_some() || cookie_ttl_ms.is_some() {
+        runtime.persisted.route_access.insert(
+            route_id.clone(),
+            RouteAccessConfig {
+                require_access_code,
+                cookie_ttl_ms,
+            },
+        );
+    } else {
+        runtime.persisted.route_access.remove(&route_id);
+    }
+    let stored = runtime.persisted.route_access.get(&route_id).cloned();
+    drop(runtime);
+    persist_from_runtime(&state).await?;
+    let config = stored.unwrap_or_default();
+    Ok(Json(SetRouteAccessResponse {
+        route_id,
+        require_access_code: config.require_access_code,
+        cookie_ttl_ms: config.cookie_ttl_ms,
+    }))
 }
 
 pub(super) async fn apply_routes(

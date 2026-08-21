@@ -146,6 +146,39 @@ pub struct RouteRule {
 pub fn route_health_check_enabled(route: &RouteRule) -> bool {
     route.health_check_path.as_deref() != Some(DISABLED_HEALTH_CHECK_SENTINEL)
 }
+/// Per-route gateway access gate configuration. Stored as a side table keyed
+/// by route `id` (parallel to `RouteRule`) so the route definitions themselves
+/// do not change shape. A route is open when it has no entry here or its
+/// `require_access_code` is empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteAccessConfig {
+    /// Access code required to reach the route through the gateway. Empty/None
+    /// means the route is public (no gate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_access_code: Option<String>,
+    /// How long (ms) a verified access cookie stays valid for this route.
+    /// Defaults to the daemon-wide window when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookie_ttl_ms: Option<u64>,
+}
+
+/// Request to set/clear the gateway access config for one route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetRouteAccessRequest {
+    pub route_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_access_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookie_ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetRouteAccessResponse {
+    pub route_id: String,
+    pub require_access_code: Option<String>,
+    pub cookie_ttl_ms: Option<u64>,
+}
+
 
 pub fn effective_route_health_check_path(
     route: &RouteRule,

@@ -53,8 +53,11 @@ async fn tunnel_stop_command_still_prints_json_payload() {
         .with_state(state.clone());
     let base_url = spawn_test_server(app).await;
 
+    let empty_home = std::env::temp_dir().join(format!("tmx-test-home-{}", std::process::id()));
+    std::fs::create_dir_all(&empty_home).expect("temp home");
     let mut command = Command::new(assert_cmd::cargo::cargo_bin!("tunnelmux-cli"));
     command
+        .env("HOME", &empty_home)
         .arg("--server")
         .arg(&base_url)
         .arg("tunnel")

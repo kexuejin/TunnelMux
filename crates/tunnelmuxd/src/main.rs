@@ -25,7 +25,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use chrono::Utc;
 use clap::Parser;
@@ -48,7 +48,7 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
-    ApplyRoutesRequest, ApplyRoutesResponse, ControlAuthMode, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
+    ApplyRoutesRequest, ApplyRoutesResponse, ControlAuthMode, CreateRouteRequest, DEFAULT_CONTROL_ADDR, RouteAccessConfig,
     DEFAULT_GATEWAY_TARGET_URL, DISABLED_HEALTH_CHECK_SENTINEL, DashboardResponse,
     DeleteRouteResponse, DiagnosticsResponse, ErrorResponse, HealthCheckSettings,
     HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
@@ -187,6 +187,9 @@ struct PersistedState {
     tunnels: Vec<PersistedTunnelState>,
     routes: Vec<RouteRule>,
     health_check: Option<HealthCheckSettings>,
+    /// Per-route gateway access gates keyed by route id (parallel to routes).
+    #[serde(default)]
+    route_access: HashMap<String, RouteAccessConfig>,
 }
 
 impl Default for PersistedState {
@@ -199,6 +202,7 @@ impl Default for PersistedState {
             }],
             routes: Vec::new(),
             health_check: None,
+            route_access: HashMap::new(),
         }
     }
 }
@@ -562,6 +566,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/routes/match", get(match_route))
         .route("/v1/routes/stream", get(stream_routes))
         .route("/v1/routes/apply", post(apply_routes))
+        .route("/v1/routes/access", put(set_route_access))
         .route("/v1/routes/{id}", delete(delete_route).put(update_route))
         .layer(middleware::from_fn_with_state(
             shared.clone(),
@@ -1191,6 +1196,7 @@ mod tests {
         Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
+                    route_access: HashMap::new(),
                     current_tunnel_id: Some("primary".to_string()),
                     tunnels: vec![PersistedTunnelState {
                         id: "primary".to_string(),
@@ -1251,6 +1257,7 @@ mod tests {
         Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
+                    route_access: HashMap::new(),
                     current_tunnel_id: Some("primary".to_string()),
                     tunnels: vec![PersistedTunnelState {
                         id: "primary".to_string(),
@@ -1521,6 +1528,7 @@ mod tests {
         let state = Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
+                    route_access: HashMap::new(),
                     current_tunnel_id: Some("primary".to_string()),
                     tunnels: vec![PersistedTunnelState {
                         id: "primary".to_string(),
@@ -1857,6 +1865,7 @@ mod tests {
         save_state_file(
             &state.data_file,
             &PersistedState {
+                route_access: HashMap::new(),
                 current_tunnel_id: Some("primary".to_string()),
                 tunnels: vec![PersistedTunnelState {
                     id: "primary".to_string(),
@@ -1957,6 +1966,7 @@ mod tests {
         save_state_file(
             &state.data_file,
             &PersistedState {
+                route_access: HashMap::new(),
                 current_tunnel_id: Some("primary".to_string()),
                 tunnels: vec![PersistedTunnelState {
                     id: "primary".to_string(),
@@ -4278,6 +4288,75 @@ mod tests {
                 .body(axum::body::Body::empty())
                 .unwrap();
             assert!(control_request_allowed(&state, &request));
+        });
+    }
+
+    #[test]
+    fn route_access_gate_allows_public_and_blocks_protected_routes() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let route = RouteRule {
+                tunnel_id: "primary".to_string(),
+                id: "svc-a".to_string(),
+                match_host: None,
+                match_path_prefix: Some("/svc".to_string()),
+                strip_path_prefix: None,
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                fallback_upstream_url: None,
+                health_check_path: None,
+                enabled: true,
+                forward_host_header: false,
+                rewrite_response_paths: false,
+            };
+            let state = test_state_with_routes(vec![route.clone()], None);
+            // Protected route: require code "sekrit".
+            {
+                let mut runtime = state.runtime.lock().await;
+                runtime.persisted.route_access.insert(
+                    "svc-a".to_string(),
+                    RouteAccessConfig {
+                        require_access_code: Some("sekrit".to_string()),
+                        cookie_ttl_ms: None,
+                    },
+                );
+            }
+
+            let method = Method::GET;
+            // No credentials -> gate response.
+            let headless = HeaderMap::new();
+            let gate = route_access_gate_response(&state, &route, &method, &headless).await;
+            assert!(gate.is_some(), "protected route without creds must be gated");
+
+            // Correct cookie -> allowed.
+            let mut with_cookie = HeaderMap::new();
+            with_cookie.insert(
+                axum::http::header::COOKIE,
+                "tunnelmux_access_svc-a=sekrit".parse().unwrap(),
+            );
+            assert!(route_access_gate_response(&state, &route, &method, &with_cookie).await.is_none());
+
+            // Correct bearer -> allowed.
+            let mut with_bearer = HeaderMap::new();
+            with_bearer.insert(
+                axum::http::header::AUTHORIZATION,
+                "Bearer sekrit".parse().unwrap(),
+            );
+            assert!(route_access_gate_response(&state, &route, &method, &with_bearer).await.is_none());
+
+            // Wrong code -> gated.
+            let mut wrong = HeaderMap::new();
+            wrong.insert(
+                axum::http::header::COOKIE,
+                "tunnelmux_access_svc-a=nope".parse().unwrap(),
+            );
+            assert!(route_access_gate_response(&state, &route, &method, &wrong).await.is_some());
+
+            // Public route (no gate config) -> allowed even with no creds.
+            let public_route = RouteRule {
+                id: "public".to_string(),
+                ..route
+            };
+            assert!(route_access_gate_response(&state, &public_route, &method, &headless).await.is_none());
         });
     }
 

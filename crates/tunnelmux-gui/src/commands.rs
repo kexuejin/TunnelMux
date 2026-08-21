@@ -22,7 +22,9 @@ use std::{
 };
 use tauri::Manager;
 use tunnelmux_control_client::{ControlClientConfig, TunnelmuxControlClient};
-use tunnelmux_core::{HealthResponse, TunnelProvider, TunnelStartRequest, TunnelStatus};
+use tunnelmux_core::{
+    HealthResponse, SetRouteAccessRequest, TunnelProvider, TunnelStartRequest, TunnelStatus,
+};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -712,6 +714,20 @@ pub async fn save_route_from_settings_dir(
             .await
             .map_err(command_error)
             .map_err(|error| friendly_route_save_error(error, &request))?;
+    }
+
+    // Synch the per-route gateway access gate. Only touch it when the form
+    // carries an explicit value (empty clears, None leaves it unchanged so
+    // quick enable/disable toggles never wipe an existing gate).
+    if form.require_access_code.is_some() {
+        client
+            .set_route_access(&SetRouteAccessRequest {
+                route_id: request.id.clone(),
+                require_access_code: form.require_access_code.clone(),
+                cookie_ttl_ms: None,
+            })
+            .await
+            .map_err(command_error)?;
     }
 
     let routes = client.list_routes(tunnel_id).await.map_err(command_error)?;
@@ -2920,6 +2936,7 @@ mod tests {
                 enabled: true,
                 forward_host_header: false,
                 rewrite_response_paths: false,
+                require_access_code: None,
             },
         )
         .await

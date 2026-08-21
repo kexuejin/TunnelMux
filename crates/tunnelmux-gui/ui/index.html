@@ -211,6 +211,12 @@
               <input id="route-rewrite-response-paths" type="checkbox" />
               <span>Rewrite HTML/JS so root-relative URLs carry the Public Path prefix</span>
             </label>
+
+            <label class="field">
+              <span>Access Code (gate)</span>
+              <input id="route-require-access-code" type="text" placeholder="Leave empty for a public service" autocomplete="off" />
+            </label>
+            <p class="panel-subtle">If set, visitors must enter this code to reach the service; the gateway shows a login page.</p>
           </details>
         </div>
 
