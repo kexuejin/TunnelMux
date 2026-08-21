@@ -20,9 +20,25 @@ impl ControlClientConfig {
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
         Self {
             base_url: normalize_base_url(&base_url.into()),
-            token: normalize_token(token),
+            // When no token is passed, fall back to the auto-generated token the
+            // daemon persists for local clients (require mode), so the CLI and
+            // GUI keep working without manual configuration.
+            token: normalize_token(token.or_else(default_api_token_from_disk)),
         }
     }
+}
+
+/// Read the daemon-persisted API token at `~/.tunnelmux/api-token` (0600), if
+/// present and non-empty. `None` means no file or no usable token.
+pub fn default_api_token_from_disk() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home).join(".tunnelmux").join("api-token");
+    let content = std::fs::read_to_string(path).ok()?;
+    let token = content.trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(token.to_string())
 }
 
 #[derive(Debug, Clone)]

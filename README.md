@@ -193,8 +193,18 @@ More release and bundle details live in `docs/RELEASING.md`.
 
 - `~/.tunnelmux/config.json` — declarative routes and health-check settings
 - `~/.tunnelmux/state.json` — daemon-owned runtime snapshot
+- `~/.tunnelmux/api-token` — auto-generated control-plane bearer token (0600)
 
 The daemon polls `config.json` and applies route and health-check changes without restarting.
+
+## Security
+
+The control-plane API (`127.0.0.1:4765`) authenticates with a bearer token.
+`--control-auth` selects the mode: `require` (default), `optional`, or `off`.
+In `require` mode all protected endpoints demand a valid token; when none is
+configured the daemon generates one into `~/.tunnelmux/api-token`. The CLI and
+GUI (and `dsh-tunnelmux-remote`) auto-read that token, so local tools keep
+working unchanged. `GET /v1/health` is always unauthenticated.
 
 ## Docs
 

@@ -48,7 +48,7 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
-    ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
+    ApplyRoutesRequest, ApplyRoutesResponse, ControlAuthMode, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
     DEFAULT_GATEWAY_TARGET_URL, DISABLED_HEALTH_CHECK_SENTINEL, DashboardResponse,
     DeleteRouteResponse, DiagnosticsResponse, ErrorResponse, HealthCheckSettings,
     HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
@@ -113,6 +113,9 @@ struct Args {
 
     #[arg(long)]
     api_token: Option<String>,
+
+    #[arg(long, default_value = "require")]
+    control_auth: String,
 }
 
 #[derive(Debug)]
@@ -307,6 +310,7 @@ struct AppState {
     config_reload_status: Mutex<ConfigReloadStatus>,
     provider_log_file: PathBuf,
     api_token: Option<String>,
+    control_auth: ControlAuthMode,
     cloudflared_bin: String,
     ngrok_bin: String,
     ready_timeout_ms: u64,
@@ -404,7 +408,20 @@ async fn main() -> anyhow::Result<()> {
     let provider_log_file = args
         .provider_log_file
         .unwrap_or_else(default_provider_log_file);
-    let api_token = resolve_api_token(args.api_token);
+    // Control-plane auth: parse the mode, resolve any explicit token, and — in
+    // `require` mode without a token — generate one and persist it for local
+    // clients to auto-discover.
+    let control_auth: ControlAuthMode = args
+        .control_auth
+        .parse()
+        .map_err(|err: String| anyhow::anyhow!(err))?;
+    let api_token_file = default_api_token_file();
+    let explicit_api_token = resolve_api_token(args.api_token);
+    let mut api_token = explicit_api_token;
+    if control_auth == ControlAuthMode::Require && api_token.is_none() {
+        api_token = Some(generate_and_persist_api_token(&api_token_file).await?);
+        info!("control api token auto-generated and written to {}", api_token_file.display());
+    }
     let startup_health_check_settings = HealthCheckSettings {
         interval_ms: normalize_health_check_interval_ms(args.health_check_interval_ms)
             .with_context(|| {
@@ -466,6 +483,7 @@ async fn main() -> anyhow::Result<()> {
         config_reload_status: Mutex::new(config_reload_status),
         provider_log_file,
         api_token,
+        control_auth,
         cloudflared_bin: args.cloudflared_bin,
         ngrok_bin: args.ngrok_bin,
         ready_timeout_ms: args.ready_timeout_ms,
@@ -520,10 +538,10 @@ async fn main() -> anyhow::Result<()> {
         listener.local_addr()?,
         shared.data_file.display()
     );
-    if shared.api_token.is_some() {
-        info!("control api token auth: enabled");
-    } else {
-        info!("control api token auth: disabled");
+    match shared.control_auth {
+        ControlAuthMode::Require => info!("control api auth: require (bearer token required)"),
+        ControlAuthMode::Optional => info!("control api auth: optional (enforced when a token is set)"),
+        ControlAuthMode::Off => info!("control api auth: off (no authentication)"),
     }
     info!("provider log file {}", shared.provider_log_file.display());
     info!("gateway listening on {}", gateway_addr);
@@ -1156,6 +1174,7 @@ mod tests {
             }),
             provider_log_file,
             api_token: api_token.map(ToString::to_string),
+            control_auth: ControlAuthMode::Optional,
             cloudflared_bin: "cloudflared".to_string(),
             ngrok_bin: "ngrok".to_string(),
             ready_timeout_ms: 15_000,
@@ -1431,6 +1450,7 @@ mod tests {
             }),
             provider_log_file,
             api_token: None,
+            control_auth: ControlAuthMode::Optional,
             cloudflared_bin: "cloudflared".to_string(),
             ngrok_bin: "ngrok".to_string(),
             ready_timeout_ms: 15_000,
@@ -4063,16 +4083,41 @@ mod tests {
     }
 
     #[test]
-    fn is_authorized_request_accepts_when_token_disabled_or_matches() {
+    fn is_authorized_request_obeys_the_selected_mode() {
         let mut headers = HeaderMap::new();
-        assert!(is_authorized_request(&headers, None));
 
+        // Require (default): fail closed — no token / wrong token rejected.
+        assert!(!is_authorized_request(&headers, ControlAuthMode::Require, None));
         headers.insert(
             axum::http::header::AUTHORIZATION,
             "Bearer expected".parse().expect("valid header"),
         );
-        assert!(is_authorized_request(&headers, Some("expected")));
-        assert!(!is_authorized_request(&headers, Some("other")));
+        assert!(is_authorized_request(&headers, ControlAuthMode::Require, Some("expected")));
+        assert!(!is_authorized_request(&headers, ControlAuthMode::Require, Some("other")));
+
+        // Optional: a configured token is enforced; a tokenless daemon stays open.
+        headers.remove(axum::http::header::AUTHORIZATION);
+        assert!(is_authorized_request(&headers, ControlAuthMode::Optional, None));
+        assert!(!is_authorized_request(&headers, ControlAuthMode::Optional, Some("expected")));
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer expected".parse().expect("valid header"),
+        );
+        assert!(is_authorized_request(&headers, ControlAuthMode::Optional, Some("expected")));
+
+        // Off: never enforce.
+        headers.remove(axum::http::header::AUTHORIZATION);
+        assert!(is_authorized_request(&headers, ControlAuthMode::Off, Some("expected")));
+        assert!(is_authorized_request(&headers, ControlAuthMode::Off, None));
+    }
+
+    #[test]
+    fn control_auth_mode_from_str_parses_and_rejects_bad_values() {
+        use std::str::FromStr;
+        assert_eq!(ControlAuthMode::from_str("require").unwrap(), ControlAuthMode::Require);
+        assert_eq!(ControlAuthMode::from_str("optional").unwrap(), ControlAuthMode::Optional);
+        assert_eq!(ControlAuthMode::from_str("OFF").unwrap(), ControlAuthMode::Off);
+        assert!(ControlAuthMode::from_str("banana").is_err());
     }
 
     #[test]

@@ -27,6 +27,14 @@ pub(super) fn default_provider_log_file() -> PathBuf {
     PathBuf::from("./data/provider.log")
 }
 
+/// Default on-disk location of the auto-generated control-plane API token.
+pub(super) fn default_api_token_file() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".tunnelmux").join("api-token");
+    }
+    PathBuf::from("./data/api-token")
+}
+
 fn route_rule_to_create_request(route: RouteRule) -> CreateRouteRequest {
     let health_check_enabled = route_health_check_enabled(&route);
     CreateRouteRequest {

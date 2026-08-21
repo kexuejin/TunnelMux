@@ -21,6 +21,26 @@ pub(super) fn resolve_api_token(arg_token: Option<String>) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+/// Generate a fresh 32-byte random token (hex) and persist it to `token_file`
+/// with owner-only permissions so local clients can auto-discover it. Called
+/// only in `require` mode when no token was otherwise configured.
+pub(super) async fn generate_and_persist_api_token(token_file: &std::path::Path) -> anyhow::Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|err| anyhow!("failed to read OS randomness: {err}"))?;
+    let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if let Some(parent) = token_file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    std::fs::write(token_file, format!("{hex}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(token_file, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(hex)
+}
+
+
 pub(super) fn resolve_initial_health_check_settings(
     startup_default: HealthCheckSettings,
     persisted: Option<HealthCheckSettings>,
@@ -33,7 +53,11 @@ pub(super) async fn control_auth_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    if is_authorized_request(request.headers(), state.api_token.as_deref()) {
+    if is_authorized_request(
+        request.headers(),
+        state.control_auth,
+        state.api_token.as_deref(),
+    ) {
         return next.run(request).await;
     }
 
@@ -44,12 +68,31 @@ pub(super) async fn control_auth_middleware(
     .into_response()
 }
 
-pub(super) fn is_authorized_request(headers: &HeaderMap, expected_token: Option<&str>) -> bool {
-    match expected_token {
-        None => true,
-        Some(token) => extract_bearer_token(headers)
-            .map(|candidate| candidate == token)
-            .unwrap_or(false),
+/// Decide whether a control-plane request passes auth under the given mode.
+///
+/// - `Off`: always allowed.
+/// - `Require`: fail closed — a valid bearer token is mandatory, regardless of
+///   whether the daemon holds one.
+/// - `Optional`: enforce when a token is configured, otherwise allow.
+pub(super) fn is_authorized_request(
+    headers: &HeaderMap,
+    mode: ControlAuthMode,
+    expected_token: Option<&str>,
+) -> bool {
+    match mode {
+        ControlAuthMode::Off => true,
+        ControlAuthMode::Require => match expected_token {
+            Some(token) => extract_bearer_token(headers)
+                .map(|candidate| candidate == token)
+                .unwrap_or(false),
+            None => false,
+        },
+        ControlAuthMode::Optional => match expected_token {
+            Some(token) => extract_bearer_token(headers)
+                .map(|candidate| candidate == token)
+                .unwrap_or(false),
+            None => true,
+        },
     }
 }
 

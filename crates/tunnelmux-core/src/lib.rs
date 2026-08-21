@@ -13,6 +13,39 @@ pub enum TunnelProvider {
     Ngrok,
 }
 
+/// Control-plane authentication mode.
+///
+/// - `require` (default): fail closed — requests are rejected unless they
+///   carry a valid bearer token, even when the daemon has no token configured
+///   (it then auto-generates one and records it on disk).
+/// - `optional`: backward compatible — a configured token is enforced, but a
+///   tokenless daemon stays open.
+/// - `off`: never enforce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlAuthMode {
+    Require,
+    Optional,
+    Off,
+}
+
+impl std::str::FromStr for ControlAuthMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "require" => Ok(ControlAuthMode::Require),
+            "optional" => Ok(ControlAuthMode::Optional),
+            "off" => Ok(ControlAuthMode::Off),
+            other => Err(format!("invalid control-auth mode '{other}' (expected require | optional | off)")),
+        }
+    }
+}
+
+impl ControlAuthMode {
+    pub const DEFAULT: ControlAuthMode = ControlAuthMode::Require;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TunnelState {

@@ -18,11 +18,22 @@ Relevant daemon flags:
 
 ## Authentication
 
-When `--api-token` (or `TUNNELMUX_API_TOKEN`) is configured:
-- all control-plane endpoints except `GET /v1/health` require:
-  - `Authorization: Bearer <token>`
+The control-plane API supports a bearer-token auth layer. The daemon picks a
+mode via `--control-auth <mode>` (default `require`) or `TUNNELMUX_CONTROL_AUTH`.
 
-Without a token, control-plane endpoints are open for local development.
+| mode | behavior |
+|---|---|
+| `require` (default) | Fail closed: every protected endpoint requires a valid `Authorization: Bearer <token>`. When no token is configured, the daemon generates one and writes it to `~/.tunnelmux/api-token` (0600) so local tools can auto-discover it. |
+| `optional` | Backward compatible: a configured token is enforced; a tokenless daemon stays open. |
+| `off` | Never enforce (local development only). |
+
+The token may be set explicitly with `--api-token <TOKEN>` or
+`TUNNELMUX_API_TOKEN`. It is the same token honored by the CLI, the GUI, and
+`dsh-tunnelmux-remote`; whenever no token is passed, those clients fall back to
+reading `~/.tunnelmux/api-token` if present.
+
+`GET /v1/health` is always exempt from authentication.
+
 
 ## 1. Health
 
