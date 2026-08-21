@@ -2,8 +2,8 @@ use anyhow::{Context, anyhow};
 use reqwest::{Client, RequestBuilder, Response, StatusCode as ReqwestStatusCode};
 use serde::de::DeserializeOwned;
 use tunnelmux_core::{
-    ApplyRoutesRequest, ApplyRoutesResponse, CreateRouteRequest, DashboardResponse,
-    DeleteRouteResponse, DeleteTunnelResponse, DiagnosticsResponse, ErrorResponse,
+    ApplyRoutesRequest, ApplyRoutesResponse, AuthStatusResponse, AuthUnlockRequest, CreateRouteRequest,
+    DashboardResponse, DeleteRouteResponse, DeleteTunnelResponse, DiagnosticsResponse, ErrorResponse,
     HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
     RouteMatchResponse, RouteRule, RoutesResponse, TunnelDeleteRequest, TunnelLogsResponse,
     TunnelStartRequest, TunnelStatusResponse, TunnelWorkspaceResponse,
@@ -287,6 +287,27 @@ impl TunnelmuxControlClient {
     pub async fn reload_settings(&self) -> anyhow::Result<ReloadSettingsResponse> {
         self.post("/v1/settings/reload", &serde_json::json!({}))
             .await
+    }
+
+    /// Current access-code auth status (loopback-only endpoint).
+    pub async fn auth_status(&self) -> anyhow::Result<AuthStatusResponse> {
+        self.get("/v1/auth/status").await
+    }
+
+    /// Unlock loopback control with the access code (loopback-only endpoint).
+    pub async fn auth_unlock(&self, code: &str) -> anyhow::Result<AuthStatusResponse> {
+        self.post(
+            "/v1/auth/unlock",
+            &AuthUnlockRequest {
+                code: code.to_string(),
+            },
+        )
+        .await
+    }
+
+    /// Manually relock loopback control (loopback-only endpoint).
+    pub async fn auth_relock(&self) -> anyhow::Result<AuthStatusResponse> {
+        self.post("/v1/auth/relock", &serde_json::json!({})).await
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> anyhow::Result<T> {

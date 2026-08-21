@@ -54,6 +54,19 @@ enum Command {
         #[command(flatten)]
         retry: StreamRetryArgs,
     },
+    /// Access-code control: view the code / unlock loopback
+    Unlock {
+        /// The access code to unlock loopback. Omit to only print status/code.
+        code: Option<String>,
+
+        /// Print the current access code (and status) without unlocking.
+        #[arg(long, default_value_t = false)]
+        show_code: bool,
+
+        /// Lock loopback again immediately.
+        #[arg(long, default_value_t = false)]
+        relock: bool,
+    },
     /// Read composite dashboard snapshot (tunnel, metrics, routes, upstreams)
     Dashboard {
         #[arg(long, default_value_t = false)]

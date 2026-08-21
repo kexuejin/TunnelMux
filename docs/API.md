@@ -33,7 +33,30 @@ The token may be set explicitly with `--api-token <TOKEN>` or
 reading `~/.tunnelmux/api-token` if present.
 
 `GET /v1/health` is always exempt from authentication.
+### Access-code unlock (loopback)
 
+For interactive use on the host machine you may unlock loopback control with a
+human-enterable access code instead of passing a token on every request. The
+access code is set with `--unlock-code <CODE>`(fixed) or auto-generated and
+rotated on each relock when unset. Unlock lasts for `--unlock-window` ms
+(default 4 hours), then loops back to locked.
+
+- A **loopback** request is allowed when the unlock window is open *or* it
+  carries a valid bearer token.
+- A **non-loopback** request always requires a valid bearer token (the access
+  code never unlocks external access).
+
+Auth endpoints are loopback-only:
+
+| method | path | purpose |
+|---|---|---|
+| `POST` | `/v1/auth/unlock` `{ "code": "<code>" }` | Unlock loopback for the window. |
+| `GET` | `/v1/auth/status` | Current unlock state + current access code. |
+| `POST` | `/v1/auth/relock` `{}` | Lock loopback now (rotates the code if not fixed). |
+
+CLI: `tunnelmux unlock <code>`, `tunnelmux unlock --show-code`,
+`tunnelmux unlock --relock`. The GUI exposes the same controls under
+Settings → Control-plane access.
 
 ## 1. Health
 

@@ -311,6 +311,25 @@ pub struct HealthResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Control-plane access-code auth status.
+pub struct AuthStatusResponse {
+    /// Whether loopback is currently unlocked.
+    pub unlocked: bool,
+    /// Epoch millis when the current unlock expires, if unlocked.
+    pub unlock_expires_at: Option<i64>,
+    /// The current access code (only surfaced for loopback callers).
+    pub code: Option<String>,
+    /// Whether the access code is fixed (true) or rotates on each relock.
+    pub fixed_code: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthUnlockRequest {
+    pub code: String,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ErrorResponse {
     pub error: String,
 }

@@ -147,10 +147,41 @@ pub async fn probe_connection(
 ) -> Result<ConnectionStatus, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     probe_connection_from_settings_dir(&settings_dir).await
-}
+        }
 
-#[tauri::command]
-pub async fn refresh_dashboard(
+        #[tauri::command]
+        pub async fn auth_status(
+            app: tauri::AppHandle,
+            state: tauri::State<'_, GuiAppState>,
+        ) -> Result<tunnelmux_core::AuthStatusResponse, String> {
+            let settings_dir = resolve_settings_dir(&app, state.inner())?;
+            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+            client.auth_status().await.map_err(command_error)
+        }
+
+        #[tauri::command]
+        pub async fn auth_unlock(
+            app: tauri::AppHandle,
+            state: tauri::State<'_, GuiAppState>,
+            code: String,
+        ) -> Result<tunnelmux_core::AuthStatusResponse, String> {
+            let settings_dir = resolve_settings_dir(&app, state.inner())?;
+            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+            client.auth_unlock(&code).await.map_err(command_error)
+        }
+
+        #[tauri::command]
+        pub async fn auth_relock(
+            app: tauri::AppHandle,
+            state: tauri::State<'_, GuiAppState>,
+        ) -> Result<tunnelmux_core::AuthStatusResponse, String> {
+            let settings_dir = resolve_settings_dir(&app, state.inner())?;
+            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+            client.auth_relock().await.map_err(command_error)
+        }
+
+        #[tauri::command]
+        pub async fn refresh_dashboard(
     app: tauri::AppHandle,
     state: tauri::State<'_, GuiAppState>,
 ) -> Result<DashboardSnapshot, String> {

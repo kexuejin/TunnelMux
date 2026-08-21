@@ -116,6 +116,15 @@ struct Args {
 
     #[arg(long, default_value = "require")]
     control_auth: String,
+
+    /// Fixed access code that unlocks loopback control. When unset, the daemon
+    /// rotates a code on each relock (view via `tunnelmux unlock --show-code`).
+    #[arg(long)]
+    unlock_code: Option<String>,
+
+    /// How long (ms) an access-code unlock lasts before looping back to locked.
+    #[arg(long, default_value_t = 4 * 60 * 60 * 1000)]
+    unlock_window: u64,
 }
 
 #[derive(Debug)]
@@ -299,6 +308,18 @@ struct ConfigReloadStatus {
     last_config_reload_error: Option<String>,
 }
 
+/// Shared lock/unlock state for the access-code gate.
+#[derive(Debug, Default)]
+struct ControlLockState {
+    /// The current access code accepted to unlock loopback (fixed if configured,
+    /// otherwise rotated on each relock).
+    code: Option<String>,
+    /// Epoch millis until which loopback requests are unlocked (None = locked).
+    unlock_until: Option<i64>,
+    /// Whether the access code is a fixed configured value (true) or rotates.
+    fixed: bool,
+}
+
 #[derive(Debug)]
 struct AppState {
     runtime: Mutex<RuntimeState>,
@@ -311,6 +332,8 @@ struct AppState {
     provider_log_file: PathBuf,
     api_token: Option<String>,
     control_auth: ControlAuthMode,
+    control_lock: RwLock<ControlLockState>,
+    unlock_window_ms: u64,
     cloudflared_bin: String,
     ngrok_bin: String,
     ready_timeout_ms: u64,
@@ -422,6 +445,23 @@ async fn main() -> anyhow::Result<()> {
         api_token = Some(generate_and_persist_api_token(&api_token_file).await?);
         info!("control api token auto-generated and written to {}", api_token_file.display());
     }
+    // Access-code lock: use a fixed code when configured, otherwise rotate one
+    // now (and on each relock).
+    let fixed_unlock_code = args
+        .unlock_code
+        .as_ref()
+        .map(|code| !code.trim().is_empty())
+        .unwrap_or(false);
+    let initial_unlock_code = match args.unlock_code {
+        Some(code) if !code.trim().is_empty() => Some(code.trim().to_string()),
+        _ if control_auth != ControlAuthMode::Off => Some(generate_access_code()),
+        _ => None,
+    };
+    let control_lock = RwLock::new(ControlLockState {
+        code: initial_unlock_code,
+        unlock_until: None,
+        fixed: fixed_unlock_code,
+    });
     let startup_health_check_settings = HealthCheckSettings {
         interval_ms: normalize_health_check_interval_ms(args.health_check_interval_ms)
             .with_context(|| {
@@ -484,6 +524,8 @@ async fn main() -> anyhow::Result<()> {
         provider_log_file,
         api_token,
         control_auth,
+        control_lock,
+        unlock_window_ms: args.unlock_window,
         cloudflared_bin: args.cloudflared_bin,
         ngrok_bin: args.ngrok_bin,
         ready_timeout_ms: args.ready_timeout_ms,
@@ -527,6 +569,9 @@ async fn main() -> anyhow::Result<()> {
         ));
     let control_app = Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/auth/unlock", post(unlock_auth))
+        .route("/v1/auth/status", get(auth_status))
+        .route("/v1/auth/relock", post(relock_auth))
         .merge(protected_control_app)
         .with_state(shared.clone());
 
@@ -546,7 +591,10 @@ async fn main() -> anyhow::Result<()> {
     info!("provider log file {}", shared.provider_log_file.display());
     info!("gateway listening on {}", gateway_addr);
 
-    axum::serve(listener, control_app).await?;
+    axum::serve(
+        listener,
+        control_app.into_make_service_with_connect_info::<SocketAddr>(),
+    ).await?;
     Ok(())
 }
 
@@ -1175,6 +1223,72 @@ mod tests {
             provider_log_file,
             api_token: api_token.map(ToString::to_string),
             control_auth: ControlAuthMode::Optional,
+            control_lock: RwLock::new(ControlLockState {
+                code: None,
+                unlock_until: None,
+                fixed: false,
+            }),
+            unlock_window_ms: 4 * 60 * 60 * 1000,
+            cloudflared_bin: "cloudflared".to_string(),
+            ngrok_bin: "ngrok".to_string(),
+            ready_timeout_ms: 15_000,
+            max_auto_restarts: 10,
+            proxy_client: reqwest::Client::new(),
+            ws_proxy_client: HyperClient::builder(TokioExecutor::new()).build(https_connector),
+        })
+    }
+
+    fn test_state_with_lock_require(token: Option<&str>, code: Option<&str>) -> Arc<AppState> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let test_id = next_test_id();
+        let mut http_connector = HttpConnector::new();
+        http_connector.enforce_http(false);
+        let https_connector = HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_or_http()
+            .enable_http1()
+            .wrap_connector(http_connector);
+        Arc::new(AppState {
+            runtime: Mutex::new(RuntimeState {
+                persisted: PersistedState {
+                    current_tunnel_id: Some("primary".to_string()),
+                    tunnels: vec![PersistedTunnelState {
+                        id: "primary".to_string(),
+                        status: default_tunnel_status(TunnelState::Idle),
+                    }],
+                    routes: vec![],
+                    health_check: Some(HealthCheckSettings {
+                        interval_ms: 5_000,
+                        timeout_ms: 2_000,
+                        path: "/".to_string(),
+                    }),
+                },
+                running_tunnels: HashMap::new(),
+                pending_restarts: HashMap::new(),
+            }),
+            gateway_bindings: Mutex::new(HashMap::new()),
+            upstream_health: Mutex::new(HashMap::new()),
+            health_check_settings: RwLock::new(HealthCheckSettings {
+                interval_ms: 5_000,
+                timeout_ms: 2_000,
+                path: "/".to_string(),
+            }),
+            data_file: PathBuf::from(format!("/tmp/tunnelmux-test-lock-{test_id}.json")),
+            config_file: PathBuf::from(format!("/tmp/tunnelmux-test-lock-{test_id}.json")),
+            config_reload_status: Mutex::new(ConfigReloadStatus {
+                enabled: true,
+                interval_ms: 1_000,
+                ..ConfigReloadStatus::default()
+            }),
+            provider_log_file: PathBuf::from(format!("/tmp/tunnelmux-test-lock-{test_id}.log")),
+            api_token: token.map(ToString::to_string),
+            control_auth: ControlAuthMode::Require,
+            control_lock: RwLock::new(ControlLockState {
+                code: code.map(ToString::to_string),
+                unlock_until: None,
+                fixed: false,
+            }),
+            unlock_window_ms: 4 * 60 * 60 * 1000,
             cloudflared_bin: "cloudflared".to_string(),
             ngrok_bin: "ngrok".to_string(),
             ready_timeout_ms: 15_000,
@@ -1451,6 +1565,12 @@ mod tests {
             provider_log_file,
             api_token: None,
             control_auth: ControlAuthMode::Optional,
+            control_lock: RwLock::new(ControlLockState {
+                code: None,
+                unlock_until: None,
+                fixed: false,
+            }),
+            unlock_window_ms: 4 * 60 * 60 * 1000,
             cloudflared_bin: "cloudflared".to_string(),
             ngrok_bin: "ngrok".to_string(),
             ready_timeout_ms: 15_000,
@@ -4118,6 +4238,47 @@ mod tests {
         assert_eq!(ControlAuthMode::from_str("optional").unwrap(), ControlAuthMode::Optional);
         assert_eq!(ControlAuthMode::from_str("OFF").unwrap(), ControlAuthMode::Off);
         assert!(ControlAuthMode::from_str("banana").is_err());
+    }
+
+    #[test]
+    fn control_request_allowed_enforces_loopback_and_token() {
+        // Build a bare AppState with a control_lock we can drive directly.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let state = test_state_with_lock_require(Some("tok-1"), Some("abcdef"));
+            // Non-loopback request without token -> rejected in require mode.
+            let ext = axum::extract::connect_info::ConnectInfo("203.0.113.5:1234".parse::<SocketAddr>().unwrap());
+            let request = axum::http::Request::builder()
+                .extension(ext)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(!control_request_allowed(&state, &request));
+
+            // Same non-loopback request WITH a valid bearer token -> allowed.
+            let mut authorized = axum::http::Request::builder();
+            authorized = authorized.header("authorization", "Bearer tok-1");
+            let request = authorized.extension(ext).body(axum::body::Body::empty()).unwrap();
+            assert!(control_request_allowed(&state, &request));
+
+            // Loopback request without token while locked -> rejected.
+            let loopback_ext = axum::extract::connect_info::ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap());
+            let request = axum::http::Request::builder()
+                .extension(loopback_ext)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(!control_request_allowed(&state, &request));
+
+            // Unlock loopback, then the same request is allowed.
+            {
+                let mut lock = state.control_lock.write().await;
+                lock.unlock_until = Some(chrono::Utc::now().timestamp_millis() + 60_000);
+            }
+            let request = axum::http::Request::builder()
+                .extension(loopback_ext)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(control_request_allowed(&state, &request));
+        });
     }
 
     #[test]

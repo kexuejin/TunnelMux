@@ -206,6 +206,13 @@ configured the daemon generates one into `~/.tunnelmux/api-token`. The CLI and
 GUI (and `dsh-tunnelmux-remote`) auto-read that token, so local tools keep
 working unchanged. `GET /v1/health` is always unauthenticated.
 
+You can also **unlock loopback** with a human-enterable access code
+(`--unlock-code <CODE>` or auto-rotated when unset; default window 4h,
+`--unlock-window <ms>`). While unlocked, local requests pass without a token;
+non-loopback (e.g. bridged) access still requires the bearer token. Use
+`tunnelmux unlock <code>` / `tunnelmux unlock --show-code` / `--relock`, or the
+GUI under Settings → Control-plane access.
+
 ## Docs
 
 - [Architecture](docs/ARCHITECTURE.md)

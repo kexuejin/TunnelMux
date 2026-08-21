@@ -257,6 +257,12 @@ function bindElements() {
   elements.baseUrl = document.getElementById('settings-base-url');
   elements.token = document.getElementById('settings-token');
   elements.saveSettings = document.getElementById('save-settings');
+  elements.authStatusLine = document.getElementById('auth-status-line');
+  elements.authCodeLine = document.getElementById('auth-code-line');
+  elements.authCodeInput = document.getElementById('auth-code-input');
+  elements.authUnlock = document.getElementById('auth-unlock');
+  elements.authRelock = document.getElementById('auth-relock');
+  elements.authRefresh = document.getElementById('auth-refresh');
 
   elements.troubleshootingDetails = document.getElementById('troubleshooting-details');
   elements.errorDetailsBackdrop = document.getElementById('error-details-backdrop');
@@ -285,10 +291,13 @@ function bindElements() {
 }
 
 function bindEvents() {
-  elements.openSettings?.addEventListener('click', () => openSettingsDrawer());
+  elements.openSettings?.addEventListener('click', () => { openSettingsDrawer(); void refreshAuthStatus(); });
   elements.statusAction?.addEventListener('click', () => withBusy(handleStatusAction));
   elements.closeSettings?.addEventListener('click', closeSettingsDrawer);
   elements.settingsBackdrop?.addEventListener('click', closeSettingsDrawer);
+  elements.authUnlock?.addEventListener('click', () => void handleAuthUnlock());
+  elements.authRelock?.addEventListener('click', () => void handleAuthRelock());
+  elements.authRefresh?.addEventListener('click', () => void refreshAuthStatus());
   elements.createTunnelEmpty?.addEventListener('click', () => openTunnelDrawer({ mode: 'create' }));
   elements.emptyProviderAction?.addEventListener('click', () => withBusy(handleEmptyProviderAction));
   elements.emptyProviderFollowUpAction?.addEventListener('click', () => withBusy(handleEmptyProviderFollowUpAction));
@@ -397,6 +406,47 @@ function closeSettingsDrawer() {
   state.settingsDrawerOpen = false;
   elements.settingsBackdrop.hidden = true;
   elements.settingsDrawer.hidden = true;
+}
+async function refreshAuthStatus() {
+  if (!elements.authStatusLine || !elements.authCodeLine) return;
+  try {
+    const status = await invoke('auth_status');
+    renderAuthStatus(status);
+  } catch (err) {
+    elements.authStatusLine.textContent = `error: ${String(err)}`;
+    elements.authCodeLine.textContent = '—';
+  }
+}
+
+function renderAuthStatus(status) {
+  const unlocked = Boolean(status?.unlocked);
+  const expires = status?.unlock_expires_at ? new Date(status.unlock_expires_at) : null;
+  const remaining = expires ? Math.max(0, Math.round((expires.getTime() - Date.now()) / 1000)) : 0;
+  elements.authStatusLine.textContent = unlocked
+    ? `Unlocked (${Math.floor(remaining / 60)}m ${remaining % 60}s left)`
+    : 'Locked';
+  elements.authCodeLine.textContent = status?.code ? status.code : '—';
+}
+
+async function handleAuthUnlock() {
+  const code = elements.authCodeInput?.value?.trim();
+  if (!code) return;
+  try {
+    const status = await invoke('auth_unlock', { code });
+    renderAuthStatus(status);
+    elements.authCodeInput.value = '';
+  } catch (err) {
+    elements.authStatusLine.textContent = `unlock failed: ${String(err)}`;
+  }
+}
+
+async function handleAuthRelock() {
+  try {
+    const status = await invoke('auth_relock');
+    renderAuthStatus(status);
+  } catch (err) {
+    elements.authStatusLine.textContent = `relock failed: ${String(err)}`;
+  }
 }
 
 function openTunnelDrawer({ mode, recoveryTarget = null }) {

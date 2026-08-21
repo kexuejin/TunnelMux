@@ -239,8 +239,32 @@
             </label>
             <label class="field">
               <span>Bearer Token</span>
+            <label class="field">
+              <span>Bearer Token</span>
               <input id="settings-token" type="password" placeholder="Optional" />
             </label>
+          </section>
+
+          <section class="drawer-section">
+            <h3>Control-plane access</h3>
+            <p class="panel-subtle">Locked until you enter the current access code. Only works from this machine; external access always needs the bearer token.</p>
+            <div class="field">
+              <span>Status</span>
+              <span id="auth-status-line">—</span>
+            </div>
+            <div class="field">
+              <span>Current code</span>
+              <span id="auth-code-line">—</span>
+            </div>
+            <label class="field">
+              <span>Enter code</span>
+              <input id="auth-code-input" type="text" placeholder="Access code" autocomplete="off" />
+            </label>
+            <div class="row">
+              <button id="auth-unlock" type="button">Unlock</button>
+              <button id="auth-relock" type="button" class="secondary">Lock now</button>
+              <button id="auth-refresh" type="button" class="secondary">Refresh</button>
+            </div>
           </section>
         </div>
 

@@ -40,6 +40,13 @@ pub(super) async fn generate_and_persist_api_token(token_file: &std::path::Path)
     Ok(hex)
 }
 
+/// Generate a short human-enterable access code (6 hex chars) for the
+/// loopback unlock prompt.
+pub(super) fn generate_access_code() -> String {
+    let mut bytes = [0u8; 3];
+    getrandom::fill(&mut bytes).expect("os randomness");
+    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+}
 
 pub(super) fn resolve_initial_health_check_settings(
     startup_default: HealthCheckSettings,
@@ -53,19 +60,59 @@ pub(super) async fn control_auth_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    if is_authorized_request(
-        request.headers(),
-        state.control_auth,
-        state.api_token.as_deref(),
-    ) {
+    if control_request_allowed(&state, &request) {
         return next.run(request).await;
     }
 
     ApiError {
         status: StatusCode::UNAUTHORIZED,
-        message: "unauthorized: missing or invalid bearer token".to_string(),
+        message: "unauthorized: provide a bearer token, or unlock loopback with the access code".to_string(),
     }
     .into_response()
+}
+
+/// Whether a control-plane request is allowed under the current mode. A loopback
+/// request passes when the access-code window is open; any request also passes
+/// with a valid bearer token (required for non-loopback). `off` opens everything.
+pub(super) fn control_request_allowed(state: &Arc<AppState>, request: &Request) -> bool {
+    if state.control_auth == ControlAuthMode::Off {
+        return true;
+    }
+    // Non-loopback requests must present a valid bearer token.
+    let from_loopback = request_remote_addr_is_loopback(request);
+    if !from_loopback && !is_authorized_request(request.headers(), state.control_auth, state.api_token.as_deref()) {
+        return false;
+    }
+    // Loopback: allow if either the bearer token is valid or the unlock window is open.
+    if from_loopback {
+        if is_authorized_request(request.headers(), state.control_auth, state.api_token.as_deref()) {
+            return true;
+        }
+        if let Ok(lock) = state.control_lock.try_read() {
+            if let Some(until) = lock.unlock_until {
+                if now_millis() < until {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    true
+}
+
+fn request_remote_addr_is_loopback(request: &Request) -> bool {
+    request
+        .extensions()
+        .get::<axum::extract::connect_info::ConnectInfo<SocketAddr>>()
+        .map(|info| {
+            let ip = info.0.ip();
+            ip.is_loopback() || ip.is_unspecified()
+        })
+        .unwrap_or(false)
+}
+
+fn now_millis() -> i64 {
+    chrono::Utc::now().timestamp_millis()
 }
 
 /// Decide whether a control-plane request passes auth under the given mode.
@@ -110,6 +157,95 @@ pub(super) fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
         })
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct AuthStatusResponse {
+    /// Whether loopback is currently unlocked.
+    pub unlocked: bool,
+    /// Epoch millis when the current unlock expires, if unlocked.
+    pub unlock_expires_at: Option<i64>,
+    /// The current access code (only surfaced for loopback callers).
+    pub code: Option<String>,
+    /// Whether the access code is fixed (true) or rotates on each relock (false).
+    pub fixed_code: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct AuthUnlockRequest {
+    pub code: String,
+}
+
+pub(crate) fn is_fixed_unlock_code(state: &Arc<AppState>) -> bool {
+    state
+        .control_lock
+        .try_read()
+        .map(|lock| lock.fixed)
+        .unwrap_or(false)
+}
+
+pub(super) async fn auth_status(
+    State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+) -> Result<Json<AuthStatusResponse>, ApiError> {
+    if !addr.ip().is_loopback() {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "auth status is loopback-only".to_string(),
+        });
+    }
+    let now = now_millis();
+    let lock = state.control_lock.read().await;
+    let unlocked = lock.unlock_until.map(|u| now < u).unwrap_or(false);
+    Ok(Json(AuthStatusResponse {
+        unlocked,
+        unlock_expires_at: lock.unlock_until.filter(|u| now < *u),
+        code: lock.code.clone(),
+        fixed_code: is_fixed_unlock_code(&state),
+    }))
+}
+
+pub(super) async fn unlock_auth(
+    State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+    Json(body): Json<AuthUnlockRequest>,
+) -> Result<Json<AuthStatusResponse>, ApiError> {
+    if !addr.ip().is_loopback() {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "access-code unlock is loopback-only".to_string(),
+        });
+    }
+    let mut lock = state.control_lock.write().await;
+    let valid = lock.code.as_deref() == Some(body.code.as_str());
+    if !valid {
+        return Err(ApiError {
+            status: StatusCode::UNAUTHORIZED,
+            message: "invalid access code".to_string(),
+        });
+    }
+    lock.unlock_until = Some(now_millis() + state.unlock_window_ms as i64);
+    drop(lock);
+    auth_status(State(state), axum::extract::ConnectInfo(addr)).await
+}
+
+pub(super) async fn relock_auth(
+    State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
+) -> Result<Json<AuthStatusResponse>, ApiError> {
+    if !addr.ip().is_loopback() {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "access-code relock is loopback-only".to_string(),
+        });
+    }
+    let mut lock = state.control_lock.write().await;
+    lock.unlock_until = None;
+    if !is_fixed_unlock_code(&state) {
+        lock.code = Some(generate_access_code());
+    }
+    drop(lock);
+    auth_status(State(state), axum::extract::ConnectInfo(addr)).await
 }
 
 pub(super) async fn get_tunnel_status(
