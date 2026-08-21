@@ -52,6 +52,35 @@
 - health 豁免: 任意模式 `/v1/health` 200。
 - token 自动生成落盘(0600) + CLI/control-client 自动读取路径单测。
 
-## 8. 范围
+## 8. 认证码解锁（Access Code，2026-08-21 追加）
+
+目标: 本机交互式使用可免 token——输入认证码解锁 loopback 一段时间,而非 loopback 仍强制 Bearer token。
+
+### 双层鉴权
+
+| 来源 | 凭证 | 说明 |
+|---|---|---|
+| loopback (127.0.0.1) | 认证码解锁 或 Bearer token | 输码后解锁窗口内放行,或直接带 token |
+| 非 loopback (0.0.0.0/桥接公网) | 仅 Bearer token | 认证码不解锁外网,永久防护 |
+
+### 认证码
+
+- `--unlock-code <code>` 固定码,或每次锁定自动生成随机码。
+- 随机码: daemon 生成、解锁即作废、回锁后重新生成。
+- 解锁窗口 `--unlock-window`(默认 4h);过期自动回锁。
+
+### 接口
+
+- GUI: 设置→控制面安全,输码解锁 + 显示当前随机码 + 剩余时长。
+- CLI: `tunnelmux unlock <code>` / `tunnelmux unlock --show-code`。
+- API: `POST /v1/auth/unlock`(输码解锁)、`GET /v1/auth/status`(解锁状态+当前码)、`POST /v1/auth/relock`(手动回锁)。
+
+### 与三档 auth 的关系
+
+- 三档 `--control-auth`(require/optional/off)保留;认证码解锁是 require 下的**附加便利层**。
+- 未解锁 + 未带 token 的 loopback 请求 → 401。
+- 实现需 daemon 感知请求来源 IP(axum ConnectInfo)。
+
+## 9. 范围
 
 - 控制面 API 鉴权(4765)。不涉及网关 data-plane 访问控制(48081 反向代理,靠 upstream 自身防护;DSH 本体靠 trustedHosts fence)——后续另行规划。
