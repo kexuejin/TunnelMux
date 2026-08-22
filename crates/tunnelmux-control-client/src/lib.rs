@@ -3,7 +3,7 @@ use reqwest::{Client, RequestBuilder, Response, StatusCode as ReqwestStatusCode}
 use serde::de::DeserializeOwned;
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, AuthStatusResponse, AuthUnlockRequest, CreateRouteRequest,
-    SetRouteAccessRequest, SetRouteAccessResponse,
+    RouteAccessSummaryResponse, SetRouteAccessRequest, SetRouteAccessResponse,
     DashboardResponse, DeleteRouteResponse, DeleteTunnelResponse, DiagnosticsResponse, ErrorResponse,
     HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
     RouteMatchResponse, RouteRule, RoutesResponse, TunnelDeleteRequest, TunnelLogsResponse,
@@ -263,6 +263,11 @@ impl TunnelmuxControlClient {
         payload: &SetRouteAccessRequest,
     ) -> anyhow::Result<SetRouteAccessResponse> {
         self.put("/v1/routes/access", payload).await
+    }
+
+    /// List which routes currently require a gateway access code (no secrets).
+    pub async fn list_route_access(&self) -> anyhow::Result<RouteAccessSummaryResponse> {
+        self.get("/v1/routes/access").await
     }
 
     pub async fn upstreams_health(&self) -> anyhow::Result<UpstreamsHealthResponse> {

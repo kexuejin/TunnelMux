@@ -56,6 +56,7 @@ pub fn run() {
             commands::auth_status,
             commands::auth_unlock,
             commands::auth_relock,
+            commands::list_route_access,
             commands::load_tunnel_workspace,
             commands::load_provider_availability_snapshot,
             commands::install_provider,

@@ -178,6 +178,20 @@ pub struct SetRouteAccessResponse {
     pub require_access_code: Option<String>,
     pub cookie_ttl_ms: Option<u64>,
 }
+/// A non-secret summary of one route access gate, safe for list endpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteAccessSummary {
+    pub route_id: String,
+    /// True when this route requires an access code (gate enabled).
+    pub gated: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteAccessSummaryResponse {
+    #[serde(default)]
+    pub routes: Vec<RouteAccessSummary>,
+}
+
 
 
 pub fn effective_route_health_check_path(

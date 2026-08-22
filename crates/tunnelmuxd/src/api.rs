@@ -1,7 +1,7 @@
 use super::*;
 use tunnelmux_core::{
-    RouteAccessConfig, SetRouteAccessRequest, SetRouteAccessResponse, TunnelProfileSummary,
-    TunnelWorkspaceResponse,
+    RouteAccessConfig, RouteAccessSummary, RouteAccessSummaryResponse, SetRouteAccessRequest,
+    SetRouteAccessResponse, TunnelProfileSummary, TunnelWorkspaceResponse,
 };
 
 #[derive(Debug, Deserialize)]
@@ -1395,6 +1395,28 @@ pub(super) async fn set_route_access(
         require_access_code: config.require_access_code,
         cookie_ttl_ms: config.cookie_ttl_ms,
     }))
+}
+
+pub(super) async fn list_route_access(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<RouteAccessSummaryResponse>, ApiError> {
+    let routes = {
+        let runtime = state.runtime.lock().await;
+        runtime
+            .persisted
+            .route_access
+            .iter()
+            .map(|(route_id, config)| RouteAccessSummary {
+                route_id: route_id.clone(),
+                gated: config
+                    .require_access_code
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|s| !s.is_empty()),
+            })
+            .collect::<Vec<_>>()
+    };
+    Ok(Json(RouteAccessSummaryResponse { routes }))
 }
 
 pub(super) async fn apply_routes(

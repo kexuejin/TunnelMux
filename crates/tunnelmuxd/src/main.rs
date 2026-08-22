@@ -566,7 +566,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/routes/match", get(match_route))
         .route("/v1/routes/stream", get(stream_routes))
         .route("/v1/routes/apply", post(apply_routes))
-        .route("/v1/routes/access", put(set_route_access))
+        .route(
+            "/v1/routes/access",
+            get(list_route_access).put(set_route_access),
+        )
         .route("/v1/routes/{id}", delete(delete_route).put(update_route))
         .layer(middleware::from_fn_with_state(
             shared.clone(),

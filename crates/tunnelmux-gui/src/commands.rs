@@ -183,6 +183,16 @@ pub async fn probe_connection(
         }
 
         #[tauri::command]
+        pub async fn list_route_access(
+            app: tauri::AppHandle,
+            state: tauri::State<'_, GuiAppState>,
+        ) -> Result<tunnelmux_core::RouteAccessSummaryResponse, String> {
+            let settings_dir = resolve_settings_dir(&app, state.inner())?;
+            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+            client.list_route_access().await.map_err(command_error)
+        }
+
+        #[tauri::command]
         pub async fn refresh_dashboard(
     app: tauri::AppHandle,
     state: tauri::State<'_, GuiAppState>,

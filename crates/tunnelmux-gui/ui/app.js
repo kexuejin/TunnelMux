@@ -59,6 +59,7 @@ const state = {
     current_tunnel_id: null,
   },
   routeCache: [],
+  routeGates: {},
   editingOriginalId: null,
   settingsDrawerOpen: false,
   serviceDrawerOpen: false,
@@ -1376,7 +1377,14 @@ async function refreshDashboard() {
 
 async function refreshRoutes() {
   try {
-    const snapshot = await invoke('list_routes');
+    const [snapshot, gates] = await Promise.all([
+      invoke('list_routes'),
+      invoke('list_route_access').catch(() => ({ routes: [] })),
+    ]);
+    state.routeGates = {};
+    for (const gate of Array.isArray(gates?.routes) ? gates.routes : []) {
+      state.routeGates[gate.route_id] = Boolean(gate.gated);
+    }
     renderRoutes(snapshot);
   } catch (error) {
     if (state.daemonBootstrapping) {
@@ -1817,6 +1825,9 @@ function renderRoutes(snapshot) {
           <p class="service-local">${escapeHtml(route.upstream_url)}</p>
         </div>
         <span class="service-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'Live' : 'Off'}</span>
+        ${state.routeGates[route.id]
+          ? '<span class="service-badge gated">Gated</span>'
+          : ''}
       </div>
       <div class="actions compact-actions">
         <button type="button" class="secondary action-chip" data-route-action="edit" data-route-id="${escapeAttribute(route.id)}">Edit</button>

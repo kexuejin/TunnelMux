@@ -532,6 +532,12 @@ input[type="checkbox"] {
   color: #cbd5e1;
 }
 
+.service-badge.gated {
+  background: rgba(251, 191, 36, 0.15);
+  border-color: rgba(251, 191, 36, 0.35);
+  color: #fde68a;
+}
+
 .services-shell {
   display: grid;
   gap: 18px;
