@@ -247,6 +247,7 @@ GUI under Settings → Control-plane access.
 - [Roadmap](docs/ROADMAP.md)
 - [Releasing](docs/RELEASING.md)
 - [Changelog](CHANGELOG.md)
+- [Promo & growth copy](docs/PROMO.md)
 
 ## Repository layout
 
