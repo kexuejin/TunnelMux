@@ -6,8 +6,10 @@ All notable changes to this project should be documented in this file.
 
 - Add gateway service access gates with a global default code, per-service inherit/custom/public modes, and route-scoped browser cookies.
 - Add a polished route access login page with cache-clearing headers for mounted web apps.
-- Add in-app update checking and SHA256-verified raw archive installation from GitHub Releases.
-- Add GUI controls for default service access, per-service gate modes, and update checks.
+- Add in-app update checking and SHA256-verified raw archive installation from GitHub Releases, now preferring the static `tunnelmux-latest.json` manifest before GitHub API fallback.
+- Add updater install confirmation, asset/SHA display, and a Restart Now action after install.
+- Add GUI controls for default service access, per-service gate modes, generated/copyable access codes, route smoke tests, and update checks.
+- Add a DeepSeek / mounted-SPA preset plus root-path exposure hints on service cards.
 - Harden mounted app forwarding by stripping external Host/Origin when routes do not forward the original Host header.
 - Document the in-app updater and service access gate workflow.
 

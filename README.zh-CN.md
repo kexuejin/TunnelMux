@@ -71,7 +71,7 @@ TunnelMux 先服务最常见的路径：
 - `tunnelmux-cli`
 - `tunnelmux-gui`
 
-桌面 GUI 也可以在 Settings → App Updates 中检查 GitHub Releases。发现匹配当前平台的新 raw archive 后，会下载到 `~/.tunnelmux/updates/<version>/`，存在 `SHA256SUMS` 时先校验，再把包内二进制安装到当前应用可执行文件旁边，并提示重启 TunnelMux。
+桌面 GUI 也可以在 Settings → App Updates 中检查 GitHub Releases。它会优先读取静态 `tunnelmux-latest.json` release manifest，必要时才 fallback 到 GitHub API。发现匹配当前平台的新 raw archive 后，会先展示 asset 和 SHA256，下载到 `~/.tunnelmux/updates/<version>/`，存在 `SHA256SUMS` 时先校验，再把包内二进制安装到当前应用可执行文件旁边，并启用 **Restart Now**。
 
 ### 一行命令安装
 
@@ -209,6 +209,8 @@ daemon 会轮询 `config.json`，应用路由和健康检查变更时不需要�
 - `Always public`：即使配置了默认码，该服务也保持公开
 
 默认门禁存储在 `~/.tunnelmux/state.json` 的 `default_route_access`，服务覆盖存储在 `route_access.<route_id>`。浏览器解锁后使用类似 `tunnelmux_access_<route_id>` 的 route 级 cookie，因此一个服务解锁不会打开其它 route。
+
+对于 DeepSeek Harness 这类挂载在子路径下的 SPA，可以在服务编辑器里点击 **DeepSeek / SPA Preset**。它会设置 path mount、关闭 Host forwarding、打开 response path rewrite，并提示根路径 `/` 仍保持关闭，除非另一个服务显式暴露它。每张服务卡片也提供 **Test**，用于检查公网 route 和 upstream 状态。
 
 ## 文档
 

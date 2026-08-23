@@ -70,6 +70,8 @@ pub fn run() {
             commands::start_tunnel,
             commands::stop_tunnel,
             commands::list_routes,
+            commands::restart_app,
+            commands::test_route,
             commands::save_route,
             commands::delete_route,
             commands::load_diagnostics_summary,

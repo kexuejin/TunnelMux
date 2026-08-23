@@ -538,6 +538,13 @@ input[type="checkbox"] {
   color: #fde68a;
 }
 
+.service-badge.open,
+.service-badge.public {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(96, 165, 250, 0.3);
+  color: #bfdbfe;
+}
+
 .services-shell {
   display: grid;
   gap: 18px;
@@ -600,10 +607,27 @@ input[type="checkbox"] {
   font-weight: 700;
 }
 
-.service-local {
+.service-local,
+.service-root-policy {
   color: #94a3b8;
   font-size: 0.88rem;
   margin-top: 4px;
+}
+
+.service-root-policy {
+  color: #cbd5e1;
+}
+
+.header-actions,
+.field-actions {
+  flex-wrap: wrap;
+}
+
+.route-test-status {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.48);
+  border: 1px solid rgba(148, 163, 184, 0.14);
 }
 
 .empty-state {

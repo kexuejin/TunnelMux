@@ -22,6 +22,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 use tauri::Manager;
 use tunnelmux_control_client::{ControlClientConfig, TunnelmuxControlClient};
@@ -50,6 +51,8 @@ enum SettingsSaveReconnectMode {
 }
 
 const TUNNELMUX_RELEASE_API: &str = "https://api.github.com/repos/kexuejin/TunnelMux/releases/latest";
+const TUNNELMUX_RELEASE_MANIFEST_URL: &str =
+    "https://github.com/kexuejin/TunnelMux/releases/latest/download/tunnelmux-latest.json";
 const TUNNELMUX_RELEASE_DOWNLOAD_PREFIX: &str = "https://github.com/kexuejin/TunnelMux/releases/download/";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,6 +72,8 @@ pub struct AppUpdateCheckVm {
     pub release_notes: Option<String>,
     pub asset: Option<AppUpdateAssetVm>,
     pub message: String,
+    pub target: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +99,25 @@ struct GithubReleaseAsset {
     name: String,
     browser_download_url: String,
     size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseManifest {
+    version: String,
+    tag: Option<String>,
+    release_url: Option<String>,
+    notes: Option<String>,
+    assets: Vec<ReleaseManifestAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseManifestAsset {
+    name: String,
+    url: String,
+    sha256: Option<String>,
+    size: Option<u64>,
+    target: Option<String>,
+    kind: Option<String>,
 }
 
 #[tauri::command]
@@ -125,7 +149,57 @@ pub async fn download_and_install_app_update(
 async fn check_app_update_impl() -> anyhow::Result<AppUpdateCheckVm> {
     let client = reqwest::Client::builder()
         .user_agent(format!("TunnelMux/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(20))
         .build()?;
+    match check_app_update_from_manifest(&client).await {
+        Ok(result) => Ok(result),
+        Err(manifest_error) => check_app_update_from_github_api(&client)
+            .await
+            .with_context(|| format!("manifest check failed first: {manifest_error}")),
+    }
+}
+
+async fn check_app_update_from_manifest(
+    client: &reqwest::Client,
+) -> anyhow::Result<AppUpdateCheckVm> {
+    let manifest = client
+        .get(TUNNELMUX_RELEASE_MANIFEST_URL)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<ReleaseManifest>()
+        .await?;
+    let latest_version = normalize_release_version(&manifest.version);
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let target = current_update_target();
+    let asset = manifest
+        .assets
+        .iter()
+        .find(|asset| {
+            asset.target.as_deref() == Some(target.as_str())
+                && asset.kind.as_deref().unwrap_or("raw_archive") == "raw_archive"
+                && asset.name.ends_with(".tar.gz")
+        })
+        .map(|asset| AppUpdateAssetVm {
+            name: asset.name.clone(),
+            url: asset.url.clone(),
+            sha256: asset.sha256.clone(),
+            size: asset.size,
+        });
+    build_update_check_response(
+        current_version,
+        latest_version,
+        target,
+        manifest.release_url,
+        manifest.notes.or(manifest.tag),
+        asset,
+        "static manifest",
+    )
+}
+
+async fn check_app_update_from_github_api(
+    client: &reqwest::Client,
+) -> anyhow::Result<AppUpdateCheckVm> {
     let release = client
         .get(TUNNELMUX_RELEASE_API)
         .send()
@@ -135,7 +209,7 @@ async fn check_app_update_impl() -> anyhow::Result<AppUpdateCheckVm> {
         .await?;
     let latest_version = normalize_release_version(&release.tag_name);
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let checksums = fetch_release_checksums(&client, &release).await.unwrap_or_default();
+    let checksums = fetch_release_checksums(client, &release).await.unwrap_or_default();
     let target = current_update_target();
     let asset = release
         .assets
@@ -147,22 +221,44 @@ async fn check_app_update_impl() -> anyhow::Result<AppUpdateCheckVm> {
             sha256: checksums.get(&asset.name).cloned(),
             size: asset.size,
         });
+    build_update_check_response(
+        current_version,
+        latest_version,
+        target,
+        release.html_url,
+        release.body,
+        asset,
+        "GitHub API fallback",
+    )
+}
+
+fn build_update_check_response(
+    current_version: String,
+    latest_version: String,
+    target: String,
+    release_url: Option<String>,
+    release_notes: Option<String>,
+    asset: Option<AppUpdateAssetVm>,
+    source: &str,
+) -> anyhow::Result<AppUpdateCheckVm> {
     let update_available = version_is_newer(&latest_version, &current_version);
     let message = if asset.is_none() {
-        format!("No update asset found for {target} in {}.", release.tag_name)
+        format!("No raw archive update asset found for {target} in {latest_version}.")
     } else if update_available {
-        format!("TunnelMux {latest_version} is available.")
+        format!("TunnelMux {latest_version} is available ({source}).")
     } else {
-        format!("TunnelMux is up to date ({current_version}).")
+        format!("TunnelMux is up to date ({current_version}; checked via {source}).")
     };
     Ok(AppUpdateCheckVm {
         current_version,
         latest_version,
         update_available,
-        release_url: release.html_url,
-        release_notes: release.body,
+        release_url,
+        release_notes,
         asset,
         message,
+        target,
+        source: source.to_string(),
     })
 }
 
@@ -248,8 +344,8 @@ async fn download_and_install_app_update_impl(
     if !asset_url.starts_with(TUNNELMUX_RELEASE_DOWNLOAD_PREFIX) {
         anyhow::bail!("refusing to download update from unsupported URL: {asset_url}");
     }
-    if !(asset_name.ends_with(".tar.gz") || asset_name.ends_with(".zip")) {
-        anyhow::bail!("unsupported update asset type: {asset_name}");
+    if !asset_name.ends_with(".tar.gz") {
+        anyhow::bail!("automatic install currently supports .tar.gz raw archives only: {asset_name}");
     }
 
     let client = reqwest::Client::builder()
@@ -753,6 +849,32 @@ pub async fn list_routes(
     list_routes_from_settings_dir(&settings_dir).await
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteSmokeTestVm {
+    pub route_id: String,
+    pub public_url: Option<String>,
+    pub auth_gate_status: Option<u16>,
+    pub upstream_status: Option<u16>,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    app.restart();
+}
+
+#[tauri::command]
+pub async fn test_route(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    route_id: String,
+) -> Result<RouteSmokeTestVm, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    test_route_from_settings_dir(&settings_dir, &route_id)
+        .await
+        .map_err(command_error)
+}
+
 #[tauri::command]
 pub async fn save_route(
     app: tauri::AppHandle,
@@ -1050,6 +1172,74 @@ pub async fn list_routes_from_settings_dir(
         None
     };
     Ok(RouteWorkspaceSnapshot::from_routes(routes, message))
+}
+
+async fn test_route_from_settings_dir(
+    settings_dir: &Path,
+    route_id: &str,
+) -> anyhow::Result<RouteSmokeTestVm> {
+    let (settings, client) = load_client(settings_dir).map_err(anyhow::Error::msg)?;
+    let current_tunnel_id = settings
+        .current_tunnel()
+        .map(|tunnel| tunnel.id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no tunnel selected"))?;
+    let response = client.list_routes(current_tunnel_id).await?;
+    let route = response
+        .routes
+        .iter()
+        .find(|route| route.id == route_id)
+        .ok_or_else(|| anyhow::anyhow!("service not found: {route_id}"))?;
+    let tunnel = client.tunnel_status(current_tunnel_id).await.ok();
+    let public_url = tunnel
+        .as_ref()
+        .and_then(|response| response.tunnel.public_base_url.as_deref())
+        .and_then(|base| route_public_url(base, route));
+    let http = reqwest::Client::builder()
+        .user_agent(format!("TunnelMux/{} route-test", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(8))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let auth_gate_status = match public_url.as_deref() {
+        Some(url) => Some(fetch_status(&http, url).await?),
+        None => None,
+    };
+    let upstream_status = Some(fetch_status(&http, &route.upstream_url).await?);
+    let mut details = Vec::new();
+    if let Some(url) = public_url.as_ref() {
+        details.push(format!("public {url} => HTTP {}", auth_gate_status.unwrap_or(0)));
+    } else {
+        details.push("public URL is not running yet".to_string());
+    }
+    details.push(format!("upstream {} => HTTP {}", route.upstream_url, upstream_status.unwrap_or(0)));
+    if route.match_path_prefix.as_deref().unwrap_or("/") != "/" {
+        details.push("root / remains closed unless another service exposes it".to_string());
+    }
+    Ok(RouteSmokeTestVm {
+        route_id: route_id.to_string(),
+        public_url,
+        auth_gate_status,
+        upstream_status,
+        message: details.join("; "),
+    })
+}
+
+fn route_public_url(base: &str, route: &tunnelmux_core::RouteRule) -> Option<String> {
+    let mut url = Url::parse(base).ok()?;
+    if let Some(host) = route.match_host.as_deref().map(str::trim).filter(|host| !host.is_empty()) {
+        let _ = url.set_host(Some(host));
+    }
+    let path = route
+        .match_path_prefix
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .unwrap_or("/");
+    url.set_path(path);
+    Some(url.to_string())
+}
+
+async fn fetch_status(client: &reqwest::Client, url: &str) -> anyhow::Result<u16> {
+    let response = client.get(url).send().await?;
+    Ok(response.status().as_u16())
 }
 
 pub async fn save_route_from_settings_dir(

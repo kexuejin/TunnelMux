@@ -400,11 +400,52 @@ jobs:
           pattern: gui-bundle-*
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: Generate checksums and update manifest
         run: |
           set -euo pipefail
           cd dist
           sha256sum * > SHA256SUMS
+          python - <<'PY'
+          import json, os, pathlib
+          version = os.environ['RELEASE_VERSION']
+          tag = os.environ.get('GITHUB_REF_NAME') or 'v' + version
+          repo = os.environ['GITHUB_REPOSITORY']
+          checksums = {}
+          for line in pathlib.Path('SHA256SUMS').read_text().splitlines():
+              parts = line.split()
+              if len(parts) >= 2:
+                  checksums[parts[1].lstrip('*')] = parts[0]
+          assets = []
+          for path in sorted(pathlib.Path('.').iterdir()):
+              if not path.is_file() or path.name in {'SHA256SUMS', 'tunnelmux-latest.json'}:
+                  continue
+              name = path.name
+              target = None
+              kind = 'native_installer'
+              prefix = f'tunnelmux-{version}-'
+              if name.startswith(prefix) and name.endswith('.tar.gz'):
+                  target = name[len(prefix):-len('.tar.gz')]
+                  kind = 'raw_archive'
+              elif name.startswith(prefix) and name.endswith('.zip'):
+                  target = name[len(prefix):-len('.zip')]
+                  kind = 'raw_archive'
+              assets.append({
+                  'name': name,
+                  'url': f'https://github.com/{repo}/releases/download/{tag}/{name}',
+                  'sha256': checksums.get(name),
+                  'size': path.stat().st_size,
+                  'target': target,
+                  'kind': kind,
+              })
+          manifest = {
+              'version': version,
+              'tag': tag,
+              'release_url': f'https://github.com/{repo}/releases/tag/{tag}',
+              'notes': None,
+              'assets': assets,
+          }
+          pathlib.Path('tunnelmux-latest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          PY
 
       - name: Upload rehearsal artifacts
         if: github.event_name == 'workflow_dispatch'

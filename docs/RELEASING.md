@@ -114,16 +114,17 @@ Expected result:
 The Settings drawer includes an App Updates section. The checker uses GitHub Releases rather than a custom update server:
 
 1. Click **Check for Updates**.
-2. Expect the GUI to query the latest GitHub Release and choose the raw archive matching the current host target, for example `tunnelmux-<version>-aarch64-apple-darwin.tar.gz` on Apple Silicon.
-3. If a newer version and matching raw archive exist, **Download & Install** becomes enabled.
-4. Click **Download & Install**.
-5. Expect the GUI to download the archive under `~/.tunnelmux/updates/<version>/`, verify the archive against `SHA256SUMS` when present, extract it, and replace `tunnelmux-gui`, `tunnelmuxd`, and `tunnelmux-cli` next to the currently running GUI binary.
-6. Restart TunnelMux to use the newly installed binaries.
+2. Expect the GUI to read the static `tunnelmux-latest.json` release manifest first and only fall back to the GitHub API if that manifest is unavailable.
+3. Expect it to choose the raw archive matching the current host target, for example `tunnelmux-<version>-aarch64-apple-darwin.tar.gz` on Apple Silicon.
+4. If a newer version and matching raw archive exist, **Download & Install** becomes enabled and the status text shows the asset and SHA256 availability.
+5. Click **Download & Install** and confirm the asset/version/install prompt.
+6. Expect the GUI to download the archive under `~/.tunnelmux/updates/<version>/`, verify the archive against the manifest/SHA256 metadata when present, extract it, and replace `tunnelmux-gui`, `tunnelmuxd`, and `tunnelmux-cli` next to the currently running GUI binary.
+7. Click **Restart Now** to relaunch TunnelMux with the newly installed binaries.
 
 Notes:
 
 - Automatic install currently targets raw `.tar.gz` archives; platform-native installers (`.dmg`, `.msi`, `.deb`) remain manual install assets.
-- GitHub unauthenticated API rate limits can make a check fail temporarily; retry later or authenticate future release metadata fetching if this becomes noisy.
+- The static manifest reduces GitHub API rate-limit exposure; unauthenticated API fallback can still fail temporarily if GitHub rate limits the client.
 
 ## GUI Easy-Path Smoke Check
 

@@ -71,7 +71,7 @@ Releases also include raw platform archives with:
 - `tunnelmux-cli`
 - `tunnelmux-gui`
 
-The desktop GUI can also check GitHub Releases from Settings → App Updates. When a newer matching raw archive is available, it downloads to `~/.tunnelmux/updates/<version>/`, verifies `SHA256SUMS` when present, installs the bundled binaries beside the current app executable, and asks you to restart TunnelMux.
+The desktop GUI can also check GitHub Releases from Settings → App Updates. It reads the static `tunnelmux-latest.json` release manifest first and falls back to the GitHub API only when needed. When a newer matching raw archive is available, it shows the asset and SHA256 before install, downloads to `~/.tunnelmux/updates/<version>/`, verifies `SHA256SUMS` when present, installs the bundled binaries beside the current app executable, and enables **Restart Now**.
 
 ### One-command installer
 
@@ -210,6 +210,8 @@ Public tunnel routes can be protected before traffic reaches the upstream servic
 - `Always public` — opt the service out of the default gate
 
 The daemon stores the default gate in `default_route_access` and route overrides in `route_access.<route_id>` inside `~/.tunnelmux/state.json`. Successful browser unlocks use route-scoped cookies such as `tunnelmux_access_<route_id>`, so protecting one service does not open unrelated routes.
+
+For mounted SPAs such as DeepSeek Harness, use the **DeepSeek / SPA Preset** in the service editor. It sets a path mount, keeps Host forwarding off, enables response path rewriting, and reminds you that root `/` stays closed unless another service explicitly exposes it. Each service card also has **Test** to check the public route and upstream status.
 
 ## Security
 

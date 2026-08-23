@@ -62,6 +62,7 @@ const state = {
   routeGates: {},
   defaultRouteGate: { gated: false },
   updateCheck: null,
+  updateInstalled: false,
   editingOriginalId: null,
   settingsDrawerOpen: false,
   serviceDrawerOpen: false,
@@ -223,6 +224,11 @@ function bindElements() {
   elements.routeAccessCodeField = document.getElementById('route-access-code-field');
   elements.routeAccessHint = document.getElementById('route-access-hint');
   elements.routeRequireAccessCode = document.getElementById('route-require-access-code');
+  elements.routeTestStatus = document.getElementById('route-test-status');
+  elements.applyDeepseekPreset = document.getElementById('apply-deepseek-preset');
+  elements.generateRouteCode = document.getElementById('generate-route-code');
+  elements.copyRouteCode = document.getElementById('copy-route-code');
+  elements.testRoute = document.getElementById('test-route');
   elements.serviceAdvanced = document.getElementById('service-advanced');
   elements.serviceExposureMode = document.getElementById('service-exposure-mode');
   elements.serviceHostField = document.getElementById('service-host-field');
@@ -266,8 +272,11 @@ function bindElements() {
   elements.updateStatus = document.getElementById('update-status');
   elements.checkUpdate = document.getElementById('check-update');
   elements.installUpdate = document.getElementById('install-update');
+  elements.restartApp = document.getElementById('restart-app');
   elements.defaultRouteAccessCode = document.getElementById('settings-default-route-access-code');
   elements.defaultRouteAccessStatus = document.getElementById('settings-default-route-access-status');
+  elements.generateDefaultRouteCode = document.getElementById('generate-default-route-code');
+  elements.copyDefaultRouteCode = document.getElementById('copy-default-route-code');
   elements.saveDefaultRouteAccess = document.getElementById('save-default-route-access');
   elements.saveSettings = document.getElementById('save-settings');
   elements.authStatusLine = document.getElementById('auth-status-line');
@@ -389,6 +398,10 @@ function bindEvents() {
   });
   elements.cancelRouteEdit?.addEventListener('click', closeServiceDrawer);
   elements.serviceBackdrop?.addEventListener('click', closeServiceDrawer);
+  elements.applyDeepseekPreset?.addEventListener('click', applyDeepSeekPreset);
+  elements.generateRouteCode?.addEventListener('click', () => setGeneratedAccessCode(elements.routeRequireAccessCode, 'Service access code generated.'));
+  elements.copyRouteCode?.addEventListener('click', () => copyTextValue(elements.routeRequireAccessCode?.value?.trim(), 'Service access code copied.', 'Failed to copy service code'));
+  elements.testRoute?.addEventListener('click', () => withBusy(testCurrentRoute));
   elements.saveRoute?.addEventListener('click', () => withBusy(saveRoute));
   elements.serviceExposureMode?.addEventListener('change', applyExposureMode);
   elements.routeAccessMode?.addEventListener('change', syncRouteAccessControls);
@@ -396,6 +409,9 @@ function bindEvents() {
   elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
   elements.checkUpdate?.addEventListener('click', () => withBusy(checkForUpdates));
   elements.installUpdate?.addEventListener('click', () => withBusy(downloadAndInstallUpdate));
+  elements.restartApp?.addEventListener('click', () => withBusy(restartTunnelMux));
+  elements.generateDefaultRouteCode?.addEventListener('click', () => setGeneratedAccessCode(elements.defaultRouteAccessCode, 'Default service code generated.'));
+  elements.copyDefaultRouteCode?.addEventListener('click', () => copyTextValue(elements.defaultRouteAccessCode?.value?.trim(), 'Default service code copied.', 'Failed to copy default code'));
   elements.saveDefaultRouteAccess?.addEventListener('click', () => withBusy(saveDefaultRouteAccess));
   elements.homeProviderAction?.addEventListener('click', () => withBusy(handleHomeProviderAction));
   elements.homeProviderFollowUpAction?.addEventListener('click', () => withBusy(handleHomeProviderFollowUpAction));
@@ -1845,12 +1861,14 @@ function renderRoutes(snapshot) {
           <h3>${escapeHtml(route.id)}</h3>
           <p class="service-exposure">${escapeHtml(describeRouteExposure(route))}</p>
           <p class="service-local">${escapeHtml(route.upstream_url)}</p>
+          <p class="service-root-policy">${escapeHtml(describeRouteRootPolicy(route))}</p>
         </div>
         <span class="service-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'Live' : 'Off'}</span>
         ${renderRouteGateBadge(gate)}
       </div>
       <div class="actions compact-actions">
         <button type="button" class="secondary action-chip" data-route-action="edit" data-route-id="${escapeAttribute(route.id)}">Edit</button>
+        <button type="button" class="secondary action-chip" data-route-action="test" data-route-id="${escapeAttribute(route.id)}">Test</button>
         <button type="button" class="secondary action-chip" data-route-action="toggle" data-route-id="${escapeAttribute(route.id)}">${route.enabled ? 'Disable' : 'Enable'}</button>
         <button type="button" class="secondary action-chip danger-chip" data-route-action="delete" data-route-id="${escapeAttribute(route.id)}">Delete</button>
       </div>
@@ -2054,6 +2072,10 @@ function bindRouteActionButtons() {
     });
   });
 
+  document.querySelectorAll('[data-route-action="test"]').forEach((button) => {
+    button.addEventListener('click', () => withBusy(() => testRouteById(button.dataset.routeId)));
+  });
+
   document.querySelectorAll('[data-route-action="toggle"]').forEach((button) => {
     button.addEventListener('click', () => withBusy(() => toggleRouteEnabled(button.dataset.routeId)));
   });
@@ -2093,6 +2115,7 @@ function populateRouteForm(route) {
   );
   applyExposureMode();
   syncRouteAccessControls();
+  renderRouteTestStatus('', false, true);
   elements.saveRoute.textContent = 'Update Service';
 }
 
@@ -2117,6 +2140,7 @@ function resetRouteForm() {
   elements.routeRequireAccessCode.value = '';
   elements.serviceExposureMode.value = 'path';
   elements.serviceAdvanced.open = false;
+  renderRouteTestStatus('', false, true);
   elements.saveRoute.textContent = 'Save Service';
   applyExposureMode();
   syncRouteAccessControls();
@@ -2149,19 +2173,124 @@ function applyExposureMode() {
   elements.serviceHostField.hidden = elements.serviceExposureMode.value !== 'subdomain';
 }
 
+function applyDeepSeekPreset() {
+  if (!state.editingOriginalId && !elements.routeId.value.trim()) {
+    elements.routeId.value = 'deepseek';
+  }
+  elements.routeUpstreamUrl.value = elements.routeUpstreamUrl.value.trim() || 'http://127.0.0.1:3080';
+  elements.routeMatchPathPrefix.value = elements.routeMatchPathPrefix.value.trim() || '/deepseek';
+  elements.routeMatchHost.value = '';
+  elements.serviceExposureMode.value = 'path';
+  elements.routeHealthCheckEnabled.checked = false;
+  elements.routeHealthCheckPath.value = '';
+  elements.routeFallbackUpstreamUrl.value = '';
+  elements.routeForwardHostHeader.checked = false;
+  elements.routeRewriteResponsePaths.checked = true;
+  if (elements.routeAccessMode.value === 'public') {
+    setRouteAccessMode('inherit');
+  }
+  elements.serviceAdvanced.open = true;
+  applyExposureMode();
+  syncRouteAccessControls();
+  renderRouteTestStatus('DeepSeek / mounted SPA preset applied. Root / stays closed unless another service exposes it.');
+}
+
+function generateAccessCode(length = 8) {
+  const alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const bytes = new Uint8Array(length);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
+}
+
+function setGeneratedAccessCode(input, message) {
+  if (!input) return;
+  input.value = generateAccessCode();
+  input.focus();
+  renderStatus(message);
+}
+
+async function testCurrentRoute() {
+  const routeId = state.editingOriginalId || elements.routeId.value.trim();
+  if (!routeId) {
+    renderRouteTestStatus('Save or name the service before testing.', true);
+    return;
+  }
+  await testRouteById(routeId, { drawer: true });
+}
+
+async function testRouteById(routeId, { drawer = false } = {}) {
+  if (!routeId) {
+    renderStatus('No service selected to test.', true);
+    return;
+  }
+  try {
+    if (drawer) {
+      renderRouteTestStatus('Testing route and upstream…');
+    } else {
+      renderStatus('Testing ' + routeId + '…');
+    }
+    const result = await invoke('test_route', { routeId });
+    const message = result.message || 'Route test completed.';
+    if (drawer) {
+      renderRouteTestStatus(message);
+    }
+    renderStatus(message);
+  } catch (error) {
+    const message = 'Route test failed: ' + formatError(error);
+    if (drawer) {
+      renderRouteTestStatus(message, true);
+    }
+    renderStatus(message, true);
+  }
+}
+
+function renderRouteTestStatus(message, isError = false, hidden = false) {
+  if (!elements.routeTestStatus) return;
+  elements.routeTestStatus.textContent = message;
+  elements.routeTestStatus.hidden = hidden || !message;
+  elements.routeTestStatus.classList.toggle('error', Boolean(isError));
+}
+
+async function restartTunnelMux() {
+  const confirmed = await requestConfirmation({
+    title: 'Restart TunnelMux?',
+    message: 'TunnelMux will restart now so the newly installed binaries can take effect.',
+    confirmLabel: 'Restart Now',
+  });
+  if (!confirmed) return;
+  await invoke('restart_app');
+}
+
 async function checkForUpdates() {
   try {
+    state.updateInstalled = false;
     renderUpdateStatus('Checking GitHub Releases…');
     const result = await invoke('check_app_update');
     state.updateCheck = result;
-    renderUpdateStatus(result.message);
+    const asset = result.asset;
+    const detail = asset
+      ? ' Asset: ' + asset.name + (asset.sha256 ? ' · SHA256 verified on install.' : ' · no SHA256 in metadata.')
+      : '';
+    renderUpdateStatus(result.message + detail);
     if (elements.installUpdate) {
-      elements.installUpdate.disabled = !result.update_available || !result.asset;
+      elements.installUpdate.disabled = !result.update_available || !asset;
+    }
+    if (elements.restartApp) {
+      elements.restartApp.disabled = true;
     }
   } catch (error) {
     state.updateCheck = null;
     if (elements.installUpdate) {
       elements.installUpdate.disabled = true;
+    }
+    if (elements.restartApp) {
+      elements.restartApp.disabled = true;
     }
     renderUpdateStatus('Update check failed: ' + formatError(error), true);
   }
@@ -2174,6 +2303,12 @@ async function downloadAndInstallUpdate() {
     renderUpdateStatus('No installable update is currently selected.', true);
     return;
   }
+  const confirmed = await requestConfirmation({
+    title: 'Install TunnelMux update?',
+    message: 'Install ' + asset.name + ' for version ' + update.latest_version + ' into the current app binary directory. SHA256: ' + (asset.sha256 || 'not provided') + '.',
+    confirmLabel: 'Download & Install',
+  });
+  if (!confirmed) return;
   try {
     renderUpdateStatus('Downloading and installing ' + asset.name + '…');
     const result = await invoke('download_and_install_app_update', {
@@ -2182,9 +2317,13 @@ async function downloadAndInstallUpdate() {
       expectedSha256: asset.sha256 ?? null,
       version: update.latest_version,
     });
-    renderUpdateStatus(result.message + ' Installed: ' + result.installed_binaries.join(', '));
+    state.updateInstalled = true;
+    renderUpdateStatus(result.message + ' Installed: ' + result.installed_binaries.join(', ') + '. Install dir: ' + result.install_dir);
     if (elements.installUpdate) {
       elements.installUpdate.disabled = true;
+    }
+    if (elements.restartApp) {
+      elements.restartApp.disabled = false;
     }
   } catch (error) {
     renderUpdateStatus('Update install failed: ' + formatError(error), true);
@@ -2239,13 +2378,16 @@ function routeGateFor(routeId) {
 function renderRouteGateBadge(gate) {
   const mode = gate?.mode ?? (gate?.gated ? 'route' : 'open');
   if (mode === 'public') {
-    return '<span class="service-badge public">Public</span>';
+    return '<span class="service-badge public" title="Explicitly public; default gate is ignored.">Public</span>';
   }
   if (!gate?.gated) {
-    return '';
+    return '<span class="service-badge open" title="No route or default access gate applies.">Open</span>';
   }
-  const label = mode === 'inherited' ? 'Gated · default' : 'Gated';
-  return '<span class="service-badge gated">' + escapeHtml(label) + '</span>';
+  const label = mode === 'inherited' ? 'Gated · default' : 'Gated · custom';
+  const title = mode === 'inherited'
+    ? 'Protected by the default service access code.'
+    : 'Protected by a service-specific access code.';
+  return '<span class="service-badge gated" title="' + escapeAttribute(title) + '">' + escapeHtml(label) + '</span>';
 }
 
 async function copyPublicUrl() {
@@ -2260,6 +2402,9 @@ async function copyPublicUrl() {
 
 async function copyTextValue(value, successMessage, failurePrefix) {
   try {
+    if (!value) {
+      throw new Error('nothing to copy');
+    }
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(value);
       renderStatus(successMessage);
@@ -2472,6 +2617,14 @@ function describeRouteExposure(route) {
   const host = route.match_host?.trim();
   const path = ensurePath(route.match_path_prefix ?? '/');
   return host ? (path === '/' ? host : `${host}${path}`) : path;
+}
+
+function describeRouteRootPolicy(route) {
+  const path = ensurePath(route.match_path_prefix ?? '/');
+  if (path === '/') {
+    return 'Root / is exposed by this service.';
+  }
+  return 'Root / stays closed unless another service exposes it.';
 }
 
 function ensurePath(value) {

@@ -152,7 +152,10 @@
             <h2 id="route-form-title">Add Service</h2>
             <p class="panel-subtle">Keep the basics simple. Expand Advanced only when needed.</p>
           </div>
-          <button id="cancel-route-edit" type="button" class="secondary">Close</button>
+          <div class="row compact-actions header-actions">
+            <button id="apply-deepseek-preset" type="button" class="secondary">DeepSeek / SPA Preset</button>
+            <button id="cancel-route-edit" type="button" class="secondary">Close</button>
+          </div>
         </div>
 
         <div class="drawer-body">
@@ -205,7 +208,7 @@
 
             <label class="checkbox-row">
               <input id="route-forward-host-header" type="checkbox" />
-              <span>Forward original Host header (for upstreams that validate same-origin, e.g. DeepSeek Harness)</span>
+              <span>Forward original Host header (advanced; leave off for loopback-protected mounted SPAs like DeepSeek Harness)</span>
             </label>
             <label class="checkbox-row">
               <input id="route-rewrite-response-paths" type="checkbox" />
@@ -224,11 +227,17 @@
               <span>Service Access Code</span>
               <input id="route-require-access-code" type="text" placeholder="Leave blank to keep existing custom code" autocomplete="off" />
             </label>
+            <div class="row compact-actions field-actions">
+              <button id="generate-route-code" type="button" class="secondary">Generate Code</button>
+              <button id="copy-route-code" type="button" class="secondary">Copy Code</button>
+            </div>
             <p id="route-access-hint" class="panel-subtle">Services inherit the default gate unless you choose a custom code or make this service public.</p>
+            <p id="route-test-status" class="panel-subtle route-test-status" hidden></p>
           </details>
         </div>
 
         <div class="drawer-footer">
+          <button id="test-route" type="button" class="secondary">Test Route</button>
           <button id="save-route" type="button">Save Service</button>
         </div>
       </aside>
@@ -264,6 +273,7 @@
             <div class="row">
               <button id="check-update" type="button" class="secondary">Check for Updates</button>
               <button id="install-update" type="button" class="secondary" disabled>Download & Install</button>
+              <button id="restart-app" type="button" class="secondary" disabled>Restart Now</button>
             </div>
           </section>
 
@@ -272,10 +282,14 @@
             <p class="panel-subtle">Optional default code for all routed services. Individual services can inherit, override, or stay public.</p>
             <label class="field">
               <span>Default service code</span>
-              <input id="settings-default-route-access-code" type="password" placeholder="Leave blank to clear default" autocomplete="off" />
+              <input id="settings-default-route-access-code" type="text" placeholder="Leave blank to clear default" autocomplete="off" />
             </label>
+            <div class="row compact-actions field-actions">
+              <button id="generate-default-route-code" type="button" class="secondary">Generate Code</button>
+              <button id="copy-default-route-code" type="button" class="secondary">Copy Code</button>
+              <button id="save-default-route-access" type="button" class="secondary">Save Default Gate</button>
+            </div>
             <p id="settings-default-route-access-status" class="panel-subtle">Default gate status not loaded yet.</p>
-            <button id="save-default-route-access" type="button" class="secondary">Save Default Gate</button>
           </section>
 
           <section class="drawer-section">
