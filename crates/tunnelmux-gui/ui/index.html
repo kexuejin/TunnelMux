@@ -213,10 +213,18 @@
             </label>
 
             <label class="field">
-              <span>Access Code (gate)</span>
-              <input id="route-require-access-code" type="text" placeholder="Leave empty for a public service" autocomplete="off" />
+              <span>Access Gate</span>
+              <select id="route-access-mode">
+                <option value="inherit">Inherit default gate</option>
+                <option value="custom">Use custom service code</option>
+                <option value="public">Always public</option>
+              </select>
             </label>
-            <p class="panel-subtle">If set, visitors must enter this code to reach the service; the gateway shows a login page.</p>
+            <label id="route-access-code-field" class="field" hidden>
+              <span>Service Access Code</span>
+              <input id="route-require-access-code" type="text" placeholder="Leave blank to keep existing custom code" autocomplete="off" />
+            </label>
+            <p id="route-access-hint" class="panel-subtle">Services inherit the default gate unless you choose a custom code or make this service public.</p>
           </details>
         </div>
 
@@ -245,10 +253,29 @@
             </label>
             <label class="field">
               <span>Bearer Token</span>
-            <label class="field">
-              <span>Bearer Token</span>
               <input id="settings-token" type="password" placeholder="Optional" />
             </label>
+          </section>
+
+          <section class="drawer-section">
+            <h3>App Updates</h3>
+            <p class="panel-subtle">Check GitHub Releases, download the matching build for this Mac, verify SHA256, and install the bundled TunnelMux binaries.</p>
+            <p id="update-status" class="panel-subtle">No update check yet.</p>
+            <div class="row">
+              <button id="check-update" type="button" class="secondary">Check for Updates</button>
+              <button id="install-update" type="button" class="secondary" disabled>Download & Install</button>
+            </div>
+          </section>
+
+          <section class="drawer-section">
+            <h3>Default service access</h3>
+            <p class="panel-subtle">Optional default code for all routed services. Individual services can inherit, override, or stay public.</p>
+            <label class="field">
+              <span>Default service code</span>
+              <input id="settings-default-route-access-code" type="password" placeholder="Leave blank to clear default" autocomplete="off" />
+            </label>
+            <p id="settings-default-route-access-status" class="panel-subtle">Default gate status not loaded yet.</p>
+            <button id="save-default-route-access" type="button" class="secondary">Save Default Gate</button>
           </section>
 
           <section class="drawer-section">

@@ -33,6 +33,8 @@ TunnelMux keeps that workflow in one local control plane instead of another pile
 - Provider-aware tunnel setup for `cloudflared` and `ngrok`
 - Runtime status, public URL, and service state in one place
 - Route health, provider logs, and diagnostics when you need them
+- Service access gates with a global default code plus per-service inherit/custom/public modes
+- In-app update checks against GitHub Releases with SHA256-verified raw archive installs
 - Declarative `config.json` hot reload for route and health-check changes
 
 ## GUI-first workflow
@@ -68,6 +70,8 @@ Releases also include raw platform archives with:
 - `tunnelmuxd`
 - `tunnelmux-cli`
 - `tunnelmux-gui`
+
+The desktop GUI can also check GitHub Releases from Settings → App Updates. When a newer matching raw archive is available, it downloads to `~/.tunnelmux/updates/<version>/`, verifies `SHA256SUMS` when present, installs the bundled binaries beside the current app executable, and asks you to restart TunnelMux.
 
 ### One-command installer
 
@@ -196,6 +200,16 @@ More release and bundle details live in `docs/RELEASING.md`.
 - `~/.tunnelmux/api-token` — auto-generated control-plane bearer token (0600)
 
 The daemon polls `config.json` and applies route and health-check changes without restarting.
+
+## Service access gates
+
+Public tunnel routes can be protected before traffic reaches the upstream service. Configure a default service access code in Settings → Default service access, then choose a per-service mode in the service drawer:
+
+- `Inherit default gate` — use the default code when one is configured
+- `Use custom service code` — require a service-specific code
+- `Always public` — opt the service out of the default gate
+
+The daemon stores the default gate in `default_route_access` and route overrides in `route_access.<route_id>` inside `~/.tunnelmux/state.json`. Successful browser unlocks use route-scoped cookies such as `tunnelmux_access_<route_id>`, so protecting one service does not open unrelated routes.
 
 ## Security
 

@@ -33,6 +33,8 @@ TunnelMux 的目标不是再造一个平台，而是把这些本地暴露动作�
 - 支持 `cloudflared` 和 `ngrok` 的 provider 配置
 - 公网地址、服务状态、连接状态放在一个页面里
 - 需要时再展开的诊断、日志和健康状态
+- 服务访问码门禁：支持全局默认码，以及每个服务继承/自定义/公开三种模式
+- 内置更新检查：从 GitHub Releases 下载匹配平台的 raw archive，并按 `SHA256SUMS` 校验后安装
 - 基于 `config.json` 的路由与健康检查热重载
 
 ## GUI 优先的使用方式
@@ -68,6 +70,8 @@ TunnelMux 先服务最常见的路径：
 - `tunnelmuxd`
 - `tunnelmux-cli`
 - `tunnelmux-gui`
+
+桌面 GUI 也可以在 Settings → App Updates 中检查 GitHub Releases。发现匹配当前平台的新 raw archive 后，会下载到 `~/.tunnelmux/updates/<version>/`，存在 `SHA256SUMS` 时先校验，再把包内二进制安装到当前应用可执行文件旁边，并提示重启 TunnelMux。
 
 ### 一行命令安装
 
@@ -195,6 +199,16 @@ xattr -dr com.apple.quarantine /Applications/TunnelMux.app
 - `~/.tunnelmux/state.json` — daemon 维护的运行时快照
 
 daemon 会轮询 `config.json`，应用路由和健康检查变更时不需要重启。
+
+## 服务访问码门禁
+
+公网 route 可以在进入 upstream 服务之前先要求访问码。在 Settings → Default service access 中可以配置全局默认服务访问码；每个服务也可以在编辑抽屉里选择：
+
+- `Inherit default gate`：有默认码时继承默认码
+- `Use custom service code`：使用该服务自己的访问码
+- `Always public`：即使配置了默认码，该服务也保持公开
+
+默认门禁存储在 `~/.tunnelmux/state.json` 的 `default_route_access`，服务覆盖存储在 `route_access.<route_id>`。浏览器解锁后使用类似 `tunnelmux_access_<route_id>` 的 route 级 cookie，因此一个服务解锁不会打开其它 route。
 
 ## 文档
 

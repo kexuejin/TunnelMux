@@ -1,7 +1,7 @@
 use super::*;
 use tunnelmux_core::{
-    RouteAccessConfig, RouteAccessSummary, RouteAccessSummaryResponse, SetRouteAccessRequest,
-    SetRouteAccessResponse, TunnelProfileSummary, TunnelWorkspaceResponse,
+    DEFAULT_ROUTE_ACCESS_ID, RouteAccessConfig, RouteAccessSummary, RouteAccessSummaryResponse,
+    SetRouteAccessRequest, SetRouteAccessResponse, TunnelProfileSummary, TunnelWorkspaceResponse,
 };
 
 #[derive(Debug, Deserialize)]
@@ -1363,60 +1363,119 @@ pub(super) async fn set_route_access(
     State(state): State<Arc<AppState>>,
     Json(request): Json<SetRouteAccessRequest>,
 ) -> Result<Json<SetRouteAccessResponse>, ApiError> {
-    let route_id = request.route_id.trim().to_string();
-    if route_id.is_empty() {
-        return Err(ApiError::bad_request("route_id is required"));
-    }
-    let require_access_code = request
-        .require_access_code
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let route_id = normalize_route_access_id(&request.route_id)?;
+    let is_default = route_id == DEFAULT_ROUTE_ACCESS_ID;
+    let require_access_code = trimmed_access_code(request.require_access_code.as_deref()).map(str::to_string);
+    let public = (!is_default && request.public.unwrap_or(false)).then_some(true);
     let cookie_ttl_ms = request.cookie_ttl_ms.filter(|v| *v > 0);
+
     let mut runtime = state.runtime.lock().await;
-    if require_access_code.is_some() || cookie_ttl_ms.is_some() {
-        runtime.persisted.route_access.insert(
-            route_id.clone(),
-            RouteAccessConfig {
-                require_access_code,
-                cookie_ttl_ms,
-            },
-        );
+    let stored = if is_default {
+        runtime.persisted.default_route_access = RouteAccessConfig {
+            require_access_code,
+            public: None,
+            cookie_ttl_ms,
+        };
+        runtime.persisted.default_route_access.clone()
+    } else if public.is_some() || require_access_code.is_some() || cookie_ttl_ms.is_some() {
+        let config = RouteAccessConfig {
+            require_access_code: if public.is_some() { None } else { require_access_code },
+            public,
+            cookie_ttl_ms,
+        };
+        runtime
+            .persisted
+            .route_access
+            .insert(route_id.clone(), config.clone());
+        config
     } else {
         runtime.persisted.route_access.remove(&route_id);
-    }
-    let stored = runtime.persisted.route_access.get(&route_id).cloned();
+        RouteAccessConfig::default()
+    };
     drop(runtime);
     persist_from_runtime(&state).await?;
-    let config = stored.unwrap_or_default();
     Ok(Json(SetRouteAccessResponse {
         route_id,
-        require_access_code: config.require_access_code,
-        cookie_ttl_ms: config.cookie_ttl_ms,
+        require_access_code: stored.require_access_code,
+        public: stored.public,
+        cookie_ttl_ms: stored.cookie_ttl_ms,
     }))
 }
 
 pub(super) async fn list_route_access(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<RouteAccessSummaryResponse>, ApiError> {
-    let routes = {
+    let (default_config, routes) = {
         let runtime = state.runtime.lock().await;
-        runtime
+        let default_config = runtime.persisted.default_route_access.clone();
+        let default_gated = trimmed_access_code(default_config.require_access_code.as_deref()).is_some();
+        let mut summaries = runtime
             .persisted
-            .route_access
+            .routes
             .iter()
-            .map(|(route_id, config)| RouteAccessSummary {
-                route_id: route_id.clone(),
-                gated: config
-                    .require_access_code
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|s| !s.is_empty()),
+            .map(|route| {
+                let route_config = runtime.persisted.route_access.get(&route.id);
+                summarize_route_access(&route.id, route_config, default_gated)
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| left.route_id.cmp(&right.route_id));
+        (default_config, summaries)
     };
-    Ok(Json(RouteAccessSummaryResponse { routes }))
+    Ok(Json(RouteAccessSummaryResponse {
+        default_gated: trimmed_access_code(default_config.require_access_code.as_deref()).is_some(),
+        default_cookie_ttl_ms: default_config.cookie_ttl_ms,
+        routes,
+    }))
+}
+
+fn normalize_route_access_id(route_id: &str) -> Result<String, ApiError> {
+    let route_id = route_id.trim();
+    if route_id.is_empty() {
+        return Err(ApiError::bad_request("route_id is required"));
+    }
+    Ok(if matches!(route_id, DEFAULT_ROUTE_ACCESS_ID | "default" | "*") {
+        DEFAULT_ROUTE_ACCESS_ID.to_string()
+    } else {
+        route_id.to_string()
+    })
+}
+
+fn trimmed_access_code(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn summarize_route_access(
+    route_id: &str,
+    route_config: Option<&RouteAccessConfig>,
+    default_gated: bool,
+) -> RouteAccessSummary {
+    if route_config.and_then(|config| config.public).unwrap_or(false) {
+        return RouteAccessSummary {
+            route_id: route_id.to_string(),
+            gated: false,
+            mode: "public".to_string(),
+            explicit: true,
+        };
+    }
+
+    if route_config
+        .and_then(|config| trimmed_access_code(config.require_access_code.as_deref()))
+        .is_some()
+    {
+        return RouteAccessSummary {
+            route_id: route_id.to_string(),
+            gated: true,
+            mode: "route".to_string(),
+            explicit: true,
+        };
+    }
+
+    RouteAccessSummary {
+        route_id: route_id.to_string(),
+        gated: default_gated,
+        mode: if default_gated { "inherited" } else { "open" }.to_string(),
+        explicit: route_config.is_some(),
+    }
 }
 
 pub(super) async fn apply_routes(

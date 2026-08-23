@@ -233,6 +233,9 @@ pub struct RouteFormData {
     pub forward_host_header: bool,
     #[serde(default)]
     pub rewrite_response_paths: bool,
+    /// Service access gate mode: inherit, custom, or public.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_access_mode: Option<String>,
     /// Optional access code required to reach this service through the gateway.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_access_code: Option<String>,
@@ -253,6 +256,7 @@ impl Default for RouteFormData {
             enabled: true,
             forward_host_header: false,
             rewrite_response_paths: false,
+            route_access_mode: None,
             require_access_code: None,
         }
     }

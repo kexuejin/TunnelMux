@@ -146,28 +146,39 @@ pub struct RouteRule {
 pub fn route_health_check_enabled(route: &RouteRule) -> bool {
     route.health_check_path.as_deref() != Some(DISABLED_HEALTH_CHECK_SENTINEL)
 }
-/// Per-route gateway access gate configuration. Stored as a side table keyed
-/// by route `id` (parallel to `RouteRule`) so the route definitions themselves
-/// do not change shape. A route is open when it has no entry here or its
-/// `require_access_code` is empty.
+
+/// Synthetic route id used by the access API to read/write the global default
+/// service gate. Real service route ids should not use this value.
+pub const DEFAULT_ROUTE_ACCESS_ID: &str = "__default__";
+
+/// Gateway access gate configuration. Stored as a side table keyed by route
+/// `id` for service overrides, plus one daemon-wide default. Routes inherit the
+/// default unless they define their own code or set `public` to true.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteAccessConfig {
     /// Access code required to reach the route through the gateway. Empty/None
-    /// means the route is public (no gate).
+    /// means either inherit the default (route override) or no default gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_access_code: Option<String>,
+    /// True means this route is explicitly public and does not inherit the
+    /// default access code. Ignored for the daemon-wide default config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<bool>,
     /// How long (ms) a verified access cookie stays valid for this route.
     /// Defaults to the daemon-wide window when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cookie_ttl_ms: Option<u64>,
 }
 
-/// Request to set/clear the gateway access config for one route.
+/// Request to set/clear the gateway access config for one route, or the global
+/// default when `route_id` is `__default__`, `default`, or `*`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetRouteAccessRequest {
     pub route_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_access_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cookie_ttl_ms: Option<u64>,
 }
@@ -176,18 +187,30 @@ pub struct SetRouteAccessRequest {
 pub struct SetRouteAccessResponse {
     pub route_id: String,
     pub require_access_code: Option<String>,
+    pub public: Option<bool>,
     pub cookie_ttl_ms: Option<u64>,
 }
 /// A non-secret summary of one route access gate, safe for list endpoints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteAccessSummary {
     pub route_id: String,
-    /// True when this route requires an access code (gate enabled).
+    /// True when this route effectively requires an access code.
     pub gated: bool,
+    /// One of: route, inherited, public, open.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+    /// True when the route has an explicit override entry.
+    #[serde(default)]
+    pub explicit: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteAccessSummaryResponse {
+    /// True when a daemon-wide default access code is configured.
+    #[serde(default)]
+    pub default_gated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_cookie_ttl_ms: Option<u64>,
     #[serde(default)]
     pub routes: Vec<RouteAccessSummary>,
 }

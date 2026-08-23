@@ -4,6 +4,13 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+- Add gateway service access gates with a global default code, per-service inherit/custom/public modes, and route-scoped browser cookies.
+- Add a polished route access login page with cache-clearing headers for mounted web apps.
+- Add in-app update checking and SHA256-verified raw archive installation from GitHub Releases.
+- Add GUI controls for default service access, per-service gate modes, and update checks.
+- Harden mounted app forwarding by stripping external Host/Origin when routes do not forward the original Host header.
+- Document the in-app updater and service access gate workflow.
+
 ## [0.2.1] - 2026-03-11
 
 - Add a system tray icon to the GUI, with close-to-hide behavior and a minimal Show/Hide + Quit menu.

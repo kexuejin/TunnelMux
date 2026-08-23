@@ -60,6 +60,8 @@ const state = {
   },
   routeCache: [],
   routeGates: {},
+  defaultRouteGate: { gated: false },
+  updateCheck: null,
   editingOriginalId: null,
   settingsDrawerOpen: false,
   serviceDrawerOpen: false,
@@ -217,6 +219,9 @@ function bindElements() {
   elements.routeFallbackUpstreamUrl = document.getElementById('route-fallback-upstream-url');
   elements.routeForwardHostHeader = document.getElementById('route-forward-host-header');
   elements.routeRewriteResponsePaths = document.getElementById('route-rewrite-response-paths');
+  elements.routeAccessMode = document.getElementById('route-access-mode');
+  elements.routeAccessCodeField = document.getElementById('route-access-code-field');
+  elements.routeAccessHint = document.getElementById('route-access-hint');
   elements.routeRequireAccessCode = document.getElementById('route-require-access-code');
   elements.serviceAdvanced = document.getElementById('service-advanced');
   elements.serviceExposureMode = document.getElementById('service-exposure-mode');
@@ -258,6 +263,12 @@ function bindElements() {
   elements.closeSettings = document.getElementById('close-settings');
   elements.baseUrl = document.getElementById('settings-base-url');
   elements.token = document.getElementById('settings-token');
+  elements.updateStatus = document.getElementById('update-status');
+  elements.checkUpdate = document.getElementById('check-update');
+  elements.installUpdate = document.getElementById('install-update');
+  elements.defaultRouteAccessCode = document.getElementById('settings-default-route-access-code');
+  elements.defaultRouteAccessStatus = document.getElementById('settings-default-route-access-status');
+  elements.saveDefaultRouteAccess = document.getElementById('save-default-route-access');
   elements.saveSettings = document.getElementById('save-settings');
   elements.authStatusLine = document.getElementById('auth-status-line');
   elements.authCodeLine = document.getElementById('auth-code-line');
@@ -380,8 +391,12 @@ function bindEvents() {
   elements.serviceBackdrop?.addEventListener('click', closeServiceDrawer);
   elements.saveRoute?.addEventListener('click', () => withBusy(saveRoute));
   elements.serviceExposureMode?.addEventListener('change', applyExposureMode);
+  elements.routeAccessMode?.addEventListener('change', syncRouteAccessControls);
 
   elements.saveSettings?.addEventListener('click', () => withBusy(saveSettings));
+  elements.checkUpdate?.addEventListener('click', () => withBusy(checkForUpdates));
+  elements.installUpdate?.addEventListener('click', () => withBusy(downloadAndInstallUpdate));
+  elements.saveDefaultRouteAccess?.addEventListener('click', () => withBusy(saveDefaultRouteAccess));
   elements.homeProviderAction?.addEventListener('click', () => withBusy(handleHomeProviderAction));
   elements.homeProviderFollowUpAction?.addEventListener('click', () => withBusy(handleHomeProviderFollowUpAction));
   elements.providerStatusAction?.addEventListener('click', () => withBusy(handleProviderStatusAction));
@@ -1381,10 +1396,15 @@ async function refreshRoutes() {
       invoke('list_routes'),
       invoke('list_route_access').catch(() => ({ routes: [] })),
     ]);
+    state.defaultRouteGate = {
+      gated: Boolean(gates?.default_gated),
+      cookie_ttl_ms: gates?.default_cookie_ttl_ms ?? null,
+    };
     state.routeGates = {};
     for (const gate of Array.isArray(gates?.routes) ? gates.routes : []) {
-      state.routeGates[gate.route_id] = Boolean(gate.gated);
+      state.routeGates[gate.route_id] = gate;
     }
+    renderDefaultRouteAccessStatus();
     renderRoutes(snapshot);
   } catch (error) {
     if (state.daemonBootstrapping) {
@@ -1528,6 +1548,7 @@ async function saveRoute() {
         enabled: elements.routeEnabled.checked,
         forward_host_header: elements.routeForwardHostHeader.checked,
         rewrite_response_paths: elements.routeRewriteResponsePaths.checked,
+        route_access_mode: elements.routeAccessMode.value,
         require_access_code: elements.routeRequireAccessCode.value.trim() || null,
       },
     });
@@ -1815,6 +1836,7 @@ function renderRoutes(snapshot) {
   elements.dashboardMessage.hidden = false;
 
   for (const route of state.routeCache) {
+    const gate = routeGateFor(route.id);
     const item = document.createElement('article');
     item.className = 'service-card';
     item.innerHTML = `
@@ -1825,9 +1847,7 @@ function renderRoutes(snapshot) {
           <p class="service-local">${escapeHtml(route.upstream_url)}</p>
         </div>
         <span class="service-badge ${route.enabled ? 'enabled' : 'disabled'}">${route.enabled ? 'Live' : 'Off'}</span>
-        ${state.routeGates[route.id]
-          ? '<span class="service-badge gated">Gated</span>'
-          : ''}
+        ${renderRouteGateBadge(gate)}
       </div>
       <div class="actions compact-actions">
         <button type="button" class="secondary action-chip" data-route-action="edit" data-route-id="${escapeAttribute(route.id)}">Edit</button>
@@ -2060,6 +2080,7 @@ function populateRouteForm(route) {
   elements.routeEnabled.checked = Boolean(route.enabled);
   elements.routeForwardHostHeader.checked = Boolean(route.forward_host_header ?? false);
   elements.routeRewriteResponsePaths.checked = Boolean(route.rewrite_response_paths ?? false);
+  setRouteAccessMode(routeGateFor(route.id)?.mode ?? 'inherit');
   elements.serviceExposureMode.value = route.match_host ? 'subdomain' : 'path';
   elements.serviceAdvanced.open = Boolean(
     route.match_host
@@ -2068,8 +2089,10 @@ function populateRouteForm(route) {
       || route.health_check_enabled === false
       || route.forward_host_header === true
       || route.rewrite_response_paths === true
+      || routeGateFor(route.id)?.explicit === true
   );
   applyExposureMode();
+  syncRouteAccessControls();
   elements.saveRoute.textContent = 'Update Service';
 }
 
@@ -2090,15 +2113,139 @@ function resetRouteForm() {
   elements.routeEnabled.checked = true;
   elements.routeForwardHostHeader.checked = false;
   elements.routeRewriteResponsePaths.checked = false;
+  setRouteAccessMode('inherit');
   elements.routeRequireAccessCode.value = '';
   elements.serviceExposureMode.value = 'path';
   elements.serviceAdvanced.open = false;
   elements.saveRoute.textContent = 'Save Service';
   applyExposureMode();
+  syncRouteAccessControls();
+}
+
+function setRouteAccessMode(mode) {
+  if (!elements.routeAccessMode) {
+    return;
+  }
+  const normalized = mode === 'route' ? 'custom' : mode === 'public' ? 'public' : 'inherit';
+  elements.routeAccessMode.value = ['inherit', 'custom', 'public'].includes(normalized) ? normalized : 'inherit';
+}
+
+function syncRouteAccessControls() {
+  const mode = elements.routeAccessMode?.value ?? 'inherit';
+  if (elements.routeAccessCodeField) {
+    elements.routeAccessCodeField.hidden = mode !== 'custom';
+  }
+  if (elements.routeAccessHint) {
+    const inherited = state.defaultRouteGate?.gated ? 'default gate is enabled' : 'no default gate is set';
+    elements.routeAccessHint.textContent = mode === 'custom'
+      ? 'Visitors must enter this service-specific code. Leave blank while editing to keep the existing custom code.'
+      : mode === 'public'
+        ? 'This service stays public even when a default gate is configured.'
+        : 'This service inherits the default gate (' + inherited + ').';
+  }
 }
 
 function applyExposureMode() {
   elements.serviceHostField.hidden = elements.serviceExposureMode.value !== 'subdomain';
+}
+
+async function checkForUpdates() {
+  try {
+    renderUpdateStatus('Checking GitHub Releases…');
+    const result = await invoke('check_app_update');
+    state.updateCheck = result;
+    renderUpdateStatus(result.message);
+    if (elements.installUpdate) {
+      elements.installUpdate.disabled = !result.update_available || !result.asset;
+    }
+  } catch (error) {
+    state.updateCheck = null;
+    if (elements.installUpdate) {
+      elements.installUpdate.disabled = true;
+    }
+    renderUpdateStatus('Update check failed: ' + formatError(error), true);
+  }
+}
+
+async function downloadAndInstallUpdate() {
+  const update = state.updateCheck;
+  const asset = update?.asset;
+  if (!update?.update_available || !asset) {
+    renderUpdateStatus('No installable update is currently selected.', true);
+    return;
+  }
+  try {
+    renderUpdateStatus('Downloading and installing ' + asset.name + '…');
+    const result = await invoke('download_and_install_app_update', {
+      assetUrl: asset.url,
+      assetName: asset.name,
+      expectedSha256: asset.sha256 ?? null,
+      version: update.latest_version,
+    });
+    renderUpdateStatus(result.message + ' Installed: ' + result.installed_binaries.join(', '));
+    if (elements.installUpdate) {
+      elements.installUpdate.disabled = true;
+    }
+  } catch (error) {
+    renderUpdateStatus('Update install failed: ' + formatError(error), true);
+  }
+}
+
+function renderUpdateStatus(message, isError = false) {
+  if (!elements.updateStatus) return;
+  elements.updateStatus.textContent = message;
+  elements.updateStatus.classList.toggle('error', Boolean(isError));
+}
+
+async function saveDefaultRouteAccess() {
+  try {
+    const code = elements.defaultRouteAccessCode?.value.trim() || null;
+    const gates = await invoke('set_default_route_access', { code });
+    state.defaultRouteGate = {
+      gated: Boolean(gates?.default_gated),
+      cookie_ttl_ms: gates?.default_cookie_ttl_ms ?? null,
+    };
+    state.routeGates = {};
+    for (const gate of Array.isArray(gates?.routes) ? gates.routes : []) {
+      state.routeGates[gate.route_id] = gate;
+    }
+    if (elements.defaultRouteAccessCode) {
+      elements.defaultRouteAccessCode.value = '';
+    }
+    renderDefaultRouteAccessStatus();
+    renderRoutes({ routes: state.routeCache });
+    renderStatus(state.defaultRouteGate.gated ? 'Default service gate saved.' : 'Default service gate cleared.');
+  } catch (error) {
+    renderStatus('Failed to save default service gate: ' + formatError(error), true);
+  }
+}
+
+function renderDefaultRouteAccessStatus() {
+  if (!elements.defaultRouteAccessStatus) return;
+  elements.defaultRouteAccessStatus.textContent = state.defaultRouteGate?.gated
+    ? 'Default gate is enabled. Services inherit it unless they override or opt out.'
+    : 'No default service gate is set. Services are public unless they use a custom code.';
+}
+
+function routeGateFor(routeId) {
+  return state.routeGates?.[routeId] ?? {
+    route_id: routeId,
+    gated: Boolean(state.defaultRouteGate?.gated),
+    mode: state.defaultRouteGate?.gated ? 'inherited' : 'open',
+    explicit: false,
+  };
+}
+
+function renderRouteGateBadge(gate) {
+  const mode = gate?.mode ?? (gate?.gated ? 'route' : 'open');
+  if (mode === 'public') {
+    return '<span class="service-badge public">Public</span>';
+  }
+  if (!gate?.gated) {
+    return '';
+  }
+  const label = mode === 'inherited' ? 'Gated · default' : 'Gated';
+  return '<span class="service-badge gated">' + escapeHtml(label) + '</span>';
 }
 
 async function copyPublicUrl() {

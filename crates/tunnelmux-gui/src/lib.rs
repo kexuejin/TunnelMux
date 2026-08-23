@@ -50,6 +50,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::load_settings,
             commands::save_settings,
+            commands::check_app_update,
+            commands::download_and_install_app_update,
             commands::ensure_local_daemon,
             commands::daemon_connection_state,
             commands::probe_connection,
@@ -57,6 +59,7 @@ pub fn run() {
             commands::auth_unlock,
             commands::auth_relock,
             commands::list_route_access,
+            commands::set_default_route_access,
             commands::load_tunnel_workspace,
             commands::load_provider_availability_snapshot,
             commands::install_provider,

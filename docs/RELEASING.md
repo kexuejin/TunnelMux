@@ -55,7 +55,7 @@ Current first-release native GUI installers include:
 - `.msi`
 - `.deb`
 
-Unsigned mode remains the default release posture today. The repository now prepares an opt-in signed GUI release path for macOS and Windows, but public installers may still be unsigned until maintainers enable the signing toggles and provision credentials. Linux `.deb` remains unsigned in this iteration, and this work still does **not** include auto-update metadata.
+Unsigned mode remains the default release posture today. The repository now prepares an opt-in signed GUI release path for macOS and Windows, but public installers may still be unsigned until maintainers enable the signing toggles and provision credentials. Linux `.deb` remains unsigned in this iteration. The desktop GUI includes an in-app update checker/installer that reads the latest GitHub Release, chooses the host raw archive, verifies `SHA256SUMS` when present, and installs the bundled TunnelMux binaries into the current app/binary directory.
 
 ## Linux GUI Build Dependencies
 
@@ -108,6 +108,22 @@ Expected result:
 - one raw archive named like `tunnelmux-<current-version>-<host-target>.tar.gz`
 - one `SHA256SUMS`
 - archive contents include `tunnelmuxd`, `tunnelmux-cli`, `tunnelmux-gui`, `README.md`, `README.zh-CN.md`, `LICENSE`, and `CHANGELOG.md`
+
+## In-app Updater Smoke Check
+
+The Settings drawer includes an App Updates section. The checker uses GitHub Releases rather than a custom update server:
+
+1. Click **Check for Updates**.
+2. Expect the GUI to query the latest GitHub Release and choose the raw archive matching the current host target, for example `tunnelmux-<version>-aarch64-apple-darwin.tar.gz` on Apple Silicon.
+3. If a newer version and matching raw archive exist, **Download & Install** becomes enabled.
+4. Click **Download & Install**.
+5. Expect the GUI to download the archive under `~/.tunnelmux/updates/<version>/`, verify the archive against `SHA256SUMS` when present, extract it, and replace `tunnelmux-gui`, `tunnelmuxd`, and `tunnelmux-cli` next to the currently running GUI binary.
+6. Restart TunnelMux to use the newly installed binaries.
+
+Notes:
+
+- Automatic install currently targets raw `.tar.gz` archives; platform-native installers (`.dmg`, `.msi`, `.deb`) remain manual install assets.
+- GitHub unauthenticated API rate limits can make a check fail temporarily; retry later or authenticate future release metadata fetching if this becomes noisy.
 
 ## GUI Easy-Path Smoke Check
 

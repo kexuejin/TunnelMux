@@ -13,17 +13,21 @@ use crate::view_models::{
     UpstreamHealthVm,
 };
 use anyhow::Context;
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
 use tauri::Manager;
 use tunnelmux_control_client::{ControlClientConfig, TunnelmuxControlClient};
 use tunnelmux_core::{
-    HealthResponse, SetRouteAccessRequest, TunnelProvider, TunnelStartRequest, TunnelStatus,
+    DEFAULT_ROUTE_ACCESS_ID, HealthResponse, SetRouteAccessRequest, TunnelProvider,
+    TunnelStartRequest, TunnelStatus,
 };
 use url::Url;
 
@@ -43,6 +47,332 @@ pub struct SaveSettingsResult {
 enum SettingsSaveReconnectMode {
     EnsureLocalDaemon,
     ProbeConnection,
+}
+
+const TUNNELMUX_RELEASE_API: &str = "https://api.github.com/repos/kexuejin/TunnelMux/releases/latest";
+const TUNNELMUX_RELEASE_DOWNLOAD_PREFIX: &str = "https://github.com/kexuejin/TunnelMux/releases/download/";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppUpdateAssetVm {
+    pub name: String,
+    pub url: String,
+    pub sha256: Option<String>,
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppUpdateCheckVm {
+    pub current_version: String,
+    pub latest_version: String,
+    pub update_available: bool,
+    pub release_url: Option<String>,
+    pub release_notes: Option<String>,
+    pub asset: Option<AppUpdateAssetVm>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppUpdateInstallVm {
+    pub version: String,
+    pub asset_name: String,
+    pub archive_path: String,
+    pub install_dir: String,
+    pub installed_binaries: Vec<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    html_url: Option<String>,
+    body: Option<String>,
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+    size: Option<u64>,
+}
+
+#[tauri::command]
+pub async fn check_app_update() -> Result<AppUpdateCheckVm, String> {
+    check_app_update_impl().await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn download_and_install_app_update(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    asset_url: String,
+    asset_name: String,
+    expected_sha256: Option<String>,
+    version: String,
+) -> Result<AppUpdateInstallVm, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    download_and_install_app_update_impl(
+        &settings_dir,
+        &asset_url,
+        &asset_name,
+        expected_sha256.as_deref(),
+        &version,
+    )
+    .await
+    .map_err(command_error)
+}
+
+async fn check_app_update_impl() -> anyhow::Result<AppUpdateCheckVm> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!("TunnelMux/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let release = client
+        .get(TUNNELMUX_RELEASE_API)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<GithubRelease>()
+        .await?;
+    let latest_version = normalize_release_version(&release.tag_name);
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let checksums = fetch_release_checksums(&client, &release).await.unwrap_or_default();
+    let target = current_update_target();
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| is_update_asset_for_target(&asset.name, &target))
+        .map(|asset| AppUpdateAssetVm {
+            name: asset.name.clone(),
+            url: asset.browser_download_url.clone(),
+            sha256: checksums.get(&asset.name).cloned(),
+            size: asset.size,
+        });
+    let update_available = version_is_newer(&latest_version, &current_version);
+    let message = if asset.is_none() {
+        format!("No update asset found for {target} in {}.", release.tag_name)
+    } else if update_available {
+        format!("TunnelMux {latest_version} is available.")
+    } else {
+        format!("TunnelMux is up to date ({current_version}).")
+    };
+    Ok(AppUpdateCheckVm {
+        current_version,
+        latest_version,
+        update_available,
+        release_url: release.html_url,
+        release_notes: release.body,
+        asset,
+        message,
+    })
+}
+
+async fn fetch_release_checksums(
+    client: &reqwest::Client,
+    release: &GithubRelease,
+) -> anyhow::Result<HashMap<String, String>> {
+    let Some(asset) = release.assets.iter().find(|asset| asset.name == "SHA256SUMS") else {
+        return Ok(HashMap::new());
+    };
+    let text = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(parse_sha256sums(&text))
+}
+
+fn parse_sha256sums(text: &str) -> HashMap<String, String> {
+    let mut checksums = HashMap::new();
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(hash) = parts.next() else { continue };
+        let Some(name) = parts.next() else { continue };
+        if hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            checksums.insert(name.trim_start_matches('*').to_string(), hash.to_ascii_lowercase());
+        }
+    }
+    checksums
+}
+
+fn current_update_target() -> String {
+    format!("{}-{}-{}", std::env::consts::ARCH, os_vendor_component(), std::env::consts::OS)
+        .replace("arm-apple-macos", "aarch64-apple-darwin")
+        .replace("aarch64-apple-macos", "aarch64-apple-darwin")
+        .replace("x86_64-apple-macos", "x86_64-apple-darwin")
+        .replace("x86_64-pc-windows", "x86_64-pc-windows-msvc")
+        .replace("x86_64-unknown-linux", "x86_64-unknown-linux-gnu")
+}
+
+fn os_vendor_component() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "apple",
+        "windows" => "pc",
+        "linux" => "unknown",
+        _ => "unknown",
+    }
+}
+
+fn is_update_asset_for_target(name: &str, target: &str) -> bool {
+    name.starts_with("tunnelmux-")
+        && name.contains(target)
+        && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
+}
+
+fn normalize_release_version(value: &str) -> String {
+    value.trim().trim_start_matches('v').to_string()
+}
+
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let latest_parts = version_parts(latest);
+    let current_parts = version_parts(current);
+    latest_parts > current_parts
+}
+
+fn version_parts(value: &str) -> Vec<u64> {
+    value
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+async fn download_and_install_app_update_impl(
+    settings_dir: &Path,
+    asset_url: &str,
+    asset_name: &str,
+    expected_sha256: Option<&str>,
+    version: &str,
+) -> anyhow::Result<AppUpdateInstallVm> {
+    if !asset_url.starts_with(TUNNELMUX_RELEASE_DOWNLOAD_PREFIX) {
+        anyhow::bail!("refusing to download update from unsupported URL: {asset_url}");
+    }
+    if !(asset_name.ends_with(".tar.gz") || asset_name.ends_with(".zip")) {
+        anyhow::bail!("unsupported update asset type: {asset_name}");
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("TunnelMux/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let bytes = client
+        .get(asset_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    let actual_sha256 = hex_sha256(&bytes);
+    if let Some(expected) = expected_sha256.map(str::trim).filter(|value| !value.is_empty()) {
+        if actual_sha256 != expected.to_ascii_lowercase() {
+            anyhow::bail!("download checksum mismatch: expected {expected}, got {actual_sha256}");
+        }
+    }
+
+    let update_dir = settings_dir.join("updates").join(version);
+    fs::create_dir_all(&update_dir)?;
+    let archive_path = update_dir.join(asset_name);
+    fs::write(&archive_path, &bytes)?;
+
+    let extract_dir = update_dir.join("extract");
+    if extract_dir.exists() {
+        fs::remove_dir_all(&extract_dir)?;
+    }
+    fs::create_dir_all(&extract_dir)?;
+    extract_update_archive(&archive_path, &extract_dir)?;
+
+    let install_dir = install_directory()?;
+    let installed_binaries = install_update_binaries(&extract_dir, &install_dir)?;
+    Ok(AppUpdateInstallVm {
+        version: version.to_string(),
+        asset_name: asset_name.to_string(),
+        archive_path: archive_path.display().to_string(),
+        install_dir: install_dir.display().to_string(),
+        installed_binaries,
+        message: "Update installed. Restart TunnelMux to use the new binaries.".to_string(),
+    })
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn extract_update_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Result<()> {
+    let archive_name = archive_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
+    if archive_name.ends_with(".tar.gz") {
+        let file = fs::File::open(archive_path)?;
+        let decoder = GzDecoder::new(file);
+        let mut archive = tar::Archive::new(decoder);
+        archive.unpack(extract_dir)?;
+        return Ok(());
+    }
+    anyhow::bail!("automatic install currently supports .tar.gz raw archives only")
+}
+
+fn install_directory() -> anyhow::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    exe.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("failed to resolve current executable directory"))
+}
+
+fn install_update_binaries(extract_dir: &Path, install_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut installed = Vec::new();
+    for binary in update_binary_names() {
+        if let Some(source) = find_file_recursive(extract_dir, binary) {
+            let destination = install_dir.join(binary);
+            install_one_binary(&source, &destination)?;
+            installed.push(binary.to_string());
+        }
+    }
+    if installed.is_empty() {
+        anyhow::bail!("update archive did not contain TunnelMux binaries");
+    }
+    Ok(installed)
+}
+
+fn update_binary_names() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["tunnelmux-gui.exe", "tunnelmuxd.exe", "tunnelmux-cli.exe"]
+    } else {
+        &["tunnelmux-gui", "tunnelmuxd", "tunnelmux-cli"]
+    }
+}
+
+fn find_file_recursive(root: &Path, file_name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(OsStr::to_str) == Some(file_name) {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = find_file_recursive(&path, file_name) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn install_one_binary(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = destination.with_extension("new");
+    fs::copy(source, &tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
+    }
+    fs::rename(tmp, destination)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -189,6 +519,26 @@ pub async fn probe_connection(
         ) -> Result<tunnelmux_core::RouteAccessSummaryResponse, String> {
             let settings_dir = resolve_settings_dir(&app, state.inner())?;
             let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+            client.list_route_access().await.map_err(command_error)
+        }
+
+        #[tauri::command]
+        pub async fn set_default_route_access(
+            app: tauri::AppHandle,
+            state: tauri::State<'_, GuiAppState>,
+            code: Option<String>,
+        ) -> Result<tunnelmux_core::RouteAccessSummaryResponse, String> {
+            let settings_dir = resolve_settings_dir(&app, state.inner())?;
+            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+            client
+                .set_route_access(&SetRouteAccessRequest {
+                    route_id: DEFAULT_ROUTE_ACCESS_ID.to_string(),
+                    require_access_code: code,
+                    public: None,
+                    cookie_ttl_ms: None,
+                })
+                .await
+                .map_err(command_error)?;
             client.list_route_access().await.map_err(command_error)
         }
 
@@ -726,19 +1076,7 @@ pub async fn save_route_from_settings_dir(
             .map_err(|error| friendly_route_save_error(error, &request))?;
     }
 
-    // Synch the per-route gateway access gate. Only touch it when the form
-    // carries an explicit value (empty clears, None leaves it unchanged so
-    // quick enable/disable toggles never wipe an existing gate).
-    if form.require_access_code.is_some() {
-        client
-            .set_route_access(&SetRouteAccessRequest {
-                route_id: request.id.clone(),
-                require_access_code: form.require_access_code.clone(),
-                cookie_ttl_ms: None,
-            })
-            .await
-            .map_err(command_error)?;
-    }
+    sync_route_access_from_form(&client, &request.id, &form).await?;
 
     let routes = client.list_routes(tunnel_id).await.map_err(command_error)?;
     let filtered = routes.routes;
@@ -746,6 +1084,88 @@ pub async fn save_route_from_settings_dir(
         filtered,
         Some("Route saved.".to_string()),
     ))
+}
+
+async fn sync_route_access_from_form(
+    client: &TunnelmuxControlClient,
+    route_id: &str,
+    form: &RouteFormData,
+) -> Result<(), String> {
+    let mode = form
+        .route_access_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let trimmed_code = form
+        .require_access_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    match mode {
+        Some("inherit") => {
+            client
+                .set_route_access(&SetRouteAccessRequest {
+                    route_id: route_id.to_string(),
+                    require_access_code: None,
+                    public: None,
+                    cookie_ttl_ms: None,
+                })
+                .await
+                .map_err(command_error)?;
+        }
+        Some("public") => {
+            client
+                .set_route_access(&SetRouteAccessRequest {
+                    route_id: route_id.to_string(),
+                    require_access_code: None,
+                    public: Some(true),
+                    cookie_ttl_ms: None,
+                })
+                .await
+                .map_err(command_error)?;
+        }
+        Some("custom") => {
+            if let Some(code) = trimmed_code {
+                client
+                    .set_route_access(&SetRouteAccessRequest {
+                        route_id: route_id.to_string(),
+                        require_access_code: Some(code),
+                        public: None,
+                        cookie_ttl_ms: None,
+                    })
+                    .await
+                    .map_err(command_error)?;
+            } else {
+                let existing = client.list_route_access().await.map_err(command_error)?;
+                let already_custom = existing
+                    .routes
+                    .iter()
+                    .any(|gate| gate.route_id == route_id && gate.mode == "route");
+                if !already_custom {
+                    return Err("Enter an access code for this service or choose inherit/default.".to_string());
+                }
+            }
+        }
+        Some(other) => {
+            return Err(format!("unsupported access gate mode: {other}"));
+        }
+        None => {
+            if form.require_access_code.is_some() {
+                client
+                    .set_route_access(&SetRouteAccessRequest {
+                        route_id: route_id.to_string(),
+                        require_access_code: trimmed_code,
+                        public: None,
+                        cookie_ttl_ms: None,
+                    })
+                    .await
+                    .map_err(command_error)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub async fn delete_route_from_settings_dir(

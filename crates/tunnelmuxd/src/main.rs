@@ -48,14 +48,14 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
-    ApplyRoutesRequest, ApplyRoutesResponse, ControlAuthMode, CreateRouteRequest, DEFAULT_CONTROL_ADDR, RouteAccessConfig,
-    DEFAULT_GATEWAY_TARGET_URL, DISABLED_HEALTH_CHECK_SENTINEL, DashboardResponse,
-    DeleteRouteResponse, DiagnosticsResponse, ErrorResponse, HealthCheckSettings,
+    ApplyRoutesRequest, ApplyRoutesResponse, ControlAuthMode, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
+    DEFAULT_GATEWAY_TARGET_URL, DISABLED_HEALTH_CHECK_SENTINEL,
+    DashboardResponse, DeleteRouteResponse, DiagnosticsResponse, ErrorResponse, HealthCheckSettings,
     HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
-    RouteMatchResponse, RouteMatchTarget, RouteRule, RoutesResponse, TunnelLogsResponse,
-    TunnelProvider, TunnelStartRequest, TunnelState, TunnelStatus, TunnelStatusResponse,
-    UpdateHealthCheckSettingsRequest, UpstreamHealthEntry, UpstreamsHealthResponse,
-    effective_route_health_check_path, route_health_check_enabled,
+    RouteAccessConfig, RouteMatchResponse, RouteMatchTarget, RouteRule, RoutesResponse,
+    TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState, TunnelStatus,
+    TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
+    UpstreamsHealthResponse, effective_route_health_check_path, route_health_check_enabled,
 };
 use url::Url;
 
@@ -187,7 +187,10 @@ struct PersistedState {
     tunnels: Vec<PersistedTunnelState>,
     routes: Vec<RouteRule>,
     health_check: Option<HealthCheckSettings>,
-    /// Per-route gateway access gates keyed by route id (parallel to routes).
+    /// Daemon-wide default gateway access gate inherited by services without an override.
+    #[serde(default)]
+    default_route_access: RouteAccessConfig,
+    /// Per-route gateway access gate overrides keyed by route id (parallel to routes).
     #[serde(default)]
     route_access: HashMap<String, RouteAccessConfig>,
 }
@@ -202,6 +205,7 @@ impl Default for PersistedState {
             }],
             routes: Vec::new(),
             health_check: None,
+            default_route_access: RouteAccessConfig::default(),
             route_access: HashMap::new(),
         }
     }
@@ -1199,6 +1203,7 @@ mod tests {
         Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
+                    default_route_access: RouteAccessConfig::default(),
                     route_access: HashMap::new(),
                     current_tunnel_id: Some("primary".to_string()),
                     tunnels: vec![PersistedTunnelState {
@@ -1260,6 +1265,7 @@ mod tests {
         Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
+                    default_route_access: RouteAccessConfig::default(),
                     route_access: HashMap::new(),
                     current_tunnel_id: Some("primary".to_string()),
                     tunnels: vec![PersistedTunnelState {
@@ -1531,6 +1537,7 @@ mod tests {
         let state = Arc::new(AppState {
             runtime: Mutex::new(RuntimeState {
                 persisted: PersistedState {
+                    default_route_access: RouteAccessConfig::default(),
                     route_access: HashMap::new(),
                     current_tunnel_id: Some("primary".to_string()),
                     tunnels: vec![PersistedTunnelState {
@@ -1868,6 +1875,7 @@ mod tests {
         save_state_file(
             &state.data_file,
             &PersistedState {
+                default_route_access: RouteAccessConfig::default(),
                 route_access: HashMap::new(),
                 current_tunnel_id: Some("primary".to_string()),
                 tunnels: vec![PersistedTunnelState {
@@ -1969,6 +1977,7 @@ mod tests {
         save_state_file(
             &state.data_file,
             &PersistedState {
+                default_route_access: RouteAccessConfig::default(),
                 route_access: HashMap::new(),
                 current_tunnel_id: Some("primary".to_string()),
                 tunnels: vec![PersistedTunnelState {
@@ -4319,6 +4328,7 @@ mod tests {
                     "svc-a".to_string(),
                     RouteAccessConfig {
                         require_access_code: Some("sekrit".to_string()),
+                        public: None,
                         cookie_ttl_ms: None,
                     },
                 );
@@ -4327,7 +4337,7 @@ mod tests {
             let method = Method::GET;
             // No credentials -> gate response.
             let headless = HeaderMap::new();
-            let gate = route_access_gate_response(&state, &route, &method, &headless).await;
+            let gate = route_access_gate_response(&state, &route, &method, &headless, "/svc", None).await;
             assert!(gate.is_some(), "protected route without creds must be gated");
 
             // Correct cookie -> allowed.
@@ -4336,7 +4346,7 @@ mod tests {
                 axum::http::header::COOKIE,
                 "tunnelmux_access_svc-a=sekrit".parse().unwrap(),
             );
-            assert!(route_access_gate_response(&state, &route, &method, &with_cookie).await.is_none());
+            assert!(route_access_gate_response(&state, &route, &method, &with_cookie, "/svc", None).await.is_none());
 
             // Correct bearer -> allowed.
             let mut with_bearer = HeaderMap::new();
@@ -4344,7 +4354,7 @@ mod tests {
                 axum::http::header::AUTHORIZATION,
                 "Bearer sekrit".parse().unwrap(),
             );
-            assert!(route_access_gate_response(&state, &route, &method, &with_bearer).await.is_none());
+            assert!(route_access_gate_response(&state, &route, &method, &with_bearer, "/svc", None).await.is_none());
 
             // Wrong code -> gated.
             let mut wrong = HeaderMap::new();
@@ -4352,14 +4362,49 @@ mod tests {
                 axum::http::header::COOKIE,
                 "tunnelmux_access_svc-a=nope".parse().unwrap(),
             );
-            assert!(route_access_gate_response(&state, &route, &method, &wrong).await.is_some());
+            assert!(route_access_gate_response(&state, &route, &method, &wrong, "/svc", None).await.is_some());
+
+            // Correct form POST -> writes a route-scoped cookie and redirects back.
+            let mut form_headers = HeaderMap::new();
+            form_headers.insert(axum::http::header::ACCEPT, "text/html".parse().unwrap());
+            form_headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded".parse().unwrap(),
+            );
+            let form_gate = route_access_gate_response(
+                &state,
+                &route,
+                &Method::POST,
+                &form_headers,
+                "/svc/docs",
+                Some(b"code=sekrit"),
+            )
+            .await
+            .expect("form success response");
+            assert_eq!(form_gate.status(), StatusCode::SEE_OTHER);
+            assert_eq!(
+                form_gate
+                    .headers()
+                    .get(axum::http::header::LOCATION)
+                    .and_then(|v| v.to_str().ok()),
+                Some("/svc/docs")
+            );
+            assert!(
+                form_gate
+                    .headers()
+                    .get(axum::http::header::SET_COOKIE)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|value| value.contains("tunnelmux_access_svc-a=sekrit") && value.contains("Path=/svc")),
+                "expected route-scoped cookie: {:?}",
+                form_gate.headers().get(axum::http::header::SET_COOKIE)
+            );
 
             // Public route (no gate config) -> allowed even with no creds.
             let public_route = RouteRule {
                 id: "public".to_string(),
                 ..route
             };
-            assert!(route_access_gate_response(&state, &public_route, &method, &headless).await.is_none());
+            assert!(route_access_gate_response(&state, &public_route, &method, &headless, "/svc", None).await.is_none());
         });
     }
 
