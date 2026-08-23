@@ -32,6 +32,7 @@ TunnelMux keeps that workflow in one local control plane instead of another pile
 - Multi-service host/path routing for local apps, APIs, docs, and callbacks
 - Provider-aware tunnel setup for `cloudflared` and `ngrok`
 - Runtime status, public URL, and service state in one place
+- English / Simplified Chinese UI switching from the header or Settings, with Auto following the system language
 - Route health, provider logs, and diagnostics when you need them
 - Service access gates with a global default code plus per-service inherit/custom/public modes
 - In-app update checks against GitHub Releases with SHA256-verified raw archive installs
@@ -49,6 +50,7 @@ TunnelMux is designed for the “I just need this working” path first:
 
 When you need more control, the same app also supports:
 
+- UI language selection from the header or Settings → Interface; the choice is saved locally in the desktop webview
 - multiple tunnel profiles
 - provider-specific configuration
 - tunnel-scoped services

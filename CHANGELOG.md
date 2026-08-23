@@ -10,6 +10,8 @@ All notable changes to this project should be documented in this file.
 - Add updater install confirmation, asset/SHA display, and a Restart Now action after install.
 - Add GUI controls for default service access, per-service gate modes, generated/copyable access codes, route smoke tests, and update checks.
 - Add a DeepSeek / mounted-SPA preset plus root-path exposure hints on service cards.
+- Add English / Simplified Chinese UI switching with Auto system-language detection and local persistence.
+- Polish the Settings and service drawers with clearer section hierarchy and wider drawer spacing.
 - Harden mounted app forwarding by stripping external Host/Origin when routes do not forward the original Host header.
 - Document the in-app updater and service access gate workflow.
 

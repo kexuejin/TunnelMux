@@ -120,6 +120,7 @@ The Settings drawer includes an App Updates section. The checker uses GitHub Rel
 5. Click **Download & Install** and confirm the asset/version/install prompt.
 6. Expect the GUI to download the archive under `~/.tunnelmux/updates/<version>/`, verify the archive against the manifest/SHA256 metadata when present, extract it, and replace `tunnelmux-gui`, `tunnelmuxd`, and `tunnelmux-cli` next to the currently running GUI binary.
 7. Click **Restart Now** to relaunch TunnelMux with the newly installed binaries.
+8. Switch the header language selector between **Auto**, **English**, and **简体中文**. Expect the Settings and service drawers plus dynamic service-card labels to update without relaunching; the selected language should persist after closing and reopening the app.
 
 Notes:
 

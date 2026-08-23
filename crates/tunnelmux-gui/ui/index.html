@@ -23,6 +23,14 @@
           </div>
         </div>
         <div class="header-actions">
+          <label class="language-switcher" aria-label="Language">
+            <span>Language</span>
+            <select id="ui-language">
+              <option value="auto">Auto</option>
+              <option value="en">English</option>
+              <option value="zh-CN">简体中文</option>
+            </select>
+          </label>
           <button id="open-settings" type="button" class="secondary settings-button" aria-label="Open Settings">
             Settings
           </button>
@@ -254,6 +262,19 @@
         </div>
 
         <div class="drawer-body">
+          <section class="drawer-section drawer-section-highlight">
+            <h3>Interface</h3>
+            <p class="panel-subtle">Choose the language used by the desktop UI. Auto follows your system language.</p>
+            <label class="field">
+              <span>Language</span>
+              <select id="settings-ui-language">
+                <option value="auto">Auto</option>
+                <option value="en">English</option>
+                <option value="zh-CN">简体中文</option>
+              </select>
+            </label>
+          </section>
+
           <section class="drawer-section">
             <h3>Connection</h3>
             <label class="field">

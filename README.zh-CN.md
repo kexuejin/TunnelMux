@@ -32,6 +32,7 @@ TunnelMux 的目标不是再造一个平台，而是把这些本地暴露动作�
 - 面向本地多服务的 host/path 路由能力
 - 支持 `cloudflared` 和 `ngrok` 的 provider 配置
 - 公网地址、服务状态、连接状态放在一个页面里
+- 英文 / 简体中文界面切换，可在顶部或 Settings 中选择；Auto 会跟随系统语言
 - 需要时再展开的诊断、日志和健康状态
 - 服务访问码门禁：支持全局默认码，以及每个服务继承/自定义/公开三种模式
 - 内置更新检查：从 GitHub Releases 下载匹配平台的 raw archive，并按 `SHA256SUMS` 校验后安装
@@ -49,6 +50,7 @@ TunnelMux 先服务最常见的路径：
 
 如果后面需要更复杂的能力，同一个应用也支持：
 
+- 在顶部或 Settings → Interface 中切换界面语言；选择会保存在本机桌面 WebView
 - 多 tunnel profile
 - provider 专属配置
 - tunnel 级别的服务管理

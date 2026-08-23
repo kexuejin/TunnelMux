@@ -50,6 +50,184 @@ const invoke = (command, payload = {}) => {
 const CLOUDFLARE_DASHBOARD_URL = 'https://one.dash.cloudflare.com/';
 const CLOUDFLARE_TUNNEL_DOCS_URL = 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/';
 
+const UI_LANGUAGE_STORAGE_KEY = 'tunnelmux.uiLanguage';
+const SUPPORTED_UI_LANGUAGES = new Set(['auto', 'en', 'zh-CN']);
+const i18nTextSources = new WeakMap();
+const i18nAttrNames = ['placeholder', 'aria-label', 'title'];
+let i18nObserver = null;
+let i18nApplying = false;
+
+const I18N_ZH = {
+  'Expose local services instantly': '即时公开本地服务',
+  'Loading your current tunnel and services…': '正在加载当前隧道和服务…',
+  'Retry Local Daemon': '重试本地守护进程',
+  'View Error Details': '查看错误详情',
+  'Language': '语言',
+  'Auto': '自动',
+  'Settings': '设置',
+  'Open Settings': '打开设置',
+  'Get Started': '开始使用',
+  'No tunnel yet': '还没有隧道',
+  'Create Tunnel → Install provider if needed → Start Tunnel → Add Service → Share URL': '创建隧道 → 按需安装 Provider → 启动隧道 → 添加服务 → 分享 URL',
+  'Create Tunnel': '创建隧道',
+  'Copy Install Command': '复制安装命令',
+  'Recheck Provider': '重新检查 Provider',
+  'Current Tunnel': '当前隧道',
+  'Switch Tunnel': '切换隧道',
+  'New Tunnel': '新建隧道',
+  'Edit Tunnel': '编辑隧道',
+  'Public URL': '公网 URL',
+  'Not running': '未运行',
+  'Start a tunnel to get a shareable public URL.': '启动隧道后会得到可分享的公网 URL。',
+  'Provider': 'Provider',
+  'Connected': '连接状态',
+  'Services': '服务',
+  'Start Tunnel': '启动隧道',
+  'Add Service': '添加服务',
+  'Copy URL': '复制 URL',
+  'Open': '打开',
+  'Open Cloudflare': '打开 Cloudflare',
+  'Stop Tunnel': '停止隧道',
+  'No tunnel data yet.': '暂无隧道数据。',
+  'Provider Status': 'Provider 状态',
+  'Provider Ready': 'Provider 已就绪',
+  'Tunnel provider is connected and ready.': '隧道 Provider 已连接并就绪。',
+  'Info': '信息',
+  'Service': '服务',
+  'Keep the basics simple. Expand Advanced only when needed.': '先保持基础配置简单；只有需要时再展开高级设置。',
+  'DeepSeek / SPA Preset': 'DeepSeek / SPA 预设',
+  'Close': '关闭',
+  'Service Name': '服务名称',
+  'Local Service URL': '本地服务 URL',
+  'Public Path': '公网路径',
+  'Service enabled': '启用服务',
+  'Advanced': '高级',
+  'Exposure': '暴露方式',
+  'Path': '路径',
+  'Subdomain': '子域名',
+  'Public Host': '公网 Host',
+  'Health Check Path': '健康检查路径',
+  'Enable health check': '启用健康检查',
+  'Fallback Local URL': '备用本地 URL',
+  'Forward original Host header (advanced; leave off for loopback-protected mounted SPAs like DeepSeek Harness)': '转发原始 Host header（高级；DeepSeek Harness 这类 loopback 保护的子路径 SPA 请保持关闭）',
+  'Rewrite HTML/JS so root-relative URLs carry the Public Path prefix': '重写 HTML/JS，让根相对 URL 携带公网路径前缀',
+  'Access Gate': '访问门禁',
+  'Inherit default gate': '继承默认门禁',
+  'Use custom service code': '使用服务自定义访问码',
+  'Always public': '始终公开',
+  'Service Access Code': '服务访问码',
+  'Generate Code': '生成访问码',
+  'Copy Code': '复制访问码',
+  'Test Route': '测试路由',
+  'Save Service': '保存服务',
+  'App Settings': '应用设置',
+  'Only open this when you need to change how the desktop app connects to the local daemon.': '只有需要修改桌面应用连接本地守护进程的方式时才打开这里。',
+  'Interface': '界面',
+  'Choose the language used by the desktop UI. Auto follows your system language.': '选择桌面界面使用的语言；自动模式跟随系统语言。',
+  'Connection': '连接',
+  'Base URL': 'Base URL',
+  'Bearer Token': 'Bearer Token',
+  'Optional': '可选',
+  'App Updates': '应用更新',
+  'Check GitHub Releases, download the matching build for this Mac, verify SHA256, and install the bundled TunnelMux binaries.': '检查 GitHub Releases，下载匹配本机的构建，校验 SHA256，并安装 TunnelMux 二进制文件。',
+  'No update check yet.': '尚未检查更新。',
+  'Check for Updates': '检查更新',
+  'Download & Install': '下载并安装',
+  'Restart Now': '立即重启',
+  'Default service access': '默认服务访问',
+  'Optional default code for all routed services. Individual services can inherit, override, or stay public.': '可选：为所有路由服务设置默认访问码；单个服务可继承、覆盖或保持公开。',
+  'Default service code': '默认服务访问码',
+  'Leave blank to clear default': '留空可清除默认值',
+  'Save Default Gate': '保存默认门禁',
+  'Default gate status not loaded yet.': '默认门禁状态尚未加载。',
+  'Control-plane access': '控制面访问',
+  'Locked until you enter the current access code. Only works from this machine; external access always needs the bearer token.': '输入当前访问码前保持锁定。仅本机可用；外部访问始终需要 bearer token。',
+  'Status': '状态',
+  'Current code': '当前访问码',
+  'Enter code': '输入访问码',
+  'Access code': '访问码',
+  'Unlock': '解锁',
+  'Lock now': '立即锁定',
+  'Refresh': '刷新',
+  'Save Settings': '保存设置',
+  'Tunnel': '隧道',
+  'Start simple. You can change provider settings before launch or edit them later.': '先用简单配置启动；Provider 设置可在启动前修改，也可稍后编辑。',
+  'Tunnel Name': '隧道名称',
+  'Gateway Target URL': '网关目标 URL',
+  'Auto restart provider if it exits': 'Provider 退出时自动重启',
+  'Cloudflared Tunnel Token': 'Cloudflared 隧道 Token',
+  'Ngrok Auth Token': 'Ngrok Auth Token',
+  'Reserved Domain': '保留域名',
+  'Save Tunnel': '保存隧道',
+  'Save & Start': '保存并启动',
+  'Delete Tunnel': '删除隧道',
+  'Cancel': '取消',
+  'Confirm': '确认',
+  'Please confirm this action.': '请确认此操作。',
+  'Troubleshooting': '故障排查',
+  'Config': '配置',
+  'Upstreams': '上游服务',
+  'Recent Logs': '最近日志',
+  'Refresh Logs': '刷新日志',
+  'Clear Logs': '清空日志',
+  'Live': '在线',
+  'Off': '关闭',
+  'Edit': '编辑',
+  'Test': '测试',
+  'Enable': '启用',
+  'Disable': '停用',
+  'Delete': '删除',
+  'Public': '公开',
+  'Gated · default': '门禁 · 默认',
+  'Gated · custom': '门禁 · 自定义',
+  'Explicitly public; default gate is ignored.': '显式公开；忽略默认门禁。',
+  'No route or default access gate applies.': '没有路由级或默认访问门禁。',
+  'Protected by the default service access code.': '受默认服务访问码保护。',
+  'Protected by a service-specific access code.': '受服务自定义访问码保护。',
+  'Services exposed through your current tunnel.': '当前隧道正在暴露这些服务。',
+  'Add a local service to route traffic somewhere useful.': '添加本地服务，把公网流量转发到有用的位置。',
+  'No services yet.': '还没有服务。',
+  'Add a service before sharing this URL. It replaces the default welcome page.': '分享该 URL 前请先添加服务；它会替换默认欢迎页。',
+  'Root / is exposed by this service.': '根路径 / 由该服务暴露。',
+  'Root / stays closed unless another service exposes it.': '根路径 / 保持关闭，除非另一个服务显式暴露它。',
+  'Default gate is enabled. Services inherit it unless they override or opt out.': '默认门禁已启用；服务会继承它，除非覆盖或选择公开。',
+  'No default service gate is set. Services are public unless they use a custom code.': '未设置默认服务门禁；服务默认为公开，除非使用自定义访问码。',
+  'Default service gate saved.': '默认服务门禁已保存。',
+  'Default service gate cleared.': '默认服务门禁已清除。',
+  'No public URL is available yet.': '当前还没有可用的公网 URL。',
+  'Public URL copied.': '公网 URL 已复制。',
+  'Failed to copy URL': '复制 URL 失败',
+  'nothing to copy': '没有可复制的内容',
+  'clipboard API unavailable': '剪贴板 API 不可用',
+  'Service access code generated.': '服务访问码已生成。',
+  'Service access code copied.': '服务访问码已复制。',
+  'Failed to copy service code': '复制服务访问码失败',
+  'Default service code generated.': '默认服务访问码已生成。',
+  'Default service code copied.': '默认服务访问码已复制。',
+  'Failed to copy default code': '复制默认访问码失败',
+  'Save or name the service before testing.': '测试前请先保存服务或填写服务名称。',
+  'No service selected to test.': '未选择要测试的服务。',
+  'Testing route and upstream…': '正在测试路由和上游…',
+  'Route test completed.': '路由测试完成。',
+  'Route test failed: ': '路由测试失败：',
+  'DeepSeek / mounted SPA preset applied. Root / stays closed unless another service exposes it.': 'DeepSeek / 子路径 SPA 预设已应用。根路径 / 仍保持关闭，除非另一个服务显式暴露它。',
+  'Restart TunnelMux?': '重启 TunnelMux？',
+  'TunnelMux will restart now so the newly installed binaries can take effect.': 'TunnelMux 将立即重启，以便新安装的二进制文件生效。',
+  'Checking GitHub Releases…': '正在检查 GitHub Releases…',
+  'No installable update is currently selected.': '当前没有可安装的更新。',
+  'Install TunnelMux update?': '安装 TunnelMux 更新？',
+  'Downloading and installing ': '正在下载并安装 ',
+  'Update check failed: ': '检查更新失败：',
+  'Update install failed: ': '安装更新失败：',
+  'Installed: ': '已安装：',
+  'Install dir: ': '安装目录：',
+  ' Asset: ': ' 资产：',
+  ' · SHA256 verified on install.': ' · 安装时校验 SHA256。',
+  ' · no SHA256 in metadata.': ' · 元数据未提供 SHA256。',
+  'not provided': '未提供',
+  'Locked': '已锁定',
+};
+
 const elements = {};
 const state = {
   busy: false,
@@ -63,6 +241,7 @@ const state = {
   defaultRouteGate: { gated: false },
   updateCheck: null,
   updateInstalled: false,
+  uiLanguagePreference: 'auto',
   editingOriginalId: null,
   settingsDrawerOpen: false,
   serviceDrawerOpen: false,
@@ -107,6 +286,7 @@ const state = {
 window.addEventListener('DOMContentLoaded', async () => {
   bindElements();
   bindEvents();
+  initializeLanguage();
   resetRouteForm();
 
   if (!isTauri) {
@@ -154,6 +334,7 @@ function bindElements() {
   elements.statusErrorDetails = document.getElementById('status-error-details');
   elements.statusAction = document.getElementById('status-action');
   elements.openSettings = document.getElementById('open-settings');
+  elements.uiLanguage = document.getElementById('ui-language');
   elements.tunnelEmptyState = document.getElementById('tunnel-empty-state');
   elements.createTunnelEmpty = document.getElementById('create-tunnel-empty');
   elements.emptyProviderCopy = document.getElementById('empty-provider-copy');
@@ -267,6 +448,7 @@ function bindElements() {
   elements.settingsBackdrop = document.getElementById('settings-backdrop');
   elements.settingsDrawer = document.getElementById('settings-drawer');
   elements.closeSettings = document.getElementById('close-settings');
+  elements.settingsUiLanguage = document.getElementById('settings-ui-language');
   elements.baseUrl = document.getElementById('settings-base-url');
   elements.token = document.getElementById('settings-token');
   elements.updateStatus = document.getElementById('update-status');
@@ -314,6 +496,8 @@ function bindElements() {
 
 function bindEvents() {
   elements.openSettings?.addEventListener('click', () => { openSettingsDrawer(); void refreshAuthStatus(); });
+  elements.uiLanguage?.addEventListener('change', () => setLanguagePreference(elements.uiLanguage.value));
+  elements.settingsUiLanguage?.addEventListener('change', () => setLanguagePreference(elements.settingsUiLanguage.value));
   elements.statusAction?.addEventListener('click', () => withBusy(handleStatusAction));
   elements.closeSettings?.addEventListener('click', closeSettingsDrawer);
   elements.settingsBackdrop?.addEventListener('click', closeSettingsDrawer);
@@ -456,8 +640,8 @@ function renderAuthStatus(status) {
   const expires = status?.unlock_expires_at ? new Date(status.unlock_expires_at) : null;
   const remaining = expires ? Math.max(0, Math.round((expires.getTime() - Date.now()) / 1000)) : 0;
   elements.authStatusLine.textContent = unlocked
-    ? `Unlocked (${Math.floor(remaining / 60)}m ${remaining % 60}s left)`
-    : 'Locked';
+    ? translateText(`Unlocked (${Math.floor(remaining / 60)}m ${remaining % 60}s left)`)
+    : translateText('Locked');
   elements.authCodeLine.textContent = status?.code ? status.code : '—';
 }
 
@@ -665,9 +849,156 @@ function populateSettingsFields(settings) {
   syncProviderHints();
 }
 
+
+function normalizeLanguagePreference(value) {
+  return SUPPORTED_UI_LANGUAGES.has(value) ? value : 'auto';
+}
+
+function loadLanguagePreference() {
+  try {
+    return normalizeLanguagePreference(localStorage.getItem(UI_LANGUAGE_STORAGE_KEY) || 'auto');
+  } catch {
+    return 'auto';
+  }
+}
+
+function saveLanguagePreference(value) {
+  try {
+    localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, value);
+  } catch {
+    // Ignore storage failures in restricted preview contexts.
+  }
+}
+
+function initializeLanguage() {
+  state.uiLanguagePreference = loadLanguagePreference();
+  syncLanguageSelectors();
+  applyI18n();
+  observeI18nMutations();
+}
+
+function setLanguagePreference(value) {
+  state.uiLanguagePreference = normalizeLanguagePreference(value);
+  saveLanguagePreference(state.uiLanguagePreference);
+  syncLanguageSelectors();
+  applyI18n(document.body, { preferExisting: true });
+}
+
+function syncLanguageSelectors() {
+  if (elements.uiLanguage) elements.uiLanguage.value = state.uiLanguagePreference;
+  if (elements.settingsUiLanguage) elements.settingsUiLanguage.value = state.uiLanguagePreference;
+}
+
+function resolvedLanguage() {
+  if (state.uiLanguagePreference === 'zh-CN') return 'zh-CN';
+  if (state.uiLanguagePreference === 'en') return 'en';
+  const languages = navigator.languages?.length ? navigator.languages : [navigator.language || 'en'];
+  return languages.some((language) => String(language).toLowerCase().startsWith('zh')) ? 'zh-CN' : 'en';
+}
+
+function translateText(value) {
+  if (value == null) return '';
+  const source = String(value);
+  if (resolvedLanguage() !== 'zh-CN') return source;
+  if (I18N_ZH[source]) return I18N_ZH[source];
+  return source
+    .replace(/^(\d+) enabled$/, '$1 已启用')
+    .replace(/^Testing (.+)…$/, '正在测试 $1…')
+    .replace(/^Unlocked \((.+) left\)$/, '已解锁（剩余 $1）')
+    .replace(/Route test failed: /g, I18N_ZH['Route test failed: '])
+    .replace(/Update check failed: /g, I18N_ZH['Update check failed: '])
+    .replace(/Update install failed: /g, I18N_ZH['Update install failed: '])
+    .replace(/ Asset: /g, I18N_ZH[' Asset: '])
+    .replace(/ · SHA256 verified on install\./g, I18N_ZH[' · SHA256 verified on install.'])
+    .replace(/ · no SHA256 in metadata\./g, I18N_ZH[' · no SHA256 in metadata.'])
+    .replace(/Installed: /g, I18N_ZH['Installed: '])
+    .replace(/Install dir: /g, I18N_ZH['Install dir: ']);
+}
+
+function applyI18n(root = document.body, { preferExisting = false } = {}) {
+  if (!root || i18nApplying) return;
+  i18nApplying = true;
+  try {
+    document.documentElement.lang = resolvedLanguage() === 'zh-CN' ? 'zh-CN' : 'en';
+    translateTextNodes(root, { preferExisting });
+    translateAttributes(root, { preferExisting });
+  } finally {
+    i18nApplying = false;
+  }
+}
+
+function translateTextNodes(root, { preferExisting = false } = {}) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (!parent || parent.closest('script, style')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let node = walker.nextNode();
+  while (node) {
+    const current = node.nodeValue.trim();
+    const existing = i18nTextSources.get(node);
+    const existingRendered = existing ? translateText(existing) : null;
+    const source = existing && (preferExisting || current === existing || current === existingRendered) ? existing : current;
+    const translated = translateText(source);
+    if (translated !== current || existing) {
+      const leading = node.nodeValue.match(/^\s*/)?.[0] ?? '';
+      const trailing = node.nodeValue.match(/\s*$/)?.[0] ?? '';
+      i18nTextSources.set(node, source);
+      node.nodeValue = leading + translated + trailing;
+    }
+    node = walker.nextNode();
+  }
+}
+
+function translateAttributes(root, { preferExisting = false } = {}) {
+  for (const attr of i18nAttrNames) {
+    root.querySelectorAll('[' + attr + ']').forEach((element) => {
+      const sourceAttr = 'data-i18n-source-' + attr;
+      const existing = element.getAttribute(sourceAttr);
+      const current = element.getAttribute(attr) || '';
+      const existingRendered = existing ? translateText(existing) : null;
+      const source = existing && (preferExisting || current === existing || current === existingRendered) ? existing : current;
+      const translated = translateText(source);
+      if (translated !== current || existing) {
+        element.setAttribute(sourceAttr, source);
+        element.setAttribute(attr, translated);
+      }
+    });
+  }
+}
+
+function observeI18nMutations() {
+  if (i18nObserver || typeof MutationObserver === 'undefined') return;
+  i18nObserver = new MutationObserver((mutations) => {
+    if (i18nApplying) return;
+    for (const mutation of mutations) {
+      if (mutation.type === 'childList') {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === Node.ELEMENT_NODE) applyI18n(node);
+          if (node.nodeType === Node.TEXT_NODE && node.parentElement) applyI18n(node.parentElement);
+        });
+      } else if (mutation.type === 'characterData' && mutation.target.parentElement) {
+        applyI18n(mutation.target.parentElement);
+      } else if (mutation.type === 'attributes' && mutation.target instanceof Element) {
+        applyI18n(mutation.target);
+      }
+    }
+  });
+  i18nObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: i18nAttrNames,
+  });
+}
+
 function syncProviderHints() {
   const tunnel = getCurrentTunnelDetails(getCurrentTunnelSettings());
-  elements.homeProviderHint.textContent = tunnel ? formatHomeProviderHint(tunnel) : 'No tunnel data yet.';
+  elements.homeProviderHint.textContent = tunnel ? translateText(formatHomeProviderHint(tunnel)) : translateText('No tunnel data yet.');
 }
 
 async function refreshProviderAvailabilitySnapshot() {
@@ -1814,7 +2145,7 @@ function renderRoutes(snapshot) {
   elements.routesList.innerHTML = '';
 
   const enabled = state.routeCache.filter((route) => route.enabled).length;
-  elements.servicesEnabledCount.textContent = `${enabled} enabled`;
+  elements.servicesEnabledCount.textContent = translateText(`${enabled} enabled`);
   renderHeroAddServiceAction(summarizeZeroServiceHeroAction({
     connected: state.dashboardConnected,
     tunnel_state: state.dashboardTunnelState,
@@ -1837,7 +2168,7 @@ function renderRoutes(snapshot) {
     const currentTunnel = getCurrentTunnelDetails();
     const shouldPromptBeforeSharing = currentTunnel?.state === 'running';
 
-    elements.routesEmptyTitle.textContent = 'No services yet.';
+    elements.routesEmptyTitle.textContent = translateText('No services yet.');
     elements.routesEmptyCopy.textContent = shouldPromptBeforeSharing
       ? 'Add a service before sharing this URL. It replaces the default welcome page.'
       : (snapshot?.message ?? 'Add a local service to route traffic somewhere useful.');
@@ -1874,6 +2205,7 @@ function renderRoutes(snapshot) {
       </div>
     `;
     elements.routesList.appendChild(item);
+    applyI18n(item);
   }
 
   bindRouteActionButtons();
@@ -2252,7 +2584,7 @@ async function testRouteById(routeId, { drawer = false } = {}) {
 
 function renderRouteTestStatus(message, isError = false, hidden = false) {
   if (!elements.routeTestStatus) return;
-  elements.routeTestStatus.textContent = message;
+  elements.routeTestStatus.textContent = translateText(message);
   elements.routeTestStatus.hidden = hidden || !message;
   elements.routeTestStatus.classList.toggle('error', Boolean(isError));
 }
@@ -2332,7 +2664,7 @@ async function downloadAndInstallUpdate() {
 
 function renderUpdateStatus(message, isError = false) {
   if (!elements.updateStatus) return;
-  elements.updateStatus.textContent = message;
+  elements.updateStatus.textContent = translateText(message);
   elements.updateStatus.classList.toggle('error', Boolean(isError));
 }
 
@@ -2362,8 +2694,8 @@ async function saveDefaultRouteAccess() {
 function renderDefaultRouteAccessStatus() {
   if (!elements.defaultRouteAccessStatus) return;
   elements.defaultRouteAccessStatus.textContent = state.defaultRouteGate?.gated
-    ? 'Default gate is enabled. Services inherit it unless they override or opt out.'
-    : 'No default service gate is set. Services are public unless they use a custom code.';
+    ? translateText('Default gate is enabled. Services inherit it unless they override or opt out.')
+    : translateText('No default service gate is set. Services are public unless they use a custom code.');
 }
 
 function routeGateFor(routeId) {
@@ -2622,9 +2954,9 @@ function describeRouteExposure(route) {
 function describeRouteRootPolicy(route) {
   const path = ensurePath(route.match_path_prefix ?? '/');
   if (path === '/') {
-    return 'Root / is exposed by this service.';
+    return translateText('Root / is exposed by this service.');
   }
-  return 'Root / stays closed unless another service exposes it.';
+  return translateText('Root / stays closed unless another service exposes it.');
 }
 
 function ensurePath(value) {
@@ -2668,13 +3000,13 @@ function renderStatus(message, isError = false, statusAction = null) {
   state.statusActionKind = statusAction?.kind ?? null;
   state.statusActionLabel = statusAction?.label ?? null;
   state.statusActionPayload = statusAction?.payload ?? null;
-  elements.status.textContent = summarizeStatusMessage(message, isError);
+  elements.status.textContent = translateText(summarizeStatusMessage(message, isError));
   elements.status.classList.toggle('error', isError);
   if (elements.statusErrorDetails) {
     elements.statusErrorDetails.hidden = !shouldShowErrorDetailsAction({ isError });
   }
   if (elements.statusAction) {
-    elements.statusAction.textContent = state.statusActionLabel ?? 'Retry';
+    elements.statusAction.textContent = translateText(state.statusActionLabel ?? 'Retry');
     elements.statusAction.hidden = !state.statusActionKind;
     elements.statusAction.disabled = state.busy;
   }
@@ -2740,9 +3072,9 @@ function closeErrorDetailsDialog() {
 }
 
 async function requestConfirmation({ title, message, confirmLabel }) {
-  elements.confirmTitle.textContent = title;
-  elements.confirmMessage.textContent = message || 'Please confirm this action.';
-  elements.confirmConfirm.textContent = confirmLabel || 'Confirm';
+  elements.confirmTitle.textContent = translateText(title);
+  elements.confirmMessage.textContent = translateText(message || 'Please confirm this action.');
+  elements.confirmConfirm.textContent = translateText(confirmLabel || 'Confirm');
   elements.confirmBackdrop.hidden = false;
   elements.confirmDialog.hidden = false;
 
