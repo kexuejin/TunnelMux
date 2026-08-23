@@ -6,10 +6,17 @@
 ![Release](https://github.com/kexuejin/TunnelMux/actions/workflows/release.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
+![Release version](https://img.shields.io/github/v/release/kexuejin/TunnelMux?sort=semver)
+![GitHub stars](https://img.shields.io/github/stars/kexuejin/TunnelMux)
+![Downloads](https://img.shields.io/github/downloads/kexuejin/TunnelMux/total)
+
+> ⭐ **如果 TunnelMux 帮你省了时间，欢迎点个 Star，让更多开发者找到它。**
 
 TunnelMux 是一个面向开发者的本地隧道控制台，优先提供 GUI 体验，用来替代散落在终端里的 `cloudflared`、`ngrok`、路由脚本和各种临时命令。
 
 当你的本地开发已经不是“只暴露一个 3000 端口”，而是“前端 + API + 文档 + 回调服务”一起跑时，TunnelMux 用一个本地控制面把隧道启动、服务暴露、Provider 切换和故障排查收拢到一起。
+
+**和本地 AI 工具很配** —— 一条路径即可挂载 DeepSeek Harness、Ollama、Open WebUI，配合内置访问门禁，公开路由也能保持安全。
 
 ![TunnelMux GUI home screen](docs/images/gui-home.png)
 

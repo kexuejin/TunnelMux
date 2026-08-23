@@ -6,10 +6,17 @@
 ![Release](https://github.com/kexuejin/TunnelMux/actions/workflows/release.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
+![Release version](https://img.shields.io/github/v/release/kexuejin/TunnelMux?sort=semver)
+![GitHub stars](https://img.shields.io/github/stars/kexuejin/TunnelMux)
+![Downloads](https://img.shields.io/github/downloads/kexuejin/TunnelMux/total)
+
+> ⭐ **If TunnelMux saves you time, star the repo — it helps more developers find it.**
 
 TunnelMux is a GUI-first local tunnel control console for developers who are tired of juggling `cloudflared`, `ngrok`, route scripts, and half-broken local demos.
 
 If your project now means “frontend + API + docs + callback endpoint” instead of one localhost port, TunnelMux gives you one place to start tunnels, expose services, switch providers, and see what is actually broken.
+
+**Plays great with local AI tooling** — mount DeepSeek Harness, Ollama, or Open WebUI behind one clickable path, with built-in access gates so public routes stay protected.
 
 ![TunnelMux GUI home screen](docs/images/gui-home.png)
 
