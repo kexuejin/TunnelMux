@@ -69,6 +69,7 @@ nav:
   - Integration templates: INTEGRATION-TEMPLATES.md
   - Roadmap: ROADMAP.md
   - Releasing: RELEASING.md
+  - FAQ: FAQ.md
   - 简体中文:
       - 首页: zh/index.md
       - 架构: zh/ARCHITECTURE.md
@@ -76,4 +77,5 @@ nav:
       - 集成: zh/INTEGRATION.md
       - 集成模板: zh/INTEGRATION-TEMPLATES.md
       - 路线图: zh/ROADMAP.md
+      - FAQ: zh/FAQ.md
   - Changelog: https://github.com/kexuejin/TunnelMux/blob/main/CHANGELOG.md

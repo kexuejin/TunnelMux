@@ -44,6 +44,7 @@ TunnelMux 是一个 **GUI 优先的本地隧道控制台**（Rust + Tauri），�
 - [集成](INTEGRATION.md)
 - [集成模板](INTEGRATION-TEMPLATES.md)
 - [路线图](ROADMAP.md)
+- [FAQ](FAQ.md)
 
 !!! tip "本地 AI 工具"
     使用 **DeepSeek / SPA 预设** 一键把 DeepSeek Harness、Ollama、Open WebUI 挂到公网路径，并默认保持根路径 `/` 关闭。

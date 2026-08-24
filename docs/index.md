@@ -42,6 +42,7 @@ Start a tunnel, expose local services — APIs, docs, webhooks, and AI tools lik
 - [Integration templates](INTEGRATION-TEMPLATES.md)
 - [Roadmap](ROADMAP.md)
 - [Releasing](RELEASING.md)
+- [FAQ](FAQ.md)
 
 !!! tip "Local AI tooling"
     Mount DeepSeek Harness, Ollama, or Open WebUI behind one clickable path with the **DeepSeek / SPA Preset**, and keep root `/` closed by default.
