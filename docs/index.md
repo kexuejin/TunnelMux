@@ -1,5 +1,7 @@
 # TunnelMux
 
+[简体中文](/TunnelMux/zh/)
+
 GUI-first local tunnel control console for developers who are tired of juggling `cloudflared`, `ngrok`, route scripts, and half-broken local demos.
 
 Start a tunnel, expose local services — APIs, docs, webhooks, and AI tools like DeepSeek Harness, Ollama, or Open WebUI — behind one desktop app, with multi-service routing, health checks, and per-route access gates.
