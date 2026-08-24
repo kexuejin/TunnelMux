@@ -272,6 +272,7 @@ GUI under Settings → Control-plane access.
 
 ## Docs
 
+- [Documentation site](https://kexuejin.github.io/TunnelMux/)
 - [Architecture](docs/ARCHITECTURE.md)
 - [API](docs/API.md)
 - [Third-Party Integration](docs/INTEGRATION.md)

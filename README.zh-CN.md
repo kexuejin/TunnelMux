@@ -255,6 +255,7 @@ daemon 会轮询 `config.json`，应用路由和健康检查变更时不需要�
 
 ## 文档
 
+- [文档站点](https://kexuejin.github.io/TunnelMux/)
 - [Architecture](docs/ARCHITECTURE.md)
 - [API](docs/API.md)
 - [Third-Party Integration](docs/INTEGRATION.md)

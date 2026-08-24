@@ -1,0 +1,72 @@
+# TunnelMux documentation site
+site_name: TunnelMux
+site_description: >-
+  GUI-first local tunnel control console (Rust + Tauri) for cloudflared and
+  ngrok. Expose local services, APIs, webhooks, and AI tools like DeepSeek
+  Harness, Ollama, or Open WebUI — with routes, health checks, and service
+  access gates from one desktop app.
+site_url: https://kexuejin.github.io/TunnelMux/
+repo_url: https://github.com/kexuejin/TunnelMux
+edit_uri: blob/main/docs/
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+  logo: images/brand-icon.png
+  favicon: images/brand-icon.png
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/kexuejin/TunnelMux
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+exclude_docs: |
+  plans/**
+  promo/**
+  releases/**
+  PROMO.md
+
+nav:
+  - Home: index.md
+  - Architecture: ARCHITECTURE.md
+  - API: API.md
+  - Integration: INTEGRATION.md
+  - Integration templates: INTEGRATION-TEMPLATES.md
+  - Roadmap: ROADMAP.md
+  - Releasing: RELEASING.md
+  - Changelog: https://github.com/kexuejin/TunnelMux/blob/main/CHANGELOG.md
