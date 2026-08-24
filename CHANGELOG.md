@@ -4,6 +4,8 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-24
+
 - Add gateway service access gates with a global default code, per-service inherit/custom/public modes, and route-scoped browser cookies.
 - Add a polished route access login page with cache-clearing headers for mounted web apps.
 - Add in-app update checking and SHA256-verified raw archive installation from GitHub Releases, now preferring the static `tunnelmux-latest.json` manifest before GitHub API fallback.
