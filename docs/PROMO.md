@@ -4,6 +4,8 @@ Copy-and-paste drafts for launching TunnelMux publicly. Post them verbatim or tr
 
 - [English draft (Show HN / Reddit / dev.to)](promo/en.md)
 - [中文稿（掘金 / 公众号 / 知乎）](promo/zh.md)
+- [dev.to 6-step tutorial (EN)](promo/devto-tutorial-en.md)
+- [掘金 6 步图文教程（中文）](promo/devto-tutorial-zh.md)
 
 ## Social assets
 
