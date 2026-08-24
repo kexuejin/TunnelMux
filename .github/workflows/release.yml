@@ -100,8 +100,15 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
-      - name: Build binaries
-        run: cargo build --release --locked --target ${{ matrix.target }} -p tunnelmuxd -p tunnelmux-cli -p tunnelmux-gui
+      - name: Build daemon and CLI
+        run: cargo build --release --locked --target ${{ matrix.target }} -p tunnelmuxd -p tunnelmux-cli
+
+      - name: Stage GUI daemon sidecar
+        shell: bash
+        run: bash scripts/stage-gui-daemon-binary.sh crates/tunnelmux-gui "${{ matrix.target }}"
+
+      - name: Build GUI
+        run: cargo build --release --locked --target ${{ matrix.target }} -p tunnelmux-gui
 
       - name: Package binaries
         shell: bash
