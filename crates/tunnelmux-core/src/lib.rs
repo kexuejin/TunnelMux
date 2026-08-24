@@ -37,7 +37,9 @@ impl std::str::FromStr for ControlAuthMode {
             "require" => Ok(ControlAuthMode::Require),
             "optional" => Ok(ControlAuthMode::Optional),
             "off" => Ok(ControlAuthMode::Off),
-            other => Err(format!("invalid control-auth mode '{other}' (expected require | optional | off)")),
+            other => Err(format!(
+                "invalid control-auth mode '{other}' (expected require | optional | off)"
+            )),
         }
     }
 }
@@ -214,8 +216,6 @@ pub struct RouteAccessSummaryResponse {
     #[serde(default)]
     pub routes: Vec<RouteAccessSummary>,
 }
-
-
 
 pub fn effective_route_health_check_path(
     route: &RouteRule,
@@ -397,7 +397,6 @@ pub struct AuthStatusResponse {
 pub struct AuthUnlockRequest {
     pub code: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ErrorResponse {

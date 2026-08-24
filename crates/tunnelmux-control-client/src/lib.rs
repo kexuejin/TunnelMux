@@ -2,12 +2,12 @@ use anyhow::{Context, anyhow};
 use reqwest::{Client, RequestBuilder, Response, StatusCode as ReqwestStatusCode};
 use serde::de::DeserializeOwned;
 use tunnelmux_core::{
-    ApplyRoutesRequest, ApplyRoutesResponse, AuthStatusResponse, AuthUnlockRequest, CreateRouteRequest,
-    RouteAccessSummaryResponse, SetRouteAccessRequest, SetRouteAccessResponse,
-    DashboardResponse, DeleteRouteResponse, DeleteTunnelResponse, DiagnosticsResponse, ErrorResponse,
-    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
-    RouteMatchResponse, RouteRule, RoutesResponse, TunnelDeleteRequest, TunnelLogsResponse,
-    TunnelStartRequest, TunnelStatusResponse, TunnelWorkspaceResponse,
+    ApplyRoutesRequest, ApplyRoutesResponse, AuthStatusResponse, AuthUnlockRequest,
+    CreateRouteRequest, DashboardResponse, DeleteRouteResponse, DeleteTunnelResponse,
+    DiagnosticsResponse, ErrorResponse, HealthCheckSettingsResponse, HealthResponse,
+    MetricsResponse, ReloadSettingsResponse, RouteAccessSummaryResponse, RouteMatchResponse,
+    RouteRule, RoutesResponse, SetRouteAccessRequest, SetRouteAccessResponse, TunnelDeleteRequest,
+    TunnelLogsResponse, TunnelStartRequest, TunnelStatusResponse, TunnelWorkspaceResponse,
     UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
 };
 
@@ -33,7 +33,9 @@ impl ControlClientConfig {
 /// present and non-empty. `None` means no file or no usable token.
 pub fn default_api_token_from_disk() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let path = std::path::Path::new(&home).join(".tunnelmux").join("api-token");
+    let path = std::path::Path::new(&home)
+        .join(".tunnelmux")
+        .join("api-token");
     let content = std::fs::read_to_string(path).ok()?;
     let token = content.trim();
     if token.is_empty() {

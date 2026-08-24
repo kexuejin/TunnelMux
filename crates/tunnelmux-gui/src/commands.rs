@@ -50,10 +50,12 @@ enum SettingsSaveReconnectMode {
     ProbeConnection,
 }
 
-const TUNNELMUX_RELEASE_API: &str = "https://api.github.com/repos/kexuejin/TunnelMux/releases/latest";
+const TUNNELMUX_RELEASE_API: &str =
+    "https://api.github.com/repos/kexuejin/TunnelMux/releases/latest";
 const TUNNELMUX_RELEASE_MANIFEST_URL: &str =
     "https://github.com/kexuejin/TunnelMux/releases/latest/download/tunnelmux-latest.json";
-const TUNNELMUX_RELEASE_DOWNLOAD_PREFIX: &str = "https://github.com/kexuejin/TunnelMux/releases/download/";
+const TUNNELMUX_RELEASE_DOWNLOAD_PREFIX: &str =
+    "https://github.com/kexuejin/TunnelMux/releases/download/";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppUpdateAssetVm {
@@ -209,7 +211,9 @@ async fn check_app_update_from_github_api(
         .await?;
     let latest_version = normalize_release_version(&release.tag_name);
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let checksums = fetch_release_checksums(client, &release).await.unwrap_or_default();
+    let checksums = fetch_release_checksums(client, &release)
+        .await
+        .unwrap_or_default();
     let target = current_update_target();
     let asset = release
         .assets
@@ -266,7 +270,11 @@ async fn fetch_release_checksums(
     client: &reqwest::Client,
     release: &GithubRelease,
 ) -> anyhow::Result<HashMap<String, String>> {
-    let Some(asset) = release.assets.iter().find(|asset| asset.name == "SHA256SUMS") else {
+    let Some(asset) = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == "SHA256SUMS")
+    else {
         return Ok(HashMap::new());
     };
     let text = client
@@ -286,19 +294,27 @@ fn parse_sha256sums(text: &str) -> HashMap<String, String> {
         let Some(hash) = parts.next() else { continue };
         let Some(name) = parts.next() else { continue };
         if hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
-            checksums.insert(name.trim_start_matches('*').to_string(), hash.to_ascii_lowercase());
+            checksums.insert(
+                name.trim_start_matches('*').to_string(),
+                hash.to_ascii_lowercase(),
+            );
         }
     }
     checksums
 }
 
 fn current_update_target() -> String {
-    format!("{}-{}-{}", std::env::consts::ARCH, os_vendor_component(), std::env::consts::OS)
-        .replace("arm-apple-macos", "aarch64-apple-darwin")
-        .replace("aarch64-apple-macos", "aarch64-apple-darwin")
-        .replace("x86_64-apple-macos", "x86_64-apple-darwin")
-        .replace("x86_64-pc-windows", "x86_64-pc-windows-msvc")
-        .replace("x86_64-unknown-linux", "x86_64-unknown-linux-gnu")
+    format!(
+        "{}-{}-{}",
+        std::env::consts::ARCH,
+        os_vendor_component(),
+        std::env::consts::OS
+    )
+    .replace("arm-apple-macos", "aarch64-apple-darwin")
+    .replace("aarch64-apple-macos", "aarch64-apple-darwin")
+    .replace("x86_64-apple-macos", "x86_64-apple-darwin")
+    .replace("x86_64-pc-windows", "x86_64-pc-windows-msvc")
+    .replace("x86_64-unknown-linux", "x86_64-unknown-linux-gnu")
 }
 
 fn os_vendor_component() -> &'static str {
@@ -345,7 +361,9 @@ async fn download_and_install_app_update_impl(
         anyhow::bail!("refusing to download update from unsupported URL: {asset_url}");
     }
     if !asset_name.ends_with(".tar.gz") {
-        anyhow::bail!("automatic install currently supports .tar.gz raw archives only: {asset_name}");
+        anyhow::bail!(
+            "automatic install currently supports .tar.gz raw archives only: {asset_name}"
+        );
     }
 
     let client = reqwest::Client::builder()
@@ -359,7 +377,10 @@ async fn download_and_install_app_update_impl(
         .bytes()
         .await?;
     let actual_sha256 = hex_sha256(&bytes);
-    if let Some(expected) = expected_sha256.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(expected) = expected_sha256
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         if actual_sha256 != expected.to_ascii_lowercase() {
             anyhow::bail!("download checksum mismatch: expected {expected}, got {actual_sha256}");
         }
@@ -575,71 +596,71 @@ pub async fn probe_connection(
 ) -> Result<ConnectionStatus, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     probe_connection_from_settings_dir(&settings_dir).await
-        }
+}
 
-        #[tauri::command]
-        pub async fn auth_status(
-            app: tauri::AppHandle,
-            state: tauri::State<'_, GuiAppState>,
-        ) -> Result<tunnelmux_core::AuthStatusResponse, String> {
-            let settings_dir = resolve_settings_dir(&app, state.inner())?;
-            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
-            client.auth_status().await.map_err(command_error)
-        }
+#[tauri::command]
+pub async fn auth_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<tunnelmux_core::AuthStatusResponse, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+    client.auth_status().await.map_err(command_error)
+}
 
-        #[tauri::command]
-        pub async fn auth_unlock(
-            app: tauri::AppHandle,
-            state: tauri::State<'_, GuiAppState>,
-            code: String,
-        ) -> Result<tunnelmux_core::AuthStatusResponse, String> {
-            let settings_dir = resolve_settings_dir(&app, state.inner())?;
-            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
-            client.auth_unlock(&code).await.map_err(command_error)
-        }
+#[tauri::command]
+pub async fn auth_unlock(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    code: String,
+) -> Result<tunnelmux_core::AuthStatusResponse, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+    client.auth_unlock(&code).await.map_err(command_error)
+}
 
-        #[tauri::command]
-        pub async fn auth_relock(
-            app: tauri::AppHandle,
-            state: tauri::State<'_, GuiAppState>,
-        ) -> Result<tunnelmux_core::AuthStatusResponse, String> {
-            let settings_dir = resolve_settings_dir(&app, state.inner())?;
-            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
-            client.auth_relock().await.map_err(command_error)
-        }
+#[tauri::command]
+pub async fn auth_relock(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<tunnelmux_core::AuthStatusResponse, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+    client.auth_relock().await.map_err(command_error)
+}
 
-        #[tauri::command]
-        pub async fn list_route_access(
-            app: tauri::AppHandle,
-            state: tauri::State<'_, GuiAppState>,
-        ) -> Result<tunnelmux_core::RouteAccessSummaryResponse, String> {
-            let settings_dir = resolve_settings_dir(&app, state.inner())?;
-            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
-            client.list_route_access().await.map_err(command_error)
-        }
+#[tauri::command]
+pub async fn list_route_access(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+) -> Result<tunnelmux_core::RouteAccessSummaryResponse, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+    client.list_route_access().await.map_err(command_error)
+}
 
-        #[tauri::command]
-        pub async fn set_default_route_access(
-            app: tauri::AppHandle,
-            state: tauri::State<'_, GuiAppState>,
-            code: Option<String>,
-        ) -> Result<tunnelmux_core::RouteAccessSummaryResponse, String> {
-            let settings_dir = resolve_settings_dir(&app, state.inner())?;
-            let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
-            client
-                .set_route_access(&SetRouteAccessRequest {
-                    route_id: DEFAULT_ROUTE_ACCESS_ID.to_string(),
-                    require_access_code: code,
-                    public: None,
-                    cookie_ttl_ms: None,
-                })
-                .await
-                .map_err(command_error)?;
-            client.list_route_access().await.map_err(command_error)
-        }
+#[tauri::command]
+pub async fn set_default_route_access(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GuiAppState>,
+    code: Option<String>,
+) -> Result<tunnelmux_core::RouteAccessSummaryResponse, String> {
+    let settings_dir = resolve_settings_dir(&app, state.inner())?;
+    let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+    client
+        .set_route_access(&SetRouteAccessRequest {
+            route_id: DEFAULT_ROUTE_ACCESS_ID.to_string(),
+            require_access_code: code,
+            public: None,
+            cookie_ttl_ms: None,
+        })
+        .await
+        .map_err(command_error)?;
+    client.list_route_access().await.map_err(command_error)
+}
 
-        #[tauri::command]
-        pub async fn refresh_dashboard(
+#[tauri::command]
+pub async fn refresh_dashboard(
     app: tauri::AppHandle,
     state: tauri::State<'_, GuiAppState>,
 ) -> Result<DashboardSnapshot, String> {
@@ -1195,7 +1216,10 @@ async fn test_route_from_settings_dir(
         .and_then(|response| response.tunnel.public_base_url.as_deref())
         .and_then(|base| route_public_url(base, route));
     let http = reqwest::Client::builder()
-        .user_agent(format!("TunnelMux/{} route-test", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!(
+            "TunnelMux/{} route-test",
+            env!("CARGO_PKG_VERSION")
+        ))
         .timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -1206,11 +1230,18 @@ async fn test_route_from_settings_dir(
     let upstream_status = Some(fetch_status(&http, &route.upstream_url).await?);
     let mut details = Vec::new();
     if let Some(url) = public_url.as_ref() {
-        details.push(format!("public {url} => HTTP {}", auth_gate_status.unwrap_or(0)));
+        details.push(format!(
+            "public {url} => HTTP {}",
+            auth_gate_status.unwrap_or(0)
+        ));
     } else {
         details.push("public URL is not running yet".to_string());
     }
-    details.push(format!("upstream {} => HTTP {}", route.upstream_url, upstream_status.unwrap_or(0)));
+    details.push(format!(
+        "upstream {} => HTTP {}",
+        route.upstream_url,
+        upstream_status.unwrap_or(0)
+    ));
     if route.match_path_prefix.as_deref().unwrap_or("/") != "/" {
         details.push("root / remains closed unless another service exposes it".to_string());
     }
@@ -1225,7 +1256,12 @@ async fn test_route_from_settings_dir(
 
 fn route_public_url(base: &str, route: &tunnelmux_core::RouteRule) -> Option<String> {
     let mut url = Url::parse(base).ok()?;
-    if let Some(host) = route.match_host.as_deref().map(str::trim).filter(|host| !host.is_empty()) {
+    if let Some(host) = route
+        .match_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
         let _ = url.set_host(Some(host));
     }
     let path = route
@@ -1334,7 +1370,10 @@ async fn sync_route_access_from_form(
                     .iter()
                     .any(|gate| gate.route_id == route_id && gate.mode == "route");
                 if !already_custom {
-                    return Err("Enter an access code for this service or choose inherit/default.".to_string());
+                    return Err(
+                        "Enter an access code for this service or choose inherit/default."
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -3557,6 +3596,7 @@ mod tests {
                 forward_host_header: false,
                 rewrite_response_paths: false,
                 require_access_code: None,
+                route_access_mode: None,
             },
         )
         .await

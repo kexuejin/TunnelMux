@@ -42,7 +42,11 @@ pub(super) async fn route_access_gate_response(
         .is_some_and(|v| v.contains("text/html"));
 
     if *method == Method::POST {
-        if extract_form_access_code(headers, body).as_deref().map(str::trim) == Some(code) {
+        if extract_form_access_code(headers, body)
+            .as_deref()
+            .map(str::trim)
+            == Some(code)
+        {
             let cookie_ttl_ms = config.cookie_ttl_ms.unwrap_or(state.unlock_window_ms);
             return Some(build_route_access_success_response(
                 &cookie_name,
@@ -78,7 +82,10 @@ fn resolve_effective_route_access(
     route_config: Option<&RouteAccessConfig>,
     default_config: &RouteAccessConfig,
 ) -> Option<RouteAccessConfig> {
-    if route_config.and_then(|config| config.public).unwrap_or(false) {
+    if route_config
+        .and_then(|config| config.public)
+        .unwrap_or(false)
+    {
         return None;
     }
 
@@ -92,12 +99,14 @@ fn resolve_effective_route_access(
         }
     }
 
-    trimmed_access_code(default_config.require_access_code.as_deref()).map(|code| RouteAccessConfig {
-        require_access_code: Some(code.to_string()),
-        public: None,
-        cookie_ttl_ms: route_config
-            .and_then(|config| config.cookie_ttl_ms)
-            .or(default_config.cookie_ttl_ms),
+    trimmed_access_code(default_config.require_access_code.as_deref()).map(|code| {
+        RouteAccessConfig {
+            require_access_code: Some(code.to_string()),
+            public: None,
+            cookie_ttl_ms: route_config
+                .and_then(|config| config.cookie_ttl_ms)
+                .or(default_config.cookie_ttl_ms),
+        }
     })
 }
 
@@ -105,7 +114,11 @@ fn trimmed_access_code(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn build_route_access_form_response(route: &RouteRule, path: &str, error: Option<&str>) -> Response {
+fn build_route_access_form_response(
+    route: &RouteRule,
+    path: &str,
+    error: Option<&str>,
+) -> Response {
     let route_label = html_escape(&route.id);
     let action = html_escape(path);
     let error_html = error
@@ -144,7 +157,10 @@ button{{width:100%;height:50px;margin-top:14px;border:0;border-radius:14px;backg
     axum::response::Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header("content-type", "text/html; charset=utf-8")
-        .header("cache-control", "no-store, no-cache, must-revalidate, max-age=0")
+        .header(
+            "cache-control",
+            "no-store, no-cache, must-revalidate, max-age=0",
+        )
         .header("pragma", "no-cache")
         .header("expires", "0")
         .header("clear-site-data", "\"cache\"")
@@ -167,12 +183,19 @@ fn build_route_access_success_response(
         cookie_path,
         max_age_seconds
     );
-    let location = if redirect_path.starts_with('/') { redirect_path } else { "/" };
+    let location = if redirect_path.starts_with('/') {
+        redirect_path
+    } else {
+        "/"
+    };
     axum::response::Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(axum::http::header::SET_COOKIE, cookie)
         .header(axum::http::header::LOCATION, location)
-        .header("cache-control", "no-store, no-cache, must-revalidate, max-age=0")
+        .header(
+            "cache-control",
+            "no-store, no-cache, must-revalidate, max-age=0",
+        )
         .header("pragma", "no-cache")
         .header("expires", "0")
         .header("clear-site-data", "\"cache\"")
@@ -1051,7 +1074,11 @@ pub(super) fn copy_headers_from_upstream(
     }
 }
 
-fn disable_cache_for_mount_html(target: &mut HeaderMap, headers: &reqwest::header::HeaderMap, rewrite_prefix: Option<&str>) {
+fn disable_cache_for_mount_html(
+    target: &mut HeaderMap,
+    headers: &reqwest::header::HeaderMap,
+    rewrite_prefix: Option<&str>,
+) {
     if rewrite_prefix.is_none() {
         return;
     }

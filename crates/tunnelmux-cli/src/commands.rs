@@ -34,7 +34,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     control_client.tunnel_status(PRIMARY_TUNNEL_ID).await?;
                 println!("{}", format_status_output(&health, &tunnel)?);
             }
-                }
+        }
         Command::Unlock {
             code,
             show_code,
@@ -51,10 +51,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 if show_code {
                     println!(
                         "unlocked={} code={:?} fixed={} expires_at={:?}",
-                        status.unlocked,
-                        status.code,
-                        status.fixed_code,
-                        status.unlock_expires_at
+                        status.unlocked, status.code, status.fixed_code, status.unlock_expires_at
                     );
                 } else {
                     println!("{}", serde_json::to_string_pretty(&status)?);

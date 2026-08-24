@@ -48,13 +48,13 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
-    ApplyRoutesRequest, ApplyRoutesResponse, ControlAuthMode, CreateRouteRequest, DEFAULT_CONTROL_ADDR,
-    DEFAULT_GATEWAY_TARGET_URL, DISABLED_HEALTH_CHECK_SENTINEL,
-    DashboardResponse, DeleteRouteResponse, DiagnosticsResponse, ErrorResponse, HealthCheckSettings,
-    HealthCheckSettingsResponse, HealthResponse, MetricsResponse, ReloadSettingsResponse,
-    RouteAccessConfig, RouteMatchResponse, RouteMatchTarget, RouteRule, RoutesResponse,
-    TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState, TunnelStatus,
-    TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
+    ApplyRoutesRequest, ApplyRoutesResponse, ControlAuthMode, CreateRouteRequest,
+    DEFAULT_CONTROL_ADDR, DEFAULT_GATEWAY_TARGET_URL, DISABLED_HEALTH_CHECK_SENTINEL,
+    DashboardResponse, DeleteRouteResponse, DiagnosticsResponse, ErrorResponse,
+    HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse, MetricsResponse,
+    ReloadSettingsResponse, RouteAccessConfig, RouteMatchResponse, RouteMatchTarget, RouteRule,
+    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState,
+    TunnelStatus, TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
     UpstreamsHealthResponse, effective_route_health_check_path, route_health_check_enabled,
 };
 use url::Url;
@@ -451,7 +451,10 @@ async fn main() -> anyhow::Result<()> {
     let mut api_token = explicit_api_token;
     if control_auth == ControlAuthMode::Require && api_token.is_none() {
         api_token = Some(generate_and_persist_api_token(&api_token_file).await?);
-        info!("control api token auto-generated and written to {}", api_token_file.display());
+        info!(
+            "control api token auto-generated and written to {}",
+            api_token_file.display()
+        );
     }
     // Access-code lock: use a fixed code when configured, otherwise rotate one
     // now (and on each relock).
@@ -597,7 +600,9 @@ async fn main() -> anyhow::Result<()> {
     );
     match shared.control_auth {
         ControlAuthMode::Require => info!("control api auth: require (bearer token required)"),
-        ControlAuthMode::Optional => info!("control api auth: optional (enforced when a token is set)"),
+        ControlAuthMode::Optional => {
+            info!("control api auth: optional (enforced when a token is set)")
+        }
         ControlAuthMode::Off => info!("control api auth: off (no authentication)"),
     }
     info!("provider log file {}", shared.provider_log_file.display());
@@ -606,7 +611,8 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(
         listener,
         control_app.into_make_service_with_connect_info::<SocketAddr>(),
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -4229,36 +4235,73 @@ mod tests {
         let mut headers = HeaderMap::new();
 
         // Require (default): fail closed — no token / wrong token rejected.
-        assert!(!is_authorized_request(&headers, ControlAuthMode::Require, None));
+        assert!(!is_authorized_request(
+            &headers,
+            ControlAuthMode::Require,
+            None
+        ));
         headers.insert(
             axum::http::header::AUTHORIZATION,
             "Bearer expected".parse().expect("valid header"),
         );
-        assert!(is_authorized_request(&headers, ControlAuthMode::Require, Some("expected")));
-        assert!(!is_authorized_request(&headers, ControlAuthMode::Require, Some("other")));
+        assert!(is_authorized_request(
+            &headers,
+            ControlAuthMode::Require,
+            Some("expected")
+        ));
+        assert!(!is_authorized_request(
+            &headers,
+            ControlAuthMode::Require,
+            Some("other")
+        ));
 
         // Optional: a configured token is enforced; a tokenless daemon stays open.
         headers.remove(axum::http::header::AUTHORIZATION);
-        assert!(is_authorized_request(&headers, ControlAuthMode::Optional, None));
-        assert!(!is_authorized_request(&headers, ControlAuthMode::Optional, Some("expected")));
+        assert!(is_authorized_request(
+            &headers,
+            ControlAuthMode::Optional,
+            None
+        ));
+        assert!(!is_authorized_request(
+            &headers,
+            ControlAuthMode::Optional,
+            Some("expected")
+        ));
         headers.insert(
             axum::http::header::AUTHORIZATION,
             "Bearer expected".parse().expect("valid header"),
         );
-        assert!(is_authorized_request(&headers, ControlAuthMode::Optional, Some("expected")));
+        assert!(is_authorized_request(
+            &headers,
+            ControlAuthMode::Optional,
+            Some("expected")
+        ));
 
         // Off: never enforce.
         headers.remove(axum::http::header::AUTHORIZATION);
-        assert!(is_authorized_request(&headers, ControlAuthMode::Off, Some("expected")));
+        assert!(is_authorized_request(
+            &headers,
+            ControlAuthMode::Off,
+            Some("expected")
+        ));
         assert!(is_authorized_request(&headers, ControlAuthMode::Off, None));
     }
 
     #[test]
     fn control_auth_mode_from_str_parses_and_rejects_bad_values() {
         use std::str::FromStr;
-        assert_eq!(ControlAuthMode::from_str("require").unwrap(), ControlAuthMode::Require);
-        assert_eq!(ControlAuthMode::from_str("optional").unwrap(), ControlAuthMode::Optional);
-        assert_eq!(ControlAuthMode::from_str("OFF").unwrap(), ControlAuthMode::Off);
+        assert_eq!(
+            ControlAuthMode::from_str("require").unwrap(),
+            ControlAuthMode::Require
+        );
+        assert_eq!(
+            ControlAuthMode::from_str("optional").unwrap(),
+            ControlAuthMode::Optional
+        );
+        assert_eq!(
+            ControlAuthMode::from_str("OFF").unwrap(),
+            ControlAuthMode::Off
+        );
         assert!(ControlAuthMode::from_str("banana").is_err());
     }
 
@@ -4269,7 +4312,9 @@ mod tests {
         rt.block_on(async {
             let state = test_state_with_lock_require(Some("tok-1"), Some("abcdef"));
             // Non-loopback request without token -> rejected in require mode.
-            let ext = axum::extract::connect_info::ConnectInfo("203.0.113.5:1234".parse::<SocketAddr>().unwrap());
+            let ext = axum::extract::connect_info::ConnectInfo(
+                "203.0.113.5:1234".parse::<SocketAddr>().unwrap(),
+            );
             let request = axum::http::Request::builder()
                 .extension(ext)
                 .body(axum::body::Body::empty())
@@ -4279,11 +4324,16 @@ mod tests {
             // Same non-loopback request WITH a valid bearer token -> allowed.
             let mut authorized = axum::http::Request::builder();
             authorized = authorized.header("authorization", "Bearer tok-1");
-            let request = authorized.extension(ext).body(axum::body::Body::empty()).unwrap();
+            let request = authorized
+                .extension(ext)
+                .body(axum::body::Body::empty())
+                .unwrap();
             assert!(control_request_allowed(&state, &request));
 
             // Loopback request without token while locked -> rejected.
-            let loopback_ext = axum::extract::connect_info::ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap());
+            let loopback_ext = axum::extract::connect_info::ConnectInfo(
+                "127.0.0.1:1234".parse::<SocketAddr>().unwrap(),
+            );
             let request = axum::http::Request::builder()
                 .extension(loopback_ext)
                 .body(axum::body::Body::empty())
@@ -4337,8 +4387,12 @@ mod tests {
             let method = Method::GET;
             // No credentials -> gate response.
             let headless = HeaderMap::new();
-            let gate = route_access_gate_response(&state, &route, &method, &headless, "/svc", None).await;
-            assert!(gate.is_some(), "protected route without creds must be gated");
+            let gate =
+                route_access_gate_response(&state, &route, &method, &headless, "/svc", None).await;
+            assert!(
+                gate.is_some(),
+                "protected route without creds must be gated"
+            );
 
             // Correct cookie -> allowed.
             let mut with_cookie = HeaderMap::new();
@@ -4346,7 +4400,11 @@ mod tests {
                 axum::http::header::COOKIE,
                 "tunnelmux_access_svc-a=sekrit".parse().unwrap(),
             );
-            assert!(route_access_gate_response(&state, &route, &method, &with_cookie, "/svc", None).await.is_none());
+            assert!(
+                route_access_gate_response(&state, &route, &method, &with_cookie, "/svc", None)
+                    .await
+                    .is_none()
+            );
 
             // Correct bearer -> allowed.
             let mut with_bearer = HeaderMap::new();
@@ -4354,7 +4412,11 @@ mod tests {
                 axum::http::header::AUTHORIZATION,
                 "Bearer sekrit".parse().unwrap(),
             );
-            assert!(route_access_gate_response(&state, &route, &method, &with_bearer, "/svc", None).await.is_none());
+            assert!(
+                route_access_gate_response(&state, &route, &method, &with_bearer, "/svc", None)
+                    .await
+                    .is_none()
+            );
 
             // Wrong code -> gated.
             let mut wrong = HeaderMap::new();
@@ -4362,7 +4424,11 @@ mod tests {
                 axum::http::header::COOKIE,
                 "tunnelmux_access_svc-a=nope".parse().unwrap(),
             );
-            assert!(route_access_gate_response(&state, &route, &method, &wrong, "/svc", None).await.is_some());
+            assert!(
+                route_access_gate_response(&state, &route, &method, &wrong, "/svc", None)
+                    .await
+                    .is_some()
+            );
 
             // Correct form POST -> writes a route-scoped cookie and redirects back.
             let mut form_headers = HeaderMap::new();
@@ -4394,7 +4460,8 @@ mod tests {
                     .headers()
                     .get(axum::http::header::SET_COOKIE)
                     .and_then(|v| v.to_str().ok())
-                    .is_some_and(|value| value.contains("tunnelmux_access_svc-a=sekrit") && value.contains("Path=/svc")),
+                    .is_some_and(|value| value.contains("tunnelmux_access_svc-a=sekrit")
+                        && value.contains("Path=/svc")),
                 "expected route-scoped cookie: {:?}",
                 form_gate.headers().get(axum::http::header::SET_COOKIE)
             );
@@ -4404,7 +4471,11 @@ mod tests {
                 id: "public".to_string(),
                 ..route
             };
-            assert!(route_access_gate_response(&state, &public_route, &method, &headless, "/svc", None).await.is_none());
+            assert!(
+                route_access_gate_response(&state, &public_route, &method, &headless, "/svc", None)
+                    .await
+                    .is_none()
+            );
         });
     }
 

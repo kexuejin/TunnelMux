@@ -27,7 +27,9 @@ pub(super) fn resolve_api_token(arg_token: Option<String>) -> Option<String> {
 /// Generate a fresh 32-byte random token (hex) and persist it to `token_file`
 /// with owner-only permissions so local clients can auto-discover it. Called
 /// only in `require` mode when no token was otherwise configured.
-pub(super) async fn generate_and_persist_api_token(token_file: &std::path::Path) -> anyhow::Result<String> {
+pub(super) async fn generate_and_persist_api_token(
+    token_file: &std::path::Path,
+) -> anyhow::Result<String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|err| anyhow!("failed to read OS randomness: {err}"))?;
     let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
@@ -69,7 +71,8 @@ pub(super) async fn control_auth_middleware(
 
     ApiError {
         status: StatusCode::UNAUTHORIZED,
-        message: "unauthorized: provide a bearer token, or unlock loopback with the access code".to_string(),
+        message: "unauthorized: provide a bearer token, or unlock loopback with the access code"
+            .to_string(),
     }
     .into_response()
 }
@@ -83,12 +86,22 @@ pub(super) fn control_request_allowed(state: &Arc<AppState>, request: &Request) 
     }
     // Non-loopback requests must present a valid bearer token.
     let from_loopback = request_remote_addr_is_loopback(request);
-    if !from_loopback && !is_authorized_request(request.headers(), state.control_auth, state.api_token.as_deref()) {
+    if !from_loopback
+        && !is_authorized_request(
+            request.headers(),
+            state.control_auth,
+            state.api_token.as_deref(),
+        )
+    {
         return false;
     }
     // Loopback: allow if either the bearer token is valid or the unlock window is open.
     if from_loopback {
-        if is_authorized_request(request.headers(), state.control_auth, state.api_token.as_deref()) {
+        if is_authorized_request(
+            request.headers(),
+            state.control_auth,
+            state.api_token.as_deref(),
+        ) {
             return true;
         }
         if let Ok(lock) = state.control_lock.try_read() {
@@ -1365,7 +1378,8 @@ pub(super) async fn set_route_access(
 ) -> Result<Json<SetRouteAccessResponse>, ApiError> {
     let route_id = normalize_route_access_id(&request.route_id)?;
     let is_default = route_id == DEFAULT_ROUTE_ACCESS_ID;
-    let require_access_code = trimmed_access_code(request.require_access_code.as_deref()).map(str::to_string);
+    let require_access_code =
+        trimmed_access_code(request.require_access_code.as_deref()).map(str::to_string);
     let public = (!is_default && request.public.unwrap_or(false)).then_some(true);
     let cookie_ttl_ms = request.cookie_ttl_ms.filter(|v| *v > 0);
 
@@ -1379,7 +1393,11 @@ pub(super) async fn set_route_access(
         runtime.persisted.default_route_access.clone()
     } else if public.is_some() || require_access_code.is_some() || cookie_ttl_ms.is_some() {
         let config = RouteAccessConfig {
-            require_access_code: if public.is_some() { None } else { require_access_code },
+            require_access_code: if public.is_some() {
+                None
+            } else {
+                require_access_code
+            },
             public,
             cookie_ttl_ms,
         };
@@ -1408,7 +1426,8 @@ pub(super) async fn list_route_access(
     let (default_config, routes) = {
         let runtime = state.runtime.lock().await;
         let default_config = runtime.persisted.default_route_access.clone();
-        let default_gated = trimmed_access_code(default_config.require_access_code.as_deref()).is_some();
+        let default_gated =
+            trimmed_access_code(default_config.require_access_code.as_deref()).is_some();
         let mut summaries = runtime
             .persisted
             .routes
@@ -1433,11 +1452,13 @@ fn normalize_route_access_id(route_id: &str) -> Result<String, ApiError> {
     if route_id.is_empty() {
         return Err(ApiError::bad_request("route_id is required"));
     }
-    Ok(if matches!(route_id, DEFAULT_ROUTE_ACCESS_ID | "default" | "*") {
-        DEFAULT_ROUTE_ACCESS_ID.to_string()
-    } else {
-        route_id.to_string()
-    })
+    Ok(
+        if matches!(route_id, DEFAULT_ROUTE_ACCESS_ID | "default" | "*") {
+            DEFAULT_ROUTE_ACCESS_ID.to_string()
+        } else {
+            route_id.to_string()
+        },
+    )
 }
 
 fn trimmed_access_code(value: Option<&str>) -> Option<&str> {
@@ -1449,7 +1470,10 @@ fn summarize_route_access(
     route_config: Option<&RouteAccessConfig>,
     default_gated: bool,
 ) -> RouteAccessSummary {
-    if route_config.and_then(|config| config.public).unwrap_or(false) {
+    if route_config
+        .and_then(|config| config.public)
+        .unwrap_or(false)
+    {
         return RouteAccessSummary {
             route_id: route_id.to_string(),
             gated: false,

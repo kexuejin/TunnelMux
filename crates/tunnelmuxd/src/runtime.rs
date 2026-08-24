@@ -680,11 +680,7 @@ fn build_provider_command(
                     request.target_url.as_str(),
                 ]);
             } else {
-                cmd.args([
-                    "--no-autoupdate",
-                    "--url",
-                    request.target_url.as_str(),
-                ]);
+                cmd.args(["--no-autoupdate", "--url", request.target_url.as_str()]);
             }
             cmd
         }
@@ -1163,10 +1159,7 @@ mod runtime_tests {
             target_url: "http://127.0.0.1:48080".to_string(),
             auto_restart: Some(true),
             metadata: Some(HashMap::from([
-                (
-                    "cloudflaredTunnelToken".to_string(),
-                    "cf-token".to_string(),
-                ),
+                ("cloudflaredTunnelToken".to_string(), "cf-token".to_string()),
                 ("cloudflaredProtocol".to_string(), "http2".to_string()),
             ])),
         };
