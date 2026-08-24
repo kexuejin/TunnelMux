@@ -393,6 +393,20 @@ jobs:
       - build
       - gui_bundle
     steps:
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL_VERSION="$(python -c "import tomllib, pathlib; data = tomllib.loads(pathlib.Path('Cargo.toml').read_text()); print(data['workspace']['package']['version'])" )"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "$TAG_VERSION" != "$ACTUAL_VERSION" ]]; then
+              printf 'tag version %s does not match checked-out project version %s\n' "$TAG_VERSION" "$ACTUAL_VERSION" >&2
+              exit 1
+            fi
+          fi
+          echo "RELEASE_VERSION=$ACTUAL_VERSION" >> "$GITHUB_ENV"
+
       - name: Download raw archive artifacts
         uses: actions/download-artifact@v4
         with:
