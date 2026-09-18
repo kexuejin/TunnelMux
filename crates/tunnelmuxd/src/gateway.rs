@@ -134,25 +134,61 @@ fn build_route_access_form_response(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Access required · TunnelMux</title>
 <style>
-:root{{color-scheme:dark;--bg:#07111f;--panel:rgba(15,23,42,.78);--line:rgba(148,163,184,.22);--text:#e5edf7;--muted:#93a4b8;--accent:#38bdf8;--accent2:#818cf8;--danger:#fb7185;}}
-*{{box-sizing:border-box}} body{{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;color:var(--text);background:radial-gradient(circle at 20% 10%,rgba(56,189,248,.22),transparent 32rem),radial-gradient(circle at 80% 0%,rgba(129,140,248,.2),transparent 30rem),linear-gradient(135deg,#020617,#0f172a 58%,#111827);display:grid;place-items:center;padding:28px;}}
-.card{{width:min(440px,100%);padding:30px;border:1px solid var(--line);border-radius:24px;background:linear-gradient(180deg,rgba(15,23,42,.88),rgba(15,23,42,.66));box-shadow:0 28px 90px rgba(0,0,0,.42);backdrop-filter:blur(18px);}}
-.badge{{display:inline-flex;gap:8px;align-items:center;margin-bottom:18px;padding:7px 11px;border-radius:999px;background:rgba(56,189,248,.12);color:#bae6fd;font-size:13px;font-weight:650;letter-spacing:.02em}} .dot{{width:8px;height:8px;border-radius:999px;background:var(--accent);box-shadow:0 0 18px var(--accent)}}
-h1{{margin:0 0 10px;font-size:28px;line-height:1.1;letter-spacing:-.03em}} p{{margin:0;color:var(--muted);line-height:1.6}} .service{{color:#dbeafe;font-weight:700}}
-form{{margin-top:24px}} label{{display:block;margin-bottom:8px;color:#cbd5e1;font-size:13px;font-weight:650}} input{{width:100%;height:50px;border-radius:14px;border:1px solid rgba(148,163,184,.28);background:rgba(2,6,23,.62);color:var(--text);font-size:20px;letter-spacing:.18em;text-align:center;outline:none;transition:border-color .15s,box-shadow .15s,background .15s}} input:focus{{border-color:var(--accent);box-shadow:0 0 0 4px rgba(56,189,248,.15);background:rgba(2,6,23,.78)}}
-button{{width:100%;height:50px;margin-top:14px;border:0;border-radius:14px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#06111f;font-size:16px;font-weight:800;cursor:pointer;box-shadow:0 16px 34px rgba(56,189,248,.22);transition:transform .12s,filter .12s}} button:hover{{filter:brightness(1.06)}} button:active{{transform:translateY(1px)}}
-.error{{display:flex;gap:10px;align-items:flex-start;margin-top:18px;padding:12px 13px;border:1px solid rgba(251,113,133,.35);border-radius:14px;background:rgba(251,113,133,.1);color:#fecdd3}} .error span{{display:grid;place-items:center;min-width:20px;height:20px;border-radius:999px;background:var(--danger);color:#3f0812;font-weight:900}} .error p{{color:#fecdd3;font-size:14px}}
-.foot{{margin-top:20px;padding-top:18px;border-top:1px solid var(--line);font-size:12px;color:#74839a}} code{{color:#bae6fd;background:rgba(56,189,248,.1);padding:2px 6px;border-radius:6px}}
+:root{{color-scheme:dark;--bg:#0a0f1a;--panel:#111a2a;--line:rgba(148,163,184,.13);--text:#e9eff9;--muted:#8494ac;--accent:#3b82f6;--accent-soft:rgba(59,130,246,.12);--accent-text:#cfe4ff;--on-accent:#ffffff;--danger:#f87171;--danger-bg:rgba(248,113,113,.12);--danger-text:#fecaca;--danger-line:rgba(248,113,113,.28);--input-bg:#0d1523;--shadow:0 24px 64px rgba(2,6,23,.55);}}
+@media (prefers-color-scheme:light){{:root{{color-scheme:light;--bg:#f4f6fa;--panel:#ffffff;--line:rgba(15,23,42,.1);--text:#0f172a;--muted:#5b6b85;--accent:#2563eb;--accent-soft:rgba(37,99,235,.1);--accent-text:#1e40af;--danger:#dc2626;--danger-bg:rgba(220,38,38,.09);--danger-text:#991b1b;--danger-line:rgba(220,38,38,.3);--input-bg:#f7f9fc;--shadow:0 24px 64px rgba(15,23,42,.14);}}}}
+*{{box-sizing:border-box}}
+body{{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Inter,ui-sans-serif,system-ui,sans-serif;color:var(--text);background:var(--bg);display:grid;place-items:center;padding:28px;line-height:1.5;}}
+.card{{width:min(440px,100%);padding:28px;border:1px solid var(--line);border-radius:16px;background:var(--panel);box-shadow:var(--shadow);}}
+.badge{{display:inline-flex;gap:8px;align-items:center;margin-bottom:16px;padding:6px 11px;border-radius:999px;background:var(--accent-soft);color:var(--accent-text);font-size:12.5px;font-weight:600;}}
+.dot{{width:7px;height:7px;border-radius:999px;background:var(--accent);}}
+h1{{margin:0 0 8px;font-size:24px;line-height:1.2;letter-spacing:-.02em;font-weight:650;}}
+p{{margin:0;color:var(--muted);font-size:13.5px;line-height:1.6;}}
+.service{{color:var(--text);font-weight:650;}}
+form{{margin-top:22px;}}
+label{{display:block;margin-bottom:8px;color:var(--text);font-size:13px;font-weight:600;}}
+input{{width:100%;height:48px;border-radius:12px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:20px;letter-spacing:.18em;text-align:center;outline:none;transition:border-color .15s,box-shadow .15s;}}
+input:focus{{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}}
+button{{width:100%;height:46px;margin-top:12px;display:flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:12px;background:var(--accent);color:var(--on-accent);font-size:15px;font-weight:650;cursor:pointer;transition:filter .12s,transform .12s;}}
+button:hover{{filter:brightness(1.07);}}
+button:active{{transform:translateY(1px);}}
+.spinner{{display:none;width:15px;height:15px;flex:none;border-radius:999px;border:2px solid rgba(255,255,255,.4);border-top-color:var(--on-accent);animation:spin .7s linear infinite;}}
+button.is-loading{{opacity:.88;cursor:progress;}}
+button.is-loading .spinner{{display:block;}}
+button:disabled{{cursor:default;}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+@media (prefers-reduced-motion:reduce){{.spinner{{animation-duration:1.6s}}}}
+input[readonly]{{opacity:.7;}}
+.error{{display:flex;gap:10px;align-items:flex-start;margin-top:18px;padding:12px 13px;border:1px solid var(--danger-line);border-radius:12px;background:var(--danger-bg);color:var(--danger-text);}}
+.error span{{display:grid;place-items:center;flex:none;min-width:20px;height:20px;border-radius:999px;background:var(--danger);color:#3f0812;font-weight:900;font-size:13px;}}
+.error p{{color:var(--danger-text);font-size:13.5px;}}
+.foot{{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);}}
+code{{color:var(--accent-text);background:var(--accent-soft);padding:2px 6px;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}}
 </style></head><body><main class="card">
 <div class="badge"><span class="dot"></span><span>TunnelMux protected route</span></div>
 <h1>Access required</h1>
 <p>Enter the access code to open <span class="service">{route_label}</span>.</p>{error_html}
-<form method="post" action="{action}">
+<form method="post" action="{action}" id="gate-form">
 <label for="code">Access code</label>
-<input id="code" type="password" name="code" autocomplete="one-time-code" inputmode="numeric" autofocus>
-<button type="submit">Unlock workspace</button></form>
+<input id="code" type="password" name="code" autocomplete="one-time-code" inputmode="numeric" required autofocus>
+<button type="submit" id="gate-submit"><span class="spinner" aria-hidden="true"></span><span id="gate-submit-label">Unlock workspace</span></button></form>
 <div class="foot">Only <code>{action}</code> is protected. The root path remains closed.</div>
-</main></body></html>"#
+</main>
+<script>
+(function(){{
+  var form=document.getElementById('gate-form');
+  if(!form) return;
+  var btn=document.getElementById('gate-submit');
+  var label=document.getElementById('gate-submit-label');
+  var input=document.getElementById('code');
+  form.addEventListener('submit',function(){{
+    if(!input||!input.value) return;
+    if(btn){{btn.classList.add('is-loading');btn.disabled=true;}}
+    if(label) label.textContent='Verifying…';
+    if(input) input.readOnly=true;
+  }});
+}})();
+</script>
+</body></html>"#
     );
     axum::response::Response::builder()
         .status(StatusCode::UNAUTHORIZED)
@@ -399,30 +435,70 @@ fn build_welcome_response() -> Response {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TunnelMux</title>
     <style>
-      :root { color-scheme: dark; }
+      :root {
+        color-scheme: dark;
+        --bg: #0a0f1a;
+        --panel: #111a2a;
+        --line: rgba(148, 163, 184, 0.13);
+        --text: #e9eff9;
+        --muted: #8494ac;
+        --accent: #3b82f6;
+        --accent-soft: rgba(59, 130, 246, 0.12);
+        --accent-text: #cfe4ff;
+        --shadow: 0 24px 64px rgba(2, 6, 23, 0.55);
+        --code-bg: #0d1523;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          color-scheme: light;
+          --bg: #f4f6fa;
+          --panel: #ffffff;
+          --line: rgba(15, 23, 42, 0.1);
+          --text: #0f172a;
+          --muted: #5b6b85;
+          --accent: #2563eb;
+          --accent-soft: rgba(37, 99, 235, 0.1);
+          --accent-text: #1e40af;
+          --shadow: 0 24px 64px rgba(15, 23, 42, 0.14);
+          --code-bg: #f7f9fc;
+        }
+      }
       body {
         margin: 0;
         min-height: 100vh;
         display: grid;
         place-items: center;
         padding: 24px;
-        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-        background: linear-gradient(180deg, #0b1324 0%, #08101d 100%);
-        color: #eef2ff;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", Inter, ui-sans-serif, system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.5;
       }
       main {
         max-width: 640px;
         padding: 28px;
-        border-radius: 24px;
-        background: rgba(18, 24, 34, 0.88);
-        border: 1px solid rgba(148, 163, 184, 0.16);
-        box-shadow: 0 18px 44px rgba(15, 23, 42, 0.34);
+        border-radius: 16px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
       }
-      p { color: #cbd5e1; line-height: 1.6; }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 24px;
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+        font-weight: 650;
+      }
+      p { color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+      p + p { margin-top: 10px; }
       code {
         padding: 2px 6px;
-        border-radius: 8px;
-        background: rgba(15, 23, 42, 0.92);
+        border-radius: 6px;
+        background: var(--code-bg);
+        color: var(--accent-text);
+        border: 1px solid var(--line);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
     </style>
   </head>
