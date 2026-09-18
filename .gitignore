@@ -24,5 +24,8 @@
 # Local worktrees
 .worktrees/
 
+# Assistant scratch space (prototypes, screenshots)
+.workbuddy/
+
 # Docs build output
 site/
