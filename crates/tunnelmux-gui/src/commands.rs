@@ -664,12 +664,20 @@ pub async fn set_default_route_access(
 ) -> Result<tunnelmux_core::RouteAccessSummaryResponse, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     let (_settings, client) = load_client(&settings_dir).map_err(command_error)?;
+    // Saving a code must not silently reset how long the unlock cookie lives:
+    // this endpoint replaces the whole default gate, so echo the current TTL
+    // back instead of sending `None`.
+    let preserved_ttl_ms = client
+        .list_route_access()
+        .await
+        .map_err(command_error)?
+        .default_cookie_ttl_ms;
     client
         .set_route_access(&SetRouteAccessRequest {
             route_id: DEFAULT_ROUTE_ACCESS_ID.to_string(),
             require_access_code: code,
             public: None,
-            cookie_ttl_ms: None,
+            cookie_ttl_ms: preserved_ttl_ms,
         })
         .await
         .map_err(command_error)?;
@@ -1344,6 +1352,16 @@ async fn sync_route_access_from_form(
         .filter(|value| !value.is_empty())
         .map(str::to_string);
 
+    // Read the current gate first. This endpoint replaces the whole per-route
+    // gate config, so a missing `cookie_ttl_ms` would silently drop a
+    // long-lived unlock cookie back to the daemon default. The read is
+    // best-effort: it must not turn a working save into a failure.
+    let current = client.list_route_access().await.ok();
+    let existing = current
+        .as_ref()
+        .and_then(|list| list.routes.iter().find(|gate| gate.route_id == route_id));
+    let preserved_ttl_ms = existing.and_then(|gate| gate.cookie_ttl_ms);
+
     match mode {
         Some("inherit") => {
             client
@@ -1374,16 +1392,12 @@ async fn sync_route_access_from_form(
                         route_id: route_id.to_string(),
                         require_access_code: Some(code),
                         public: None,
-                        cookie_ttl_ms: None,
+                        cookie_ttl_ms: preserved_ttl_ms,
                     })
                     .await
                     .map_err(command_error)?;
             } else {
-                let existing = client.list_route_access().await.map_err(command_error)?;
-                let already_custom = existing
-                    .routes
-                    .iter()
-                    .any(|gate| gate.route_id == route_id && gate.mode == "route");
+                let already_custom = existing.is_some_and(|gate| gate.mode == "route");
                 if !already_custom {
                     return Err(
                         "Enter an access code for this service or choose inherit/default."
@@ -3646,6 +3660,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_route_preserves_the_gate_cookie_ttl() {
+        // Setting a gate replaces the whole per-route config, so the GUI has to
+        // hand the existing TTL back. Without this the unlock cookie silently
+        // falls back to the daemon default (observed: 30 days -> 4 hours).
+        ACCESS_WRITES.lock().expect("gate writes lock").clear();
+        let temp_dir = prepare_temp_dir();
+        let routes = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let base_url = spawn_routes_server(routes.clone()).await;
+        save_settings_to_dir(
+            &temp_dir,
+            &GuiSettings {
+                base_url,
+                token: None,
+                ..GuiSettings::default()
+            },
+        )
+        .expect("settings should save");
+
+        save_route_from_settings_dir(
+            &temp_dir,
+            crate::view_models::RouteFormData {
+                original_id: None,
+                id: "svc-a".to_string(),
+                match_path_prefix: "/".to_string(),
+                upstream_url: "http://127.0.0.1:3000".to_string(),
+                route_access_mode: Some("custom".to_string()),
+                require_access_code: Some("71558114".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("save route should succeed");
+
+        let writes = ACCESS_WRITES.lock().expect("gate writes lock");
+        assert_eq!(writes.len(), 1, "expected exactly one gate write");
+        assert_eq!(writes[0].require_access_code.as_deref(), Some("71558114"));
+        assert_eq!(
+            writes[0].cookie_ttl_ms,
+            Some(TEST_GATE_TTL_MS),
+            "the existing unlock-cookie TTL must be carried over"
+        );
+    }
+
+    #[tokio::test]
     async fn save_route_returns_friendly_duplicate_name_guidance() {
         let temp_dir = prepare_temp_dir();
         let base_url = spawn_test_server(
@@ -4970,6 +5028,10 @@ mod tests {
                 "/v1/routes/{id}",
                 axum::routing::delete(delete_route_handler).put(update_route_handler),
             )
+            .route(
+                "/v1/routes/access",
+                get(list_route_access_handler).put(set_route_access_handler),
+            )
             .with_state(routes);
         spawn_test_server(app).await
     }
@@ -5001,6 +5063,45 @@ mod tests {
     ) -> Json<tunnelmux_core::RoutesResponse> {
         let routes = tauri_state.0.lock().await.clone();
         Json(tunnelmux_core::RoutesResponse { routes })
+    }
+
+    /// Writes the GUI sent to the gate endpoint, so tests can assert that a
+    /// service save round-trips the unlock-cookie TTL instead of dropping it.
+    static ACCESS_WRITES: std::sync::Mutex<Vec<tunnelmux_core::SetRouteAccessRequest>> =
+        std::sync::Mutex::new(Vec::new());
+
+    const TEST_GATE_CODE: &str = "246810";
+    const TEST_GATE_TTL_MS: u64 = 2_592_000_000;
+
+    async fn list_route_access_handler() -> Json<tunnelmux_core::RouteAccessSummaryResponse> {
+        Json(tunnelmux_core::RouteAccessSummaryResponse {
+            default_gated: true,
+            default_require_access_code: Some(TEST_GATE_CODE.to_string()),
+            default_cookie_ttl_ms: Some(TEST_GATE_TTL_MS),
+            routes: vec![tunnelmux_core::RouteAccessSummary {
+                route_id: "svc-a".to_string(),
+                gated: true,
+                mode: "inherited".to_string(),
+                explicit: false,
+                require_access_code: Some(TEST_GATE_CODE.to_string()),
+                cookie_ttl_ms: Some(TEST_GATE_TTL_MS),
+            }],
+        })
+    }
+
+    async fn set_route_access_handler(
+        Json(request): Json<tunnelmux_core::SetRouteAccessRequest>,
+    ) -> Json<tunnelmux_core::SetRouteAccessResponse> {
+        ACCESS_WRITES
+            .lock()
+            .expect("gate writes lock")
+            .push(request.clone());
+        Json(tunnelmux_core::SetRouteAccessResponse {
+            route_id: request.route_id,
+            require_access_code: request.require_access_code,
+            public: request.public,
+            cookie_ttl_ms: request.cookie_ttl_ms,
+        })
     }
 
     async fn create_route_handler(
