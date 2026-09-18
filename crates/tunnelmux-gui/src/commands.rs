@@ -5,7 +5,9 @@ use crate::provider_installer::{
     provider_manifest_entry_for_current_platform, save_provider_install_statuses,
     tools_root_from_base_dir,
 };
-use crate::settings::{GuiSettings, load_settings_from_dir, save_settings_to_dir};
+use crate::settings::{
+    DEFAULT_CLOUDFLARED_PROTOCOL, GuiSettings, load_settings_from_dir, save_settings_to_dir,
+};
 use crate::state::GuiAppState;
 use crate::view_models::{
     DiagnosticsSummaryVm, LogTailVm, ProviderAvailabilitySnapshotVm, ProviderAvailabilityVm,
@@ -2506,7 +2508,18 @@ fn build_tunnel_metadata(
 
     match provider {
         TunnelProvider::Cloudflared => {
-            metadata.insert("cloudflaredProtocol".to_string(), "http2".to_string());
+            // Never a pinned transport unless the profile pins one. An earlier
+            // version always sent `http2` here, which silently overrode
+            // cloudflared's own default (`auto`) — and on a network that blocks
+            // HTTP/2 egress that is a precheck failure plus a fallback on every
+            // single start, not a preference.
+            metadata.insert(
+                "cloudflaredProtocol".to_string(),
+                tunnel
+                    .and_then(|tunnel| tunnel.cloudflared_protocol.as_deref())
+                    .unwrap_or(DEFAULT_CLOUDFLARED_PROTOCOL)
+                    .to_string(),
+            );
             if let Some(value) =
                 tunnel.and_then(|tunnel| tunnel.cloudflared_tunnel_token.as_deref())
             {
@@ -3427,8 +3440,39 @@ mod tests {
     }
 
     #[test]
-    fn build_tunnel_metadata_defaults_cloudflared_to_http2_protocol() {
+    fn build_tunnel_metadata_defaults_cloudflared_to_auto_protocol() {
         let settings = GuiSettings::default();
+        let availability = ProviderAvailabilityProbe::from_install_flags(true, false).cloudflared;
+
+        let metadata = build_tunnel_metadata(
+            settings.current_tunnel(),
+            &TunnelProvider::Cloudflared,
+            &availability,
+            false,
+        )
+        .expect("metadata should be built");
+
+        // Not `http2`: an unpinned profile must hand cloudflared its own
+        // default, which probes both transports instead of failing the pinned
+        // one first on every start.
+        assert_eq!(
+            metadata.get("cloudflaredProtocol").map(String::as_str),
+            Some("auto")
+        );
+    }
+
+    #[test]
+    fn build_tunnel_metadata_honours_pinned_cloudflared_protocol() {
+        // The default `GuiSettings` carries no profiles, so build one: the
+        // point of this case is the profile value, not the empty-settings path.
+        let settings = GuiSettings {
+            current_tunnel_id: Some(crate::settings::DEFAULT_TUNNEL_ID.to_string()),
+            tunnels: vec![crate::settings::TunnelProfileSettings {
+                cloudflared_protocol: Some("quic".to_string()),
+                ..Default::default()
+            }],
+            ..GuiSettings::default()
+        };
         let availability = ProviderAvailabilityProbe::from_install_flags(true, false).cloudflared;
 
         let metadata = build_tunnel_metadata(
@@ -3441,7 +3485,28 @@ mod tests {
 
         assert_eq!(
             metadata.get("cloudflaredProtocol").map(String::as_str),
-            Some("http2")
+            Some("quic")
+        );
+    }
+
+    #[test]
+    fn build_tunnel_metadata_leaves_ngrok_without_a_cloudflared_protocol() {
+        let settings = GuiSettings::default();
+        let availability = ProviderAvailabilityProbe::from_install_flags(false, true).ngrok;
+
+        let metadata = build_tunnel_metadata(
+            settings.current_tunnel(),
+            &TunnelProvider::Ngrok,
+            &availability,
+            false,
+        );
+
+        assert!(
+            metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("cloudflaredProtocol"))
+                .is_none(),
+            "a cloudflared-only flag must not leak into an ngrok start"
         );
     }
 
