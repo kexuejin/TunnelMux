@@ -134,7 +134,7 @@ cargo run -p tunnelmux-gui
 4. Click `Start Tunnel`
 5. Add your local service URL, for example `http://127.0.0.1:3000`
 
-The GUI prefers to connect to an existing local `tunnelmuxd`. If nothing is reachable, it can auto-start a local daemon for the desktop app.
+The GUI runs the daemon **inside its own process** — nothing is spawned and there is a single owner of the control port, the state files, and the provider processes. If a local `tunnelmuxd` is already answering on the configured address, the GUI connects to it instead and leaves it running when you quit. Quitting the app stops the daemon it started, along with its tunnels and provider processes; closing the window only hides it to the tray.
 
 If the selected provider is not installed yet, TunnelMux now catches that before launch, shows a provider-specific warning on the main page, and offers a `Copy Install Command` action for the current tunnel instead of surfacing a raw spawn error.
 
@@ -239,8 +239,11 @@ Do not add a service with path `/`. Each service card shows whether root `/` is 
 - `~/.tunnelmux/config.json` — declarative routes and health-check settings
 - `~/.tunnelmux/state.json` — daemon-owned runtime snapshot
 - `~/.tunnelmux/api-token` — auto-generated control-plane bearer token (0600)
+- `~/.tunnelmux/provider.log` — provider stdout/stderr, rotated at 16 MiB into `provider.log.1…3`
 
 The daemon polls `config.json` and applies route and health-check changes without restarting.
+
+Both the token and the provider log live next to the state file, so `--data-file /tmp/scratch/state.json` keeps its token at `/tmp/scratch/api-token` and never touches the token a production daemon handed out. `--api-token-file`, `--provider-log-file`, `--provider-log-max-bytes` (0 disables rotation), and `--provider-log-max-files` (0 keeps no backups) override each path and size individually.
 
 ## Service access gates
 
@@ -259,7 +262,8 @@ For mounted SPAs such as DeepSeek Harness, use the **DeepSeek / SPA Preset** in 
 The control-plane API (`127.0.0.1:4765`) authenticates with a bearer token.
 `--control-auth` selects the mode: `require` (default), `optional`, or `off`.
 In `require` mode all protected endpoints demand a valid token; when none is
-configured the daemon generates one into `~/.tunnelmux/api-token`. The CLI and
+configured the daemon generates one into `api-token` next to the state file —
+`~/.tunnelmux/api-token` by default. The CLI and
 GUI (and `dsh-tunnelmux-remote`) auto-read that token, so local tools keep
 working unchanged. `GET /v1/health` is always unauthenticated.
 

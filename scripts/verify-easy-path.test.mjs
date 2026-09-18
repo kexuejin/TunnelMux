@@ -16,7 +16,9 @@ test('verify-easy-path script covers focused GUI readiness, ngrok start prefligh
   assert.match(script, /cargo test -p tunnelmux-gui probe_connection_reports/);
   assert.match(script, /cargo test -p tunnelmux-gui daemon_status_snapshot_from_connection/);
   assert.match(script, /cargo test -p tunnelmux-gui daemon_status_snapshot_reports_bootstrapping_state/);
-  assert.match(script, /cargo test -p tunnelmux-gui missing_binary_clearly/);
+  assert.match(script, /cargo test -p tunnelmux-gui daemon_manager_marks_/);
+  assert.match(script, /cargo test -p tunnelmux-gui listen_addr_is_derived_/);
+  assert.match(script, /cargo test -p tunnelmux-gui shutdown_leaves_an_adopted_daemon_alone/);
   assert.match(
     script,
     /cargo test -p tunnelmux-gui commands::tests::start_tunnel_returns_friendly_error_when_provider_is_missing -- --exact/,

@@ -68,8 +68,356 @@ pub(super) async fn stop_running_process(
     Ok(pending_cleared)
 }
 
+/// How the startup reclaim pass is configured.
+pub(super) struct LeftoverProviderOptions<'a> {
+    pub cloudflared_bin: &'a str,
+    pub ngrok_bin: &'a str,
+    /// When false the pass still reconciles statuses but signals nothing.
+    pub terminate: bool,
+}
+
+/// What the process table can say about one pid.
+///
+/// Three states, not two: "not running" and "could not be read" must not be
+/// conflated. A read failure treated as "gone" would clear the record of a
+/// process that is still holding the tunnel's connector — silently, and exactly
+/// when the operator is least able to notice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ProcessState {
+    /// The table answered: this pid is not running.
+    Gone,
+    /// The table answered: it is running, with this command line.
+    Running(String),
+    /// The table could not be read, so nothing follows from it.
+    Unknown,
+}
+
+/// The two process-table operations the reclaim pass needs.
+///
+/// Injected rather than called inline so the decisions — which pid is
+/// signalled, and what the rewritten status says — are testable without a real
+/// process table. The system implementation reads `ps`; a test that cannot
+/// reach `ps` (a sandboxed one, say) can still exercise everything above it.
+///
+/// `Send + Sync` because the daemon's own startup future is held by callers
+/// that require it to be `Send` — the desktop app runs the daemon inside a
+/// Tauri command.
+pub(super) trait ProcessTable: Send + Sync {
+    fn process_state(&self, pid: u32) -> ProcessState;
+    /// Deliver a signal. `true` when the delivery itself succeeded.
+    fn signal(&self, pid: u32, signal: &str) -> bool;
+}
+
+/// The real process table, via `ps` and `kill`.
+pub(super) struct SystemProcessTable;
+
+impl ProcessTable for SystemProcessTable {
+    fn process_state(&self, pid: u32) -> ProcessState {
+        // `std::process` explicitly: `tokio::process::Command` is what is in
+        // scope here, and this is a short, startup-only, blocking read whose
+        // output is only ever compared against strings this daemon composed.
+        let output = match std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "args="])
+            .output()
+        {
+            Ok(output) => output,
+            // `ps` itself could not be run. That is not evidence about the pid.
+            Err(_) => return ProcessState::Unknown,
+        };
+        let command_line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if output.status.success() {
+            return if command_line.is_empty() {
+                ProcessState::Unknown
+            } else {
+                ProcessState::Running(command_line)
+            };
+        }
+        // The documented "no such process" answer: a failure with nothing on
+        // stdout. Anything else (a policy denial, a usage error) leaves the
+        // question open.
+        if command_line.is_empty() {
+            ProcessState::Gone
+        } else {
+            ProcessState::Unknown
+        }
+    }
+
+    fn signal(&self, pid: u32, signal: &str) -> bool {
+        std::process::Command::new("kill")
+            .arg(format!("-{signal}"))
+            .arg(pid.to_string())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+/// What a startup reclaim pass found, so the caller can log it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct LeftoverProviderReport {
+    /// `(tunnel_id, pid)` terminated for real.
+    pub terminated: Vec<(String, u32)>,
+    /// `(tunnel_id, pid)` whose process had already exited.
+    pub already_gone: Vec<(String, u32)>,
+    /// `(tunnel_id, pid)` left running — either the operator asked for that, or
+    /// the pid is not the provider this daemon would have started.
+    pub left_alone: Vec<(String, u32)>,
+    /// `(tunnel_id, pid)` whose liveness could not be established at all.
+    pub undetermined: Vec<(String, u32)>,
+    /// Tunnel ids whose persisted status was reset.
+    pub cleared: Vec<String>,
+}
+
+impl LeftoverProviderReport {
+    pub(super) fn is_empty(&self) -> bool {
+        self.terminated.is_empty()
+            && self.already_gone.is_empty()
+            && self.left_alone.is_empty()
+            && self.undetermined.is_empty()
+            && self.cleared.is_empty()
+    }
+}
+
+/// Take ownership of — or clean up after — a provider left by a previous run.
+///
+/// `stop_running_process` can only kill a child *this* process spawned, and the
+/// runtime reconciler only inspects tunnels present in `running_tunnels`. A
+/// provider that outlived a daemon restart is therefore invisible to both: it
+/// keeps holding the Cloudflare/ngrok connector while the daemon, which reads
+/// its status from disk, reports a tunnel nobody is managing. Depending on what
+/// was written last, that reads as "running" (with a pid that is not the
+/// daemon's) or as "stopped" while the public hostname still answers. Neither
+/// is true, and both hide an exposed endpoint from whoever asked for it to be
+/// off.
+///
+/// So at startup, before serving: for every persisted status that still claims
+/// a running tunnel, prove the recorded pid really is that tunnel's provider
+/// and terminate it. The status is reset either way — after this point the
+/// daemon owns no child for that tunnel, and saying otherwise is the bug.
+pub(super) async fn reclaim_leftover_providers(
+    persisted: &mut PersistedState,
+    options: &LeftoverProviderOptions<'_>,
+    process_table: &dyn ProcessTable,
+) -> LeftoverProviderReport {
+    let mut report = LeftoverProviderReport::default();
+
+    // Snapshot first: the loop mutates the statuses it is reading.
+    let leftovers: Vec<(String, TunnelStatus)> = persisted
+        .tunnels
+        .iter()
+        .filter(|tunnel| status_claims_a_running_provider(&tunnel.status))
+        .map(|tunnel| (tunnel.id.clone(), tunnel.status.clone()))
+        .collect();
+
+    for (tunnel_id, status) in leftovers {
+        let provider = status.provider.clone();
+        let target_url = status.target_url.clone();
+        let mut outcome = LeftoverOutcome::NoProcessRecorded;
+
+        if let Some(pid) = status.process_id {
+            match process_table.process_state(pid) {
+                ProcessState::Unknown => {
+                    warn!(
+                        "leftover tunnel {tunnel_id}: the process table could not be read for pid \
+                         {pid}; not signalling it"
+                    );
+                    report.undetermined.push((tunnel_id.clone(), pid));
+                    outcome = LeftoverOutcome::Undetermined { pid };
+                }
+                ProcessState::Gone => {
+                    report.already_gone.push((tunnel_id.clone(), pid));
+                    outcome = LeftoverOutcome::AlreadyGone { pid };
+                }
+                ProcessState::Running(command_line) => {
+                    let is_ours = leftover_command_line_matches(
+                        &command_line,
+                        provider.as_ref(),
+                        target_url.as_deref(),
+                        options,
+                    );
+                    if !is_ours {
+                        // Pids are reused. Anything that is not provably the
+                        // provider this tunnel recorded is never signalled.
+                        warn!(
+                            "leftover tunnel {tunnel_id}: pid {pid} is alive but is not this tunnel's \
+                             provider (command line: {command_line}); leaving it alone"
+                        );
+                        report.left_alone.push((tunnel_id.clone(), pid));
+                        outcome = LeftoverOutcome::NotThisProvider { pid };
+                    } else if options.terminate {
+                        let killed = terminate_process(pid, process_table).await;
+                        warn!(
+                            "leftover tunnel {tunnel_id}: terminated provider process {pid} \
+                             (clean exit: {killed})"
+                        );
+                        report.terminated.push((tunnel_id.clone(), pid));
+                        outcome = LeftoverOutcome::Terminated { pid };
+                    } else {
+                        warn!(
+                            "leftover tunnel {tunnel_id}: provider process {pid} is still running and \
+                             has been left alone on request"
+                        );
+                        report.left_alone.push((tunnel_id.clone(), pid));
+                        outcome = LeftoverOutcome::KeptOnRequest { pid };
+                    }
+                }
+            }
+        }
+
+        let tunnel = persisted.ensure_tunnel_status_mut(&tunnel_id);
+        let last_error = outcome.message(&tunnel_id, provider.as_ref());
+        *tunnel = default_tunnel_status(TunnelState::Stopped);
+        tunnel.provider = provider;
+        tunnel.target_url = target_url;
+        tunnel.last_error = Some(last_error);
+        report.cleared.push(tunnel_id);
+    }
+
+    if !report.is_empty() {
+        info!(
+            "startup reclaim: cleared {} stale status(es), terminated {}, already gone {}, left alone {}, \
+             undetermined {}",
+            report.cleared.len(),
+            report.terminated.len(),
+            report.already_gone.len(),
+            report.left_alone.len(),
+            report.undetermined.len()
+        );
+    }
+    report
+}
+
+/// What happened to one leftover, so the reset status can say why.
+enum LeftoverOutcome {
+    /// The status claimed a running tunnel but recorded no pid.
+    NoProcessRecorded,
+    AlreadyGone {
+        pid: u32,
+    },
+    NotThisProvider {
+        pid: u32,
+    },
+    Terminated {
+        pid: u32,
+    },
+    KeptOnRequest {
+        pid: u32,
+    },
+    Undetermined {
+        pid: u32,
+    },
+}
+
+impl LeftoverOutcome {
+    fn message(&self, tunnel_id: &str, provider: Option<&TunnelProvider>) -> String {
+        let provider = provider_name(provider);
+        match self {
+            LeftoverOutcome::NoProcessRecorded => format!(
+                "startup reclaim: tunnel {tunnel_id} was recorded as running but no provider process \
+                 was recorded; nothing was running to reclaim"
+            ),
+            LeftoverOutcome::AlreadyGone { pid } => format!(
+                "startup reclaim: the {provider} process {pid} recorded for tunnel {tunnel_id} had \
+                 already exited"
+            ),
+            LeftoverOutcome::NotThisProvider { pid } => format!(
+                "startup reclaim: pid {pid} recorded for tunnel {tunnel_id} is alive but is not this \
+                 tunnel's {provider} provider, so it was not signalled; if a {provider} process is \
+                 still serving this tunnel it must be stopped by hand"
+            ),
+            LeftoverOutcome::Terminated { pid } => format!(
+                "startup reclaim: terminated orphaned {provider} process {pid} left by a previous \
+                 daemon run"
+            ),
+            LeftoverOutcome::KeptOnRequest { pid } => format!(
+                "startup reclaim: orphaned {provider} process {pid} from a previous daemon run is \
+                 still running (--keep-leftover-providers); this daemon does not manage it, so the \
+                 public hostname may still answer while this status reads stopped"
+            ),
+            LeftoverOutcome::Undetermined { pid } => format!(
+                "startup reclaim: could not read the process table for pid {pid} recorded for tunnel \
+                 {tunnel_id}, so it was not signalled — this is not evidence that it exited. If a \
+                 {provider} process is still serving this tunnel it must be stopped by hand"
+            ),
+        }
+    }
+}
+
+fn provider_name(provider: Option<&TunnelProvider>) -> &'static str {
+    match provider {
+        Some(TunnelProvider::Ngrok) => "ngrok",
+        _ => "cloudflared",
+    }
+}
+
+/// Whether a persisted status still claims a tunnel that something else started.
+///
+/// Any recorded pid counts, whatever the state: at startup this daemon has
+/// spawned nothing, so a pid on disk can only belong to an earlier run.
+fn status_claims_a_running_provider(status: &TunnelStatus) -> bool {
+    status.process_id.is_some()
+        || matches!(status.state, TunnelState::Running | TunnelState::Starting)
+}
+
+/// Whether a live process is provably the provider this tunnel recorded.
+///
+/// Strict on purpose — a pid alone proves nothing, because pids are reused:
+/// the command line has to name the provider binary *and* the tunnel's own
+/// target URL, which is what `build_provider_command` puts there. A recorded
+/// target is required, so a status without one is never grounds for a signal.
+fn leftover_command_line_matches(
+    command_line: &str,
+    provider: Option<&TunnelProvider>,
+    target_url: Option<&str>,
+    options: &LeftoverProviderOptions<'_>,
+) -> bool {
+    let binary = match provider {
+        Some(TunnelProvider::Ngrok) => options.ngrok_bin,
+        _ => options.cloudflared_bin,
+    };
+    let binary_name = Path::new(binary)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(binary);
+    if !command_line.contains(binary_name) {
+        return false;
+    }
+    target_url
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .is_some_and(|url| command_line.contains(url))
+}
+
+/// SIGTERM, escalating to SIGKILL, with a bounded wait so a wedged orphan
+/// cannot delay startup. Returns whether the process is gone afterwards.
+async fn terminate_process(pid: u32, process_table: &dyn ProcessTable) -> bool {
+    if !process_table.signal(pid, "TERM") {
+        return false;
+    }
+    // cloudflared's default grace period is 30s, but an orphan has no client
+    // pointed at it, so it exits promptly. The bound keeps a wedged process
+    // from delaying startup.
+    for _ in 0..30 {
+        sleep(Duration::from_millis(100)).await;
+        if process_table.process_state(pid) == ProcessState::Gone {
+            return true;
+        }
+    }
+    process_table.signal(pid, "KILL");
+    for _ in 0..10 {
+        sleep(Duration::from_millis(100)).await;
+        if process_table.process_state(pid) == ProcessState::Gone {
+            return true;
+        }
+    }
+    false
+}
+
 pub(super) async fn monitor_runtime_state(state: Arc<AppState>) {
     loop {
+        if state.is_shutting_down() {
+            return;
+        }
         if let Err(err) = reconcile_runtime_and_maybe_restart(&state).await {
             warn!("runtime reconcile failed: {}", err.message);
         }
@@ -79,6 +427,9 @@ pub(super) async fn monitor_runtime_state(state: Arc<AppState>) {
 
 pub(super) async fn monitor_upstream_health(state: Arc<AppState>) {
     loop {
+        if state.is_shutting_down() {
+            return;
+        }
         let settings = {
             let current = state.health_check_settings.read().await;
             current.clone()
@@ -160,6 +511,9 @@ pub(super) async fn reload_config_file(state: &Arc<AppState>, force: bool) -> an
 
 pub(super) async fn monitor_config_file(state: Arc<AppState>) {
     loop {
+        if state.is_shutting_down() {
+            return;
+        }
         if let Err(err) = reload_config_file(&state, false).await {
             warn!("config reload failed: {err}");
         }
@@ -250,6 +604,11 @@ pub(super) async fn refresh_upstream_health(
 pub(super) async fn reconcile_runtime_and_maybe_restart(
     state: &Arc<AppState>,
 ) -> Result<(), ApiError> {
+    // Never resurrect a tunnel while the daemon is being torn down.
+    if state.is_shutting_down() {
+        return Ok(());
+    }
+
     let mut changed = {
         let mut runtime = state.runtime.lock().await;
         reconcile_runtime_tunnel_state(&mut runtime, state.max_auto_restarts)?
@@ -637,7 +996,7 @@ pub(super) async fn spawn_provider_process(
         &mut child,
         request,
         Duration::from_millis(state.ready_timeout_ms),
-        state.provider_log_file.clone(),
+        state.provider_log.clone(),
     )
     .await
     .inspect_err(|err| warn!("provider startup failed: {err}"))?;
@@ -734,11 +1093,26 @@ fn cloudflared_protocol_for_request(request: &TunnelStartRequest) -> Option<&'st
         .as_ref()
         .and_then(|metadata| metadata.get("cloudflaredProtocol"))
         .map(|item| item.trim().to_ascii_lowercase())
-        .and_then(|protocol| match protocol.as_str() {
-            "http2" => Some("http2"),
-            "quic" => Some("quic"),
-            _ => None,
-        })
+        .and_then(protocol_arg)
+}
+
+/// Map a requested protocol onto a `--protocol` argument.
+///
+/// The accepted set is cloudflared's own: `auto` (its default and the value it
+/// recommends), `quic`, `http2`. Anything else yields `None`, which drops the
+/// flag entirely and lets cloudflared apply its default — an unknown value must
+/// never become a flag that turns a start into a hard failure.
+///
+/// `auto` is *not* translated away into `http2`: cloudflared probes both
+/// transports and picks a reachable one, which is what keeps a start working on
+/// a network where the pinned transport is blocked.
+fn protocol_arg(protocol: String) -> Option<&'static str> {
+    match protocol.as_str() {
+        "auto" => Some("auto"),
+        "http2" => Some("http2"),
+        "quic" => Some("quic"),
+        _ => None,
+    }
 }
 
 fn provider_binary_for_request<'a>(
@@ -836,7 +1210,7 @@ pub(super) async fn wait_for_provider_startup(
     child: &mut Child,
     request: &TunnelStartRequest,
     timeout_duration: Duration,
-    provider_log_file: PathBuf,
+    provider_log: Arc<ProviderLogSink>,
 ) -> anyhow::Result<Option<String>> {
     let provider = request.provider.clone();
     let require_public_url = provider_requires_public_url(request);
@@ -861,7 +1235,7 @@ pub(super) async fn wait_for_provider_startup(
         request.tunnel_id.clone(),
         provider.clone(),
         "stdout",
-        provider_log_file.clone(),
+        provider_log.clone(),
     ));
     tokio::spawn(pipe_reader_to_channel(
         stderr,
@@ -869,7 +1243,7 @@ pub(super) async fn wait_for_provider_startup(
         request.tunnel_id.clone(),
         provider.clone(),
         "stderr",
-        provider_log_file,
+        provider_log,
     ));
 
     let start = Instant::now();
@@ -950,33 +1324,17 @@ pub(super) async fn pipe_reader_to_channel<R>(
     tunnel_id: String,
     provider: TunnelProvider,
     stream_name: &'static str,
-    provider_log_file: PathBuf,
+    provider_log: Arc<ProviderLogSink>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let mut lines = BufReader::new(reader).lines();
-    let mut log_file = match open_provider_log_file(&provider_log_file).await {
-        Ok(file) => Some(file),
-        Err(err) => {
-            warn!(
-                "failed to open provider log file {}: {err}",
-                provider_log_file.display()
-            );
-            None
-        }
-    };
 
     loop {
         match lines.next_line().await {
             Ok(Some(line)) => {
-                if let Some(file) = log_file.as_mut() {
-                    let formatted =
-                        format_provider_log_line(&tunnel_id, &provider, stream_name, &line);
-                    if let Err(err) = file.write_all(formatted.as_bytes()).await {
-                        warn!("failed to write provider logs: {err}");
-                        log_file = None;
-                    }
-                }
+                let formatted = format_provider_log_line(&tunnel_id, &provider, stream_name, &line);
+                provider_log.write_line(&formatted).await;
                 if tx.send(line.clone()).is_err() {
                     debug!(line = line, "provider-log");
                 }
@@ -988,6 +1346,180 @@ pub(super) async fn pipe_reader_to_channel<R>(
             }
         }
     }
+}
+
+/// The single append-only provider log for this process, with size-based
+/// rotation.
+///
+/// Every tunnel's stdout/stderr funnel through one shared instance so rotation
+/// stays coherent. If each reader kept its own handle, the first one to rotate
+/// would rename the file out from under the others, and their subsequent writes
+/// would land in a file nobody ever reads again.
+#[derive(Debug)]
+pub(super) struct ProviderLogSink {
+    path: PathBuf,
+    max_bytes: u64,
+    max_files: usize,
+    state: Mutex<OpenLog>,
+}
+
+#[derive(Debug)]
+struct OpenLog {
+    file: Option<fs::File>,
+    /// Bytes currently in the live log. Tracked here instead of re-`stat`ing per
+    /// line, because right after this process wrote, a `stat` can still report
+    /// the pre-write size — which silently skips rotations.
+    written: u64,
+}
+
+impl ProviderLogSink {
+    pub(super) fn new(path: PathBuf, max_bytes: u64, max_files: usize) -> Self {
+        Self {
+            path,
+            max_bytes,
+            max_files,
+            state: Mutex::new(OpenLog {
+                file: None,
+                written: 0,
+            }),
+        }
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
+    pub(super) fn max_files(&self) -> usize {
+        self.max_files
+    }
+
+    /// Append one already-formatted line, rotating the log first when it would
+    /// grow past the configured size.
+    ///
+    /// Logging never fails the caller: if the file cannot be opened or written
+    /// the line is dropped with a warning, because a tunnel must not die over
+    /// its own diagnostics.
+    pub(super) async fn write_line(&self, line: &str) {
+        let mut state = self.state.lock().await;
+
+        if state.file.is_none() {
+            match open_provider_log_file(&self.path).await {
+                Ok(handle) => {
+                    // Start from whatever is already on disk, so a log left over
+                    // from an earlier run still counts toward the cap.
+                    state.written = handle
+                        .metadata()
+                        .await
+                        .map(|metadata| metadata.len())
+                        .unwrap_or(0);
+                    state.file = Some(handle);
+                }
+                Err(err) => {
+                    warn!(
+                        "failed to open provider log file {}: {err}",
+                        self.path.display()
+                    );
+                    return;
+                }
+            }
+        }
+
+        if self.should_rotate(state.written, line.len() as u64) {
+            match rotate_provider_log(&self.path, self.max_files).await {
+                Ok(()) => {
+                    // Drop the handle to the renamed file before reopening the
+                    // live path, otherwise writes would keep flowing into the
+                    // backup that rotation just sealed.
+                    state.file = None;
+                    state.written = 0;
+                    match open_provider_log_file(&self.path).await {
+                        Ok(handle) => state.file = Some(handle),
+                        Err(err) => {
+                            warn!(
+                                "failed to reopen provider log file {}: {err}",
+                                self.path.display()
+                            );
+                            return;
+                        }
+                    }
+                }
+                Err(err) => warn!(
+                    "failed to rotate provider log {}: {err}",
+                    self.path.display()
+                ),
+            }
+        }
+
+        // Destructure up front: `state` is a guard, so touching two fields
+        // through it borrows the whole guard twice.
+        let OpenLog { file, written } = &mut *state;
+        if let Some(handle) = file.as_mut() {
+            match handle.write_all(line.as_bytes()).await {
+                Ok(()) => {
+                    *written += line.len() as u64;
+                    // `write_all` only hands the bytes to tokio's background
+                    // writer; without a flush the tail of the log can still be
+                    // in flight when it is rotated or read back, which shows up
+                    // as truncated output.
+                    if let Err(err) = handle.flush().await {
+                        warn!("failed to flush provider logs: {err}");
+                        *file = None;
+                        *written = 0;
+                    }
+                }
+                Err(err) => {
+                    warn!("failed to write provider logs: {err}");
+                    *file = None;
+                    *written = 0;
+                }
+            }
+        }
+    }
+
+    /// Whether appending `incoming` more bytes would push the log past its cap.
+    ///
+    /// An empty live log is never rotated: that only happens when the cap is
+    /// smaller than a single line, where rotating would just mint empty backups.
+    fn should_rotate(&self, written: u64, incoming: u64) -> bool {
+        self.max_bytes > 0 && written > 0 && written.saturating_add(incoming) > self.max_bytes
+    }
+}
+
+/// Move `provider.log` to `provider.log.1`, shifting the older backups up and
+/// discarding the oldest one. The live file is gone afterwards, so the caller
+/// must reopen it.
+async fn rotate_provider_log(path: &Path, max_files: usize) -> anyhow::Result<()> {
+    if max_files == 0 {
+        // No backups requested: keep the disk footprint at the cap by starting
+        // the live file over.
+        return fs::write(path, [])
+            .await
+            .with_context(|| format!("failed to truncate provider log {}", path.display()));
+    }
+
+    let _ = fs::remove_file(rotated_provider_log_path(path, max_files)).await;
+    for index in (1..max_files).rev() {
+        let from = rotated_provider_log_path(path, index);
+        if fs::try_exists(&from).await.unwrap_or(false) {
+            fs::rename(&from, rotated_provider_log_path(path, index + 1))
+                .await
+                .with_context(|| format!("failed to shift provider log {}", from.display()))?;
+        }
+    }
+
+    fs::rename(path, rotated_provider_log_path(path, 1))
+        .await
+        .with_context(|| format!("failed to rotate provider log {}", path.display()))
+}
+
+fn rotated_provider_log_path(path: &Path, index: usize) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{index}"));
+    path.with_file_name(name)
 }
 
 pub(super) async fn open_provider_log_file(path: &Path) -> anyhow::Result<fs::File> {
@@ -1078,6 +1610,384 @@ pub(super) async fn terminate_child(child: &mut Child) -> anyhow::Result<()> {
 #[cfg(test)]
 mod runtime_tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // ── startup reclaim of a provider left behind by a previous run ─────────
+
+    /// A process table that answers from memory, so the reclaim decisions can be
+    /// tested without a real process table — and without `ps`, which not every
+    /// environment a test runs in can reach.
+    struct FakeProcessTable {
+        command_lines: std::sync::Mutex<HashMap<u32, String>>,
+        signals: std::sync::Mutex<Vec<String>>,
+        /// A process that ignores SIGTERM is what forces the SIGKILL escalation.
+        honours_sigterm: bool,
+        /// Make every read fail, the way a table this process cannot reach does.
+        unreadable: bool,
+    }
+
+    impl FakeProcessTable {
+        fn with(entries: &[(u32, &str)]) -> Self {
+            Self {
+                command_lines: std::sync::Mutex::new(
+                    entries
+                        .iter()
+                        .map(|(pid, line)| (*pid, (*line).to_string()))
+                        .collect(),
+                ),
+                signals: std::sync::Mutex::new(Vec::new()),
+                honours_sigterm: true,
+                unreadable: false,
+            }
+        }
+
+        fn unreadable() -> Self {
+            Self {
+                unreadable: true,
+                ..Self::with(&[])
+            }
+        }
+
+        fn signals(&self) -> Vec<String> {
+            self.signals.lock().expect("signals lock").clone()
+        }
+
+        fn is_alive(&self, pid: u32) -> bool {
+            self.command_lines
+                .lock()
+                .expect("command lines lock")
+                .contains_key(&pid)
+        }
+    }
+
+    impl ProcessTable for FakeProcessTable {
+        fn process_state(&self, pid: u32) -> ProcessState {
+            if self.unreadable {
+                return ProcessState::Unknown;
+            }
+            match self
+                .command_lines
+                .lock()
+                .expect("command lines lock")
+                .get(&pid)
+                .cloned()
+            {
+                Some(command_line) => ProcessState::Running(command_line),
+                None => ProcessState::Gone,
+            }
+        }
+
+        fn signal(&self, pid: u32, signal: &str) -> bool {
+            self.signals
+                .lock()
+                .expect("signals lock")
+                .push(format!("{signal}:{pid}"));
+            if signal == "KILL" || self.honours_sigterm {
+                self.command_lines
+                    .lock()
+                    .expect("command lines lock")
+                    .remove(&pid);
+            }
+            true
+        }
+    }
+
+    const CLOUDFLARED_BIN: &str = "/opt/homebrew/bin/cloudflared";
+    const NGROK_BIN: &str = "/opt/homebrew/bin/ngrok";
+    const GATEWAY_URL: &str = "http://127.0.0.1:48081";
+    const LIVE_PROVIDER: &str = "/opt/homebrew/bin/cloudflared tunnel --protocol auto --no-autoupdate --url http://127.0.0.1:48081";
+
+    fn reclaim_options(terminate: bool) -> LeftoverProviderOptions<'static> {
+        LeftoverProviderOptions {
+            cloudflared_bin: CLOUDFLARED_BIN,
+            ngrok_bin: NGROK_BIN,
+            terminate,
+        }
+    }
+
+    /// A persisted state that says the primary tunnel is running with `pid`.
+    fn persisted_running(pid: Option<u32>, target_url: Option<&str>) -> PersistedState {
+        let mut persisted = PersistedState::default();
+        let status = persisted.ensure_tunnel_status_mut("primary");
+        status.state = TunnelState::Running;
+        status.provider = Some(TunnelProvider::Cloudflared);
+        status.target_url = target_url.map(str::to_string);
+        status.process_id = pid;
+        persisted
+    }
+
+    #[tokio::test]
+    async fn reclaim_terminates_the_provider_a_previous_run_left_behind() {
+        let table = FakeProcessTable::with(&[(4242, LIVE_PROVIDER)]);
+        let mut persisted = persisted_running(Some(4242), Some(GATEWAY_URL));
+
+        let report =
+            reclaim_leftover_providers(&mut persisted, &reclaim_options(true), &table).await;
+
+        assert_eq!(report.terminated, vec![("primary".to_string(), 4242)]);
+        assert_eq!(table.signals(), vec!["TERM:4242"]);
+        assert!(
+            !table.is_alive(4242),
+            "the leftover has to actually be gone"
+        );
+        let status = persisted.tunnel_status("primary").expect("status");
+        assert_eq!(status.state, TunnelState::Stopped);
+        assert_eq!(status.process_id, None);
+        // Only the process claim is dropped; the tunnel stays configured.
+        assert_eq!(status.target_url.as_deref(), Some(GATEWAY_URL));
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("terminated orphaned cloudflared process 4242"),
+            "the reset status must say what happened: {:?}",
+            status.last_error
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_never_signals_a_pid_that_is_not_this_tunnels_provider() {
+        // Pid reuse: the recorded pid is very much alive, but it is somebody else.
+        let table =
+            FakeProcessTable::with(&[(4242, "/Applications/Other.app/Contents/MacOS/Other")]);
+        let mut persisted = persisted_running(Some(4242), Some(GATEWAY_URL));
+
+        let report =
+            reclaim_leftover_providers(&mut persisted, &reclaim_options(true), &table).await;
+
+        assert!(report.terminated.is_empty());
+        assert_eq!(report.left_alone, vec![("primary".to_string(), 4242)]);
+        assert!(
+            table.signals().is_empty(),
+            "a pid that is not provably ours must never be signalled"
+        );
+        assert!(table.is_alive(4242));
+        let status = persisted.tunnel_status("primary").expect("status");
+        assert_eq!(status.state, TunnelState::Stopped);
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("is not this tunnel's cloudflared provider")
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_clears_a_status_whose_process_is_already_gone() {
+        let table = FakeProcessTable::with(&[]);
+        let mut persisted = persisted_running(Some(4242), Some(GATEWAY_URL));
+
+        let report =
+            reclaim_leftover_providers(&mut persisted, &reclaim_options(true), &table).await;
+
+        assert_eq!(report.already_gone, vec![("primary".to_string(), 4242)]);
+        assert!(table.signals().is_empty());
+        assert_eq!(
+            persisted.tunnel_status("primary").expect("status").state,
+            TunnelState::Stopped
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_clears_a_running_status_that_recorded_no_process() {
+        let table = FakeProcessTable::with(&[]);
+        let mut persisted = persisted_running(None, Some(GATEWAY_URL));
+
+        let report =
+            reclaim_leftover_providers(&mut persisted, &reclaim_options(true), &table).await;
+
+        assert_eq!(report.cleared, vec!["primary".to_string()]);
+        assert!(report.terminated.is_empty() && report.already_gone.is_empty());
+        let status = persisted.tunnel_status("primary").expect("status");
+        assert_eq!(status.state, TunnelState::Stopped);
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("no provider process was recorded")
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_escalates_to_sigkill_when_the_orphan_ignores_sigterm() {
+        let mut table = FakeProcessTable::with(&[(4242, LIVE_PROVIDER)]);
+        table.honours_sigterm = false;
+        let mut persisted = persisted_running(Some(4242), Some(GATEWAY_URL));
+
+        let report =
+            reclaim_leftover_providers(&mut persisted, &reclaim_options(true), &table).await;
+
+        assert_eq!(report.terminated, vec![("primary".to_string(), 4242)]);
+        assert_eq!(table.signals(), vec!["TERM:4242", "KILL:4242"]);
+        assert!(!table.is_alive(4242));
+    }
+
+    #[tokio::test]
+    async fn reclaim_admits_it_could_not_check_rather_than_claiming_the_process_exited() {
+        // A process table this daemon cannot read must not be reported as "the
+        // process had already exited": that clears the record of something that
+        // may still be holding the tunnel's connector.
+        let table = FakeProcessTable::unreadable();
+        let mut persisted = persisted_running(Some(4242), Some(GATEWAY_URL));
+
+        let report =
+            reclaim_leftover_providers(&mut persisted, &reclaim_options(true), &table).await;
+
+        assert_eq!(report.undetermined, vec![("primary".to_string(), 4242)]);
+        assert!(
+            report.already_gone.is_empty(),
+            "an unreadable table is not evidence of exit"
+        );
+        assert!(
+            table.signals().is_empty(),
+            "an unreadable table means no signal"
+        );
+        let status = persisted.tunnel_status("primary").expect("status");
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("could not read the process table"),
+            "the status must admit the gap: {:?}",
+            status.last_error
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_leaves_the_process_alone_when_asked_to() {
+        let table = FakeProcessTable::with(&[(4242, LIVE_PROVIDER)]);
+        let mut persisted = persisted_running(Some(4242), Some(GATEWAY_URL));
+
+        let report =
+            reclaim_leftover_providers(&mut persisted, &reclaim_options(false), &table).await;
+
+        assert!(report.terminated.is_empty());
+        assert!(
+            table.signals().is_empty(),
+            "--keep-leftover-providers means no signal at all"
+        );
+        assert!(table.is_alive(4242));
+        let status = persisted.tunnel_status("primary").expect("status");
+        assert_eq!(status.state, TunnelState::Stopped);
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("still running"),
+            "a kept orphan must still be admitted to: {:?}",
+            status.last_error
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_touches_a_tunnel_that_was_not_running() {
+        let table = FakeProcessTable::with(&[]);
+        let mut persisted = PersistedState::default();
+        let status = persisted.ensure_tunnel_status_mut("primary");
+        *status = default_tunnel_status(TunnelState::Stopped);
+        status.provider = Some(TunnelProvider::Cloudflared);
+        status.target_url = Some(GATEWAY_URL.to_string());
+
+        let report =
+            reclaim_leftover_providers(&mut persisted, &reclaim_options(true), &table).await;
+
+        assert!(report.is_empty(), "a stopped tunnel is not a leftover");
+    }
+
+    #[test]
+    fn a_recorded_pid_alone_is_a_leftover_whatever_the_state_says() {
+        // At startup this daemon has spawned nothing, so a pid on disk can only
+        // belong to an earlier run — even if the last write said "error".
+        let mut status = default_tunnel_status(TunnelState::Error);
+        status.process_id = Some(4242);
+        assert!(status_claims_a_running_provider(&status));
+
+        let mut running = default_tunnel_status(TunnelState::Running);
+        running.process_id = None;
+        assert!(status_claims_a_running_provider(&running));
+
+        let stopped = default_tunnel_status(TunnelState::Stopped);
+        assert!(!status_claims_a_running_provider(&stopped));
+    }
+
+    #[test]
+    fn leftover_matching_requires_the_binary_and_the_tunnels_own_target() {
+        let options = reclaim_options(true);
+        let cloudflared = TunnelProvider::Cloudflared;
+
+        assert!(leftover_command_line_matches(
+            LIVE_PROVIDER,
+            Some(&cloudflared),
+            Some(GATEWAY_URL),
+            &options,
+        ));
+        // Same binary, but a different tunnel's target.
+        assert!(!leftover_command_line_matches(
+            "/opt/homebrew/bin/cloudflared tunnel --url http://127.0.0.1:48080",
+            Some(&cloudflared),
+            Some(GATEWAY_URL),
+            &options,
+        ));
+        // The right target, but not the provider that was recorded.
+        assert!(!leftover_command_line_matches(
+            "/opt/homebrew/bin/ngrok http http://127.0.0.1:48081",
+            Some(&cloudflared),
+            Some(GATEWAY_URL),
+            &options,
+        ));
+        // No recorded target: never grounds for a signal.
+        assert!(!leftover_command_line_matches(
+            "/opt/homebrew/bin/cloudflared tunnel",
+            Some(&cloudflared),
+            None,
+            &options,
+        ));
+    }
+
+    /// The real table, exercised for real — but only where `ps` is reachable. A
+    /// sandboxed test runner may deny it (setuid tool, restricted process
+    /// table); skipping is honest, whereas failing would blame the code for the
+    /// environment.
+    #[tokio::test]
+    async fn system_process_table_reads_and_signals_a_real_process() {
+        if !matches!(
+            SystemProcessTable.process_state(std::process::id()),
+            ProcessState::Running(_)
+        ) {
+            eprintln!("skipping: the process table (`ps`) is not reachable from this test runner");
+            return;
+        }
+
+        // A stand-in for a provider: the command line carries the target URL, so
+        // it has the shape `build_provider_command` produces.
+        let mut child = Command::new("sleep")
+            .arg("300")
+            .arg(GATEWAY_URL)
+            .spawn()
+            .expect("sleep should spawn");
+        let pid = child.id().expect("a spawned child has a pid");
+
+        let command_line = match SystemProcessTable.process_state(pid) {
+            ProcessState::Running(command_line) => command_line,
+            other => panic!("a live process should have a readable command line, got {other:?}"),
+        };
+        assert!(command_line.contains("sleep") && command_line.contains(GATEWAY_URL));
+
+        // Reap concurrently: this child is *ours*, so without a waiter it would
+        // sit as a zombie and never read as gone.
+        let reaper = tokio::spawn(async move { child.wait().await });
+        assert!(
+            terminate_process(pid, &SystemProcessTable).await,
+            "SIGTERM should end a plain sleep"
+        );
+        let _ = reaper.await;
+        assert_eq!(SystemProcessTable.process_state(pid), ProcessState::Gone);
+    }
 
     #[test]
     fn provider_spawn_error_mentions_missing_executable_path() {
@@ -1231,6 +2141,55 @@ mod runtime_tests {
     }
 
     #[test]
+    fn protocol_arg_maps_cloudflared_protocol_names() {
+        // The metadata path lowercases before calling, so the table is lowercase.
+        assert_eq!(protocol_arg("auto".to_string()), Some("auto"));
+        assert_eq!(protocol_arg("quic".to_string()), Some("quic"));
+        assert_eq!(protocol_arg("http2".to_string()), Some("http2"));
+        assert_eq!(protocol_arg("ftp".to_string()), None);
+        assert_eq!(protocol_arg(String::new()), None);
+    }
+
+    #[test]
+    fn cloudflared_command_accepts_auto_protocol_metadata() {
+        let request = TunnelStartRequest {
+            tunnel_id: "primary".to_string(),
+            provider: TunnelProvider::Cloudflared,
+            target_url: "http://127.0.0.1:48080".to_string(),
+            auto_restart: Some(true),
+            metadata: Some(HashMap::from([(
+                "cloudflaredProtocol".to_string(),
+                "auto".to_string(),
+            )])),
+        };
+
+        let command = build_provider_command(
+            "/opt/homebrew/bin/cloudflared",
+            "/opt/homebrew/bin/ngrok",
+            &request,
+        )
+        .expect("command should build");
+
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            vec![
+                "tunnel",
+                "--protocol",
+                "auto",
+                "--no-autoupdate",
+                "--url",
+                "http://127.0.0.1:48080",
+            ]
+        );
+    }
+
+    #[test]
     fn provider_command_uses_binary_path_override_when_present() {
         let request = TunnelStartRequest {
             tunnel_id: "primary".to_string(),
@@ -1303,5 +2262,114 @@ mod runtime_tests {
             command.as_std().get_program().to_string_lossy(),
             "/opt/homebrew/bin/cloudflared"
         );
+    }
+
+    /// A private directory for one log-rotation test, cleaned before use.
+    ///
+    /// The name carries the pid because a counter alone repeats across runs, and
+    /// the sink appends rather than truncates: a run that failed mid-test would
+    /// otherwise leave content behind that breaks the next one.
+    async fn fresh_log_dir(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tunnelmuxd-log-{}-{unique}-{name}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir).await;
+        dir
+    }
+
+    #[tokio::test]
+    async fn provider_log_sink_rotates_at_the_size_cap_and_drops_the_oldest() {
+        let dir = fresh_log_dir("rotate").await;
+        let path = dir.join("provider.log");
+        // The first two 9-byte lines still fit under the 20-byte cap, so the
+        // rotation lands on the third write and repeats from there.
+        let sink = ProviderLogSink::new(path.clone(), 20, 2);
+
+        for line in ["line-one\n", "line-two\n", "line-three\n", "line-four\n"] {
+            sink.write_line(line).await;
+        }
+
+        assert_eq!(fs::read_to_string(&path).await.unwrap(), "line-four\n");
+        assert_eq!(
+            fs::read_to_string(path.with_file_name("provider.log.1"))
+                .await
+                .unwrap(),
+            "line-three\n"
+        );
+        assert_eq!(
+            fs::read_to_string(path.with_file_name("provider.log.2"))
+                .await
+                .unwrap(),
+            "line-one\nline-two\n"
+        );
+        // Only `max_files` backups are kept, and the oldest content is the
+        // first thing to go.
+        assert!(
+            !fs::try_exists(path.with_file_name("provider.log.3"))
+                .await
+                .unwrap()
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn provider_log_sink_appends_without_rotating_when_the_cap_is_disabled() {
+        let dir = fresh_log_dir("no-rotate").await;
+        let path = dir.join("provider.log");
+        let sink = ProviderLogSink::new(path.clone(), 0, 2);
+
+        for line in ["line-one\n", "line-two\n", "line-three\n"] {
+            sink.write_line(line).await;
+        }
+
+        assert_eq!(
+            fs::read_to_string(&path).await.unwrap(),
+            "line-one\nline-two\nline-three\n"
+        );
+        assert!(
+            !fs::try_exists(path.with_file_name("provider.log.1"))
+                .await
+                .unwrap()
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn provider_log_sink_truncates_in_place_when_no_backups_are_kept() {
+        let dir = fresh_log_dir("truncate").await;
+        let path = dir.join("provider.log");
+        let sink = ProviderLogSink::new(path.clone(), 20, 0);
+
+        for line in ["line-one\n", "line-two\n", "line-three\n"] {
+            sink.write_line(line).await;
+        }
+
+        // The footprint stays at the cap: nothing is kept but the newest line.
+        assert_eq!(fs::read_to_string(&path).await.unwrap(), "line-three\n");
+        assert!(
+            !fs::try_exists(path.with_file_name("provider.log.1"))
+                .await
+                .unwrap()
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn provider_log_sink_creates_missing_parent_directories() {
+        let dir = fresh_log_dir("nested").await;
+        let path = dir.join("deep").join("provider.log");
+        let sink = ProviderLogSink::new(path.clone(), 0, 1);
+
+        sink.write_line("hello\n").await;
+
+        assert_eq!(fs::read_to_string(&path).await.unwrap(), "hello\n");
+
+        let _ = fs::remove_dir_all(&dir).await;
     }
 }

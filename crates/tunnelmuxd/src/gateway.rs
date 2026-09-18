@@ -696,10 +696,26 @@ fn is_rewritable_content_type(content_type: &str) -> bool {
 }
 
 /**
+ * Root-relative namespaces that are also prefixed when they appear as a quoted
+ * JavaScript string literal. `/api` covers the fetch/SSE/WebSocket/RPC channel;
+ * `/plugins` covers the client-modules dev channel (`EVENTS_ENDPOINT`, the HMR
+ * SSE feed) and the bundled `client.js` combo paths.
+ *
+ * This is deliberately a whitelist rather than "any quoted root slash": a client
+ * bundle holds hundreds of quoted root-absolute literals and most are not URLs
+ * (PDF content streams, Emscripten paths, prose). Measured on the 14 MB DSH
+ * client bundle, `/plugins` occurs in exactly two quoted literals — the endpoint
+ * constant and a doc comment — so both are safe to prefix.
+ */
+const REWRITABLE_ROOT_NAMESPACES: &[&str] = &["api", "plugins"];
+
+/**
  * Prefix root-relative URL references with a mount path: `src`/`href` and
- * `"url":` JSON values in HTML, and `/api` references in JavaScript (fetch,
- * SSE, and WebSocket paths). Protocol-relative (`//host`), scheme-absolute
- * (`https://…`), and already-prefixed references are left alone.
+ * `"url":` JSON values in HTML, and `REWRITABLE_ROOT_NAMESPACES` references in
+ * JavaScript (fetch, SSE, and WebSocket paths). A namespace is only rewritten
+ * when the whole segment matches — `/plugin` (singular) or `/plugins2` are left
+ * alone. Protocol-relative (`//host`), scheme-absolute (`https://…`), and
+ * already-prefixed references are left alone.
  * @param body - the upstream response body.
  * @param prefix - the mount prefix (leading slash, no trailing slash).
  */
@@ -718,16 +734,20 @@ pub(super) fn rewrite_root_paths(body: &str, prefix: &str) -> String {
         !b[at + len..].starts_with(b"/") && !b[at + len..].starts_with(prefix_inner.as_bytes())
     });
     out = guarded_replace(&out, &["\"/", "'/", "`/"], prefix_inner, |b, at, len| {
-        // A quoted root slash whose path is `api` (fetch, SSE, WebSocket, or the
-        // bare `/api` RPC channel); the prefix lands between the slash and `api`.
-        // An already-prefixed `/api` (`"/deepseek/api`) has `deepseek` right
-        // after the slash, so `api` never follows — no double-prefix.
+        // A quoted root slash whose path is a known root namespace; the prefix
+        // lands between the slash and the namespace. A namespace only counts when
+        // the whole segment matches (`/plugins` yes, `/plugin` and `/plugins2` no),
+        // which the trailing delimiter check enforces. An already-prefixed
+        // namespace (`"/deepseek/api`) has `deepseek` right after the slash, so no
+        // namespace follows — no double-prefix.
         let rest = &b[at + len..];
-        rest.starts_with(b"api")
-            && matches!(
-                b.get(at + len + 3),
-                Some(b'"') | Some(b'\'') | Some(b'/') | Some(b'`')
-            )
+        REWRITABLE_ROOT_NAMESPACES.iter().any(|namespace| {
+            rest.starts_with(namespace.as_bytes())
+                && matches!(
+                    b.get(at + len + namespace.len()),
+                    Some(b'"') | Some(b'\'') | Some(b'/') | Some(b'`')
+                )
+        })
     });
     out
 }
@@ -1228,6 +1248,39 @@ mod tests {
         assert!(out.contains(r#"'/deepseek/api/events.mux'"#));
         assert!(out.contains("`/deepseek/api/${method}`"));
         assert!(out.contains(r#""/deepseek/api""#));
+    }
+
+    #[test]
+    fn rewrite_prefixes_js_plugins_references_in_all_quote_forms() {
+        // The client-modules dev SSE channel (`EVENTS_ENDPOINT` in the DSH client
+        // bundle). Without the prefix the browser asks the tunnel host for
+        // `/plugins/events`, which the gateway does not serve — HMR silently dies.
+        let js = concat!(
+            r#"const EVENTS_ENDPOINT = "/plugins/events";"#,
+            r#"route('/plugins/events');"#,
+            "open(`/plugins/manifest`);",
+        );
+        let out = rewrite_root_paths(js, "/deepseek");
+        assert!(out.contains(r#""/deepseek/plugins/events""#));
+        assert!(out.contains(r#"'/deepseek/plugins/events'"#));
+        assert!(out.contains("`/deepseek/plugins/manifest`"));
+    }
+
+    #[test]
+    fn rewrite_leaves_unlisted_root_namespaces_alone() {
+        // Real literals from the 14 MB DSH client bundle plus near-miss segments.
+        // Only whole-segment matches of a whitelisted namespace may be rewritten.
+        let js = concat!(
+            r#"const a = "/modlens/config";"#,
+            r#"const b = "/tmp/fixture";"#,
+            r#"const c = "/plugin/singular";"#,
+            r#"const d = "/plugins2/near";"#,
+            r#"const e = "/open-in-app/apps";"#,
+            r#"const f = "https://docs.deepseek.com/harness/plugins";"#,
+            "//# sourceMappingURL=/plugins/??x/client.js.map",
+        );
+        let out = rewrite_root_paths(js, "/deepseek");
+        assert_eq!(out, js);
     }
 
     #[test]

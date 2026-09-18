@@ -24,25 +24,54 @@ pub(super) fn resolve_api_token(arg_token: Option<String>) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
-/// Generate a fresh 32-byte random token (hex) and persist it to `token_file`
-/// with owner-only permissions so local clients can auto-discover it. Called
-/// only in `require` mode when no token was otherwise configured.
-pub(super) async fn generate_and_persist_api_token(
-    token_file: &std::path::Path,
-) -> anyhow::Result<String> {
+/// Mint a fresh 32-byte random token (hex).
+///
+/// Deliberately does **not** touch the filesystem: persisting happens only once
+/// the daemon is actually bound and serving, so a start that fails cannot
+/// invalidate the token that running clients are already using.
+pub(super) fn generate_api_token() -> anyhow::Result<String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|err| anyhow!("failed to read OS randomness: {err}"))?;
-    let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+/// Resolve the token to serve with when none was passed explicitly: reuse
+/// whatever is already persisted, and only mint a new one when the file is
+/// missing or blank.
+///
+/// Reusing is what keeps a restart from locking out every local client — the
+/// previous behaviour of always generating on startup meant any second daemon
+/// start (even one that failed to bind) silently rotated the shared token.
+pub(super) async fn reusable_api_token(token_file: &std::path::Path) -> anyhow::Result<String> {
+    if let Ok(raw) = tokio::fs::read_to_string(token_file).await {
+        let existing = raw.trim();
+        if !existing.is_empty() {
+            return Ok(existing.to_string());
+        }
+    }
+    generate_api_token()
+}
+
+/// Persist the token so local clients can auto-discover it, owner-only.
+pub(super) async fn persist_api_token(
+    token_file: &std::path::Path,
+    token: &str,
+) -> anyhow::Result<()> {
+    if let Ok(raw) = tokio::fs::read_to_string(token_file).await {
+        if raw.trim() == token {
+            return Ok(());
+        }
+    }
     if let Some(parent) = token_file.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    std::fs::write(token_file, format!("{hex}\n"))?;
+    std::fs::write(token_file, format!("{token}\n"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(token_file, std::fs::Permissions::from_mode(0o600))?;
     }
-    Ok(hex)
+    Ok(())
 }
 
 /// Generate a short human-enterable access code (6 hex chars) for the
@@ -424,13 +453,14 @@ pub(super) async fn get_tunnel_logs(
     Query(query): Query<TunnelLogsQuery>,
 ) -> Result<Json<TunnelLogsResponse>, ApiError> {
     let lines = normalize_log_tail_lines(query.lines)?;
-    let source = match fs::read_to_string(&state.provider_log_file).await {
+    let log_path = state.provider_log.path();
+    let source = match fs::read_to_string(log_path).await {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => {
             return Err(ApiError::internal(format!(
                 "failed to read provider logs from {}: {err}",
-                state.provider_log_file.display()
+                log_path.display()
             )));
         }
     };
@@ -447,7 +477,7 @@ pub(super) async fn stream_tunnel_logs(
     let lines = normalize_log_tail_lines(query.lines)?;
     let poll_ms = normalize_log_stream_poll_ms(query.poll_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(128);
-    let log_file = state.provider_log_file.clone();
+    let log_file = state.provider_log.path().to_path_buf();
     let tunnel_id = query.tunnel_id.clone();
 
     tokio::spawn(async move {
@@ -1041,7 +1071,7 @@ pub(super) async fn build_diagnostics_snapshot(
     DiagnosticsResponse {
         data_file: state.data_file.display().to_string(),
         config_file: state.config_file.display().to_string(),
-        provider_log_file: state.provider_log_file.display().to_string(),
+        provider_log_file: state.provider_log.path().display().to_string(),
         route_count: routes.len(),
         enabled_route_count: routes.iter().filter(|route| route.enabled).count(),
         tunnel_state,
@@ -1426,15 +1456,13 @@ pub(super) async fn list_route_access(
     let (default_config, routes) = {
         let runtime = state.runtime.lock().await;
         let default_config = runtime.persisted.default_route_access.clone();
-        let default_gated =
-            trimmed_access_code(default_config.require_access_code.as_deref()).is_some();
         let mut summaries = runtime
             .persisted
             .routes
             .iter()
             .map(|route| {
                 let route_config = runtime.persisted.route_access.get(&route.id);
-                summarize_route_access(&route.id, route_config, default_gated)
+                summarize_route_access(&route.id, route_config, &default_config)
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| left.route_id.cmp(&right.route_id));
@@ -1442,6 +1470,10 @@ pub(super) async fn list_route_access(
     };
     Ok(Json(RouteAccessSummaryResponse {
         default_gated: trimmed_access_code(default_config.require_access_code.as_deref()).is_some(),
+        default_require_access_code: trimmed_access_code(
+            default_config.require_access_code.as_deref(),
+        )
+        .map(str::to_string),
         default_cookie_ttl_ms: default_config.cookie_ttl_ms,
         routes,
     }))
@@ -1468,8 +1500,14 @@ fn trimmed_access_code(value: Option<&str>) -> Option<&str> {
 fn summarize_route_access(
     route_id: &str,
     route_config: Option<&RouteAccessConfig>,
-    default_gated: bool,
+    default_config: &RouteAccessConfig,
 ) -> RouteAccessSummary {
+    // The route-level override wins; otherwise the default gate applies. The
+    // cookie TTL resolves the same way so callers can round-trip it back.
+    let route_ttl_ms = route_config.and_then(|config| config.cookie_ttl_ms);
+    let effective_ttl_ms = route_ttl_ms.or(default_config.cookie_ttl_ms);
+    let default_code = trimmed_access_code(default_config.require_access_code.as_deref());
+
     if route_config
         .and_then(|config| config.public)
         .unwrap_or(false)
@@ -1479,26 +1517,40 @@ fn summarize_route_access(
             gated: false,
             mode: "public".to_string(),
             explicit: true,
+            require_access_code: None,
+            cookie_ttl_ms: None,
         };
     }
 
-    if route_config
-        .and_then(|config| trimmed_access_code(config.require_access_code.as_deref()))
-        .is_some()
+    if let Some(code) =
+        route_config.and_then(|config| trimmed_access_code(config.require_access_code.as_deref()))
     {
         return RouteAccessSummary {
             route_id: route_id.to_string(),
             gated: true,
             mode: "route".to_string(),
             explicit: true,
+            require_access_code: Some(code.to_string()),
+            cookie_ttl_ms: effective_ttl_ms,
         };
     }
 
     RouteAccessSummary {
         route_id: route_id.to_string(),
-        gated: default_gated,
-        mode: if default_gated { "inherited" } else { "open" }.to_string(),
+        gated: default_code.is_some(),
+        mode: if default_code.is_some() {
+            "inherited"
+        } else {
+            "open"
+        }
+        .to_string(),
         explicit: route_config.is_some(),
+        require_access_code: default_code.map(str::to_string),
+        cookie_ttl_ms: if default_code.is_some() {
+            effective_ttl_ms
+        } else {
+            None
+        },
     }
 }
 

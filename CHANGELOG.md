@@ -4,6 +4,19 @@ All notable changes to this project should be documented in this file.
 
 ## [Unreleased]
 
+- Merge the daemon into the desktop app: `tunnelmuxd` now builds as a library plus a thin CLI binary, and the GUI links the library and hosts the daemon in its own process. One process owns the control port, the state files, the api token, and the provider child processes.
+- Stop shipping a bundled `tunnelmuxd` sidecar in the GUI bundle. Remove the `externalBin` Tauri config, the staging script, and the CI staging steps that produced it.
+- Remove the GUI's "spawn a daemon" path entirely, along with bundled/`PATH` binary resolution, PID tracking, and readiness polling. The daemon library returns once its listeners are bound, so there is nothing to poll for.
+- Keep daemon ownership explicit in the GUI: an already-answering daemon is adopted as `external` (ownership value `managed` is replaced by `embedded`) and never stopped; otherwise the app starts the embedded daemon and stops it on exit.
+- Stop the embedded daemon's tunnels and provider processes on app exit, and prevent the runtime monitor from restarting them mid-shutdown.
+- Fix a start-failure bug that rotated the shared api token: the daemon now binds its listeners before writing anything to the data directory, and reuses an existing token instead of minting a new one on every start. A failed start can no longer lock out already-running clients.
+- Default daemon logging to `info` when `RUST_LOG` is unset, so listener and provider lifecycle lines are visible without extra setup.
+- Pick the rustls crypto provider explicitly (`ring`) before any TLS client is built, so the daemon no longer aborts at startup when `ring` and `aws-lc-rs` are linked into the same build — which is exactly what happens once the desktop app hosts the daemon.
+- Serve `POST /v1/settings/reload` in production builds. The handler, its tests, and the CLI command all existed, but the route was only registered in the test router, so the CLI's settings reload always missed the running daemon.
+- Rotate the provider log. `provider.log` now rolls over at 16 MiB into `provider.log.1…N` (three backups by default) instead of growing without bound, tunable with `--provider-log-max-bytes` (`0` disables rotation) and `--provider-log-max-files` (`0` truncates in place). All tunnels share one sink, so rotation cannot leave a reader appending to a file that was renamed away.
+- Derive the api token file from the state file instead of hardcoding `~/.tunnelmux`. A daemon started with a custom `--data-file` now keeps its token alongside it and can no longer rotate the token local clients discover on the default path; `--api-token-file` overrides the location explicitly. The default layout is unchanged.
+- Mounted-app response rewriting now covers the `/plugins` namespace in JavaScript string literals, not just `/api`. The DSH client reads its dev-channel endpoint from a quoted literal (`const EVENTS_ENDPOINT = "/plugins/events"`), so under a path mount the browser asked the tunnel host for `/plugins/events` and got a 404 — hot module reload was dead, and a rebuilt plugin left open pages holding a stale bundle revision with nothing to tell them. The rewrite stays a whole-segment whitelist: `/plugin` and `/plugins2` are untouched, and so is every other quoted root-absolute literal in the bundle (PDF content streams, Emscripten paths, prose), which a blanket rule would corrupt.
+
 ## [0.3.0] - 2026-08-24
 
 - Add gateway service access gates with a global default code, per-service inherit/custom/public modes, and route-scoped browser cookies.

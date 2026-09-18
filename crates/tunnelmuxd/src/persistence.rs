@@ -28,11 +28,17 @@ pub(super) fn default_provider_log_file() -> PathBuf {
 }
 
 /// Default on-disk location of the auto-generated control-plane API token.
-pub(super) fn default_api_token_file() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".tunnelmux").join("api-token");
+///
+/// Derived from the state file rather than hardcoded to `~/.tunnelmux`, so a
+/// daemon started with `--data-file /tmp/scratch/state.json` keeps its token at
+/// `/tmp/scratch/api-token` instead of overwriting — and invalidating — the
+/// token a production daemon on the default path handed out. For the default
+/// state file the result is still `~/.tunnelmux/api-token`.
+pub(super) fn default_api_token_file(data_file: &Path) -> PathBuf {
+    match data_file.parent() {
+        Some(directory) if !directory.as_os_str().is_empty() => directory.join("api-token"),
+        _ => PathBuf::from("api-token"),
     }
-    PathBuf::from("./data/api-token")
 }
 
 fn route_rule_to_create_request(route: RouteRule) -> CreateRouteRequest {
@@ -92,6 +98,11 @@ pub(super) async fn load_config_file(path: &Path) -> anyhow::Result<Option<Decla
     Ok(Some(normalize_declarative_config(parsed)?))
 }
 
+/// Write a declarative config file the way a user would.
+///
+/// The daemon only ever *reads* `config.json`, so this exists purely to set up
+/// fixtures in tests; gating it keeps the production build warning-free.
+#[cfg(test)]
 pub(super) async fn save_config_file(
     path: &Path,
     config: &DeclarativeConfigFile,
@@ -119,7 +130,32 @@ pub(super) async fn save_config_file(
     Ok(())
 }
 
+/// Read the state file for a reader that **cannot** act on a running claim.
+///
+/// A status that still says `running` was written by a process that is no
+/// longer here, so this process cannot honour it: the claim is normalised to
+/// `stopped` and the pid is dropped. Anything that merely *reads* state must
+/// come through here — adopting a pid this process does not own would make the
+/// daemon report a tunnel it has no child for.
+///
+/// Startup does **not** use this: it can act on the claim, and dropping the pid
+/// here is what used to make a leftover provider impossible to reclaim. See
+/// [`load_persisted_state_for_reclaim`].
 pub(super) async fn load_persisted_state(path: &Path) -> anyhow::Result<PersistedState> {
+    let mut parsed = load_persisted_state_for_reclaim(path).await?;
+    detach_running_tunnels(&mut parsed);
+    Ok(parsed)
+}
+
+/// Read the state file exactly as it was written, keeping any claim that a
+/// tunnel is running — and the pid that claim names.
+///
+/// Only startup should use this, and only because it hands the result to
+/// `reclaim_leftover_providers`, which decides what happens to that pid. A
+/// reader that cannot act on it must use [`load_persisted_state`].
+pub(super) async fn load_persisted_state_for_reclaim(
+    path: &Path,
+) -> anyhow::Result<PersistedState> {
     if !path.exists() {
         return Ok(PersistedState::default());
     }
@@ -134,6 +170,12 @@ pub(super) async fn load_persisted_state(path: &Path) -> anyhow::Result<Persiste
         parsed.current_tunnel_id = Some("primary".to_string());
     }
 
+    Ok(parsed)
+}
+
+/// Forget a running claim this process cannot honour, keeping the fact on
+/// record so the status is not silently rewritten to look uneventful.
+fn detach_running_tunnels(parsed: &mut PersistedState) {
     for tunnel in &mut parsed.tunnels {
         if matches!(
             tunnel.status.state,
@@ -146,8 +188,6 @@ pub(super) async fn load_persisted_state(path: &Path) -> anyhow::Result<Persiste
             tunnel.status.updated_at = now_iso();
         }
     }
-
-    Ok(parsed)
 }
 
 fn parse_persisted_state(raw: &str) -> anyhow::Result<PersistedState> {
@@ -276,9 +316,90 @@ mod tests {
         let _ = fs::remove_file(&path).await;
     }
 
+    #[tokio::test]
+    async fn the_reclaim_loader_keeps_the_pid_a_previous_run_recorded() {
+        // The entire point of the split: startup has to see the pid to reclaim
+        // the process, and the normalising reader has to not see it. Dropping
+        // the pid at load time is what used to make a leftover provider
+        // impossible to reclaim — nothing was left to act on.
+        let path = unique_temp_path("reclaim-state.json");
+        fs::write(
+            &path,
+            r#"{
+  "current_tunnel_id": "primary",
+  "tunnels": [
+    {
+      "id": "primary",
+      "status": {
+        "state": "running",
+        "provider": "cloudflared",
+        "target_url": "http://127.0.0.1:48081",
+        "public_base_url": "https://leftover.invalid",
+        "started_at": "2026-09-17T00:00:00+00:00",
+        "updated_at": "2026-09-17T00:00:00+00:00",
+        "process_id": 99364,
+        "auto_restart": true,
+        "restart_count": 0,
+        "last_error": null
+      }
+    }
+  ],
+  "routes": [],
+  "health_check": {"interval_ms": 5000, "timeout_ms": 2000, "path": "/"},
+  "default_route_access": {},
+  "route_access": {}
+}
+"#,
+        )
+        .await
+        .expect("state fixture should write");
+
+        let as_written = load_persisted_state_for_reclaim(&path)
+            .await
+            .expect("state should load");
+        assert_eq!(as_written.tunnels[0].status.state, TunnelState::Running);
+        assert_eq!(as_written.tunnels[0].status.process_id, Some(99364));
+
+        let for_readers = load_persisted_state(&path)
+            .await
+            .expect("state should load");
+        assert_eq!(for_readers.tunnels[0].status.state, TunnelState::Stopped);
+        assert_eq!(for_readers.tunnels[0].status.process_id, None);
+        assert_eq!(
+            for_readers.tunnels[0].status.last_error.as_deref(),
+            Some("daemon restarted; previous tunnel process was detached")
+        );
+
+        let _ = fs::remove_file(&path).await;
+    }
+
     fn unique_temp_path(name: &str) -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("tunnelmuxd-{unique}-{name}"))
+    }
+
+    #[test]
+    fn api_token_file_sits_next_to_the_state_file() {
+        // The default layout must stay exactly where local clients look for it,
+        // otherwise auto-discovery breaks.
+        assert_eq!(
+            default_api_token_file(&default_data_file()),
+            default_data_file().with_file_name("api-token")
+        );
+        // A daemon pointed elsewhere gets its own token file, so starting it
+        // cannot rotate the token a production daemon handed out.
+        assert_eq!(
+            default_api_token_file(Path::new("/tmp/scratch/state.json")),
+            PathBuf::from("/tmp/scratch/api-token")
+        );
+    }
+
+    #[test]
+    fn api_token_file_without_a_parent_directory_stays_relative() {
+        assert_eq!(
+            default_api_token_file(Path::new("state.json")),
+            PathBuf::from("api-token")
+        );
     }
 }

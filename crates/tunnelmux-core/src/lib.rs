@@ -204,6 +204,16 @@ pub struct RouteAccessSummary {
     /// True when the route has an explicit override entry.
     #[serde(default)]
     pub explicit: bool,
+    /// The access code that actually applies to this route: its own code in
+    /// `route` mode, or the default gate's code when inherited. Callers of this
+    /// list endpoint are already control-plane authenticated (bearer token or
+    /// loopback), the same level of trust as `tunnelmux unlock --show-code`, so
+    /// surfacing it here is what makes the gate configurable from the GUI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_access_code: Option<String>,
+    /// The effective unlock-cookie lifetime in ms that applies to this route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookie_ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +221,9 @@ pub struct RouteAccessSummaryResponse {
     /// True when a daemon-wide default access code is configured.
     #[serde(default)]
     pub default_gated: bool,
+    /// The daemon-wide default access code, when one is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_require_access_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_cookie_ttl_ms: Option<u64>,
     #[serde(default)]

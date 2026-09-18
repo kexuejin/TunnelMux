@@ -134,7 +134,7 @@ cargo run -p tunnelmux-gui
 4. 点击 `Start Tunnel`
 5. 添加本地服务地址，例如 `http://127.0.0.1:3000`
 
-GUI 会优先连接已有的本地 `tunnelmuxd`。如果当前不可用，它也可以为桌面应用自动拉起一个本地 daemon。
+GUI 把 daemon **跑在自己的进程里** —— 不拉起任何子进程，控制端口、状态文件与 provider 进程都只有唯一 owner。若配置地址上已有 `tunnelmuxd` 在应答，GUI 会改为连接它，并在你退出时保留它继续运行。退出应用会停止它自己启动的 daemon、隧道与 provider 进程；关闭窗口只是收进托盘。
 
 如果当前所选 provider 还没有安装，TunnelMux 现在会在启动前先拦截这个问题，在主界面给出对应 provider 的提示，并提供 `Copy Install Command` 操作，避免直接落到原始的进程启动报错。
 
@@ -238,8 +238,12 @@ macOS（Intel 与 Apple Silicon）、Windows、Linux。GitHub Releases 为三者
 
 - `~/.tunnelmux/config.json` — 声明式路由与健康检查配置
 - `~/.tunnelmux/state.json` — daemon 维护的运行时快照
+- `~/.tunnelmux/api-token` — 自动生成的控制面 bearer token（0600）
+- `~/.tunnelmux/provider.log` — provider 的 stdout/stderr，超过 16 MiB 轮转为 `provider.log.1…3`
 
 daemon 会轮询 `config.json`，应用路由和健康检查变更时不需要重启。
+
+token 与 provider 日志都放在状态文件旁边：用 `--data-file /tmp/scratch/state.json` 启动时，token 落在 `/tmp/scratch/api-token`，绝不会碰到生产 daemon 发出去的 token。路径与大小可分别用 `--api-token-file`、`--provider-log-file`、`--provider-log-max-bytes`（`0` 表示不轮转）、`--provider-log-max-files`（`0` 表示不留备份）覆盖。
 
 ## 服务访问码门禁
 

@@ -22,7 +22,9 @@ cargo test -p tunnelmux-gui startup_reconnect_mode
 cargo test -p tunnelmux-gui probe_connection_reports
 cargo test -p tunnelmux-gui daemon_status_snapshot_from_connection
 cargo test -p tunnelmux-gui daemon_status_snapshot_reports_bootstrapping_state
-cargo test -p tunnelmux-gui missing_binary_clearly
+cargo test -p tunnelmux-gui daemon_manager_marks_
+cargo test -p tunnelmux-gui listen_addr_is_derived_
+cargo test -p tunnelmux-gui shutdown_leaves_an_adopted_daemon_alone
 
 echo "==> Start preflight guards"
 cargo test -p tunnelmux-gui commands::tests::start_tunnel_returns_friendly_error_when_provider_is_missing -- --exact

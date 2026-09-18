@@ -21,7 +21,10 @@ description: TunnelMux 控制面 HTTP API：认证、隧道生命周期、路由
 - `--config-file <PATH>`（默认 `~/.tunnelmux/config.json`）
 - `--config-reload-interval-ms <MS>`（默认 `1000`）
 - `--provider-log-file <PATH>`（默认 `~/.tunnelmux/provider.log`）
+- `--provider-log-max-bytes <BYTES>`（默认 `16777216`；`0` 表示不轮转）
+- `--provider-log-max-files <N>`（默认 `3`；`0` 表示不留备份、直接原地截断）
 - `--api-token <TOKEN>`
+- `--api-token-file <PATH>`（默认：与 `--data-file` 同目录的 `api-token`）
 
 ## 认证
 
@@ -29,11 +32,13 @@ description: TunnelMux 控制面 HTTP API：认证、隧道生命周期、路由
 
 | 模式 | 行为 |
 |---|---|
-| `require`（默认） | 默认拒绝：每个受保护端点都要求有效的 `Authorization: Bearer <token>`。未配置 token 时，daemon 自动生成一个并写入 `~/.tunnelmux/api-token`（0600），供本地工具自动发现。 |
+| `require`（默认） | 默认拒绝：每个受保护端点都要求有效的 `Authorization: Bearer <token>`。未配置 token 时，daemon 自动生成一个并写入状态文件的同目录 `api-token`（默认即 `~/.tunnelmux/api-token`，权限 0600），供本地工具自动发现。 |
 | `optional` | 向后兼容：配置了 token 就强制执行；没有 token 的 daemon 保持开放。 |
 | `off` | 从不强制（仅限本地开发）。 |
 
 可以用 `--api-token <TOKEN>` 或 `TUNNELMUX_API_TOKEN` 显式设置 token。CLI、GUI 与 `dsh-tunnelmux-remote` 使用同一个 token；未传 token 时，这些客户端会回退读取 `~/.tunnelmux/api-token`（若存在）。
+
+生成的 token 文件跟随状态文件：用 `--data-file /tmp/scratch/state.json` 启动的 daemon 会写到 `/tmp/scratch/api-token`，不会覆盖默认路径上的 token。需要放在别处时用 `--api-token-file <PATH>`。
 
 `GET /v1/health` 始终免认证。
 

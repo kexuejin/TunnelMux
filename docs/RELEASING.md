@@ -171,13 +171,13 @@ scripts/verify-easy-path.sh
 
 ### Checklist
 
-1. **Managed daemon bundle and stalled-boot recovery**
+1. **Embedded daemon ownership and port recovery**
    - Quit any already-running local `tunnelmuxd` and keep the default local daemon URL.
-   - Temporarily rename or remove the bundled/colocated `tunnelmuxd` binary from the GUI artifact, then launch the app.
-   - Expect the status area to explain that the local `tunnelmuxd` component is unavailable and to recommend reinstalling the app or putting `tunnelmuxd` on `PATH`, instead of surfacing a raw binary lookup error.
-   - Restore the binary and relaunch the GUI.
-   - Expect the status area to show `Starting local TunnelMux…` while the GUI-managed daemon is still booting.
-   - If you deliberately block the default local daemon port before launch, expect startup to escalate to `Starting local TunnelMux is taking longer than expected. Retry the local daemon or check whether another app is already using this port.` with `Retry Local Daemon` instead of spinning forever.
+   - Launch the app and confirm the status area reads that TunnelMux is running inside the app.
+   - Start a tunnel, quit the app from the tray menu, and confirm the provider process is gone (`pgrep -fl cloudflared`) and the public URL stops answering.
+   - Relaunch the app and confirm it reuses the same control port and the same api token, so a `tunnelmux-cli` running alongside keeps working.
+   - Bind the default local daemon port with something else, then launch the app. Expect a startup failure naming the control port instead of a raw bind error, with `Retry Local Daemon` instead of spinning forever.
+   - Start a headless `tunnelmuxd` on the default port first, then launch the app. Expect the status area to report that it is using an already-running daemon, and expect quitting the app to leave that daemon alive.
 
 2. **Missing-provider warning**
    - Open the app and create a tunnel with provider `cloudflared`.
@@ -232,7 +232,8 @@ scripts/verify-easy-path.sh
 
 ### Pass Criteria
 
-- Missing or stalled GUI-managed daemon startup stays on installer-aware or retryable recovery copy instead of surfacing a raw lookup error or spinning forever.
+- Embedded daemon startup failures stay on retryable recovery copy instead of surfacing a raw bind error or spinning forever.
+- Quitting the app stops the daemon it started and the provider processes it owns; an adopted external daemon is left running.
 - Missing-provider guidance appears before raw provider launch failures.
 - Missing `ngrok` authtoken guidance appears before any failed `ngrok` launch attempt.
 - `ngrok`-only onboarding keeps the authtoken warning visible and preserves the `cloudflared` install escape hatch.

@@ -22,6 +22,12 @@ Responsibilities:
 - expose provider logs and SSE log streams
 - expose upstream health snapshots and streams
 
+`tunnelmuxd` builds as **both a library and a binary**. The library exposes
+`DaemonArgs`, `start()`, and `serve()`; the binary is a thin CLI wrapper around
+them. Headless deployments run the binary. The desktop app links the library and
+hosts the same daemon in-process, which is what makes it the single owner of the
+control port, the state files, the api token, and the provider child processes.
+
 ## 2. Gateway data plane
 
 Responsibilities:
@@ -50,15 +56,23 @@ Responsibilities:
 
 Responsibilities:
 - present a local operations console for operators
-- store only local GUI connection settings (daemon `base_url` and optional token)
+- **host the daemon in-process** by linking the `tunnelmuxd` library, so the app
+  is the only owner of the tunnel lifecycle
+- persist the connection settings it discovers (daemon `base_url` + token) so a
+  cold start reconnects to the same port
 - call Tauri commands that delegate to the shared control client
-- surface dashboard, tunnel controls, route CRUD, and diagnostics without owning daemon lifecycle
+- surface dashboard, tunnel controls, route CRUD, diagnostics, and a tray icon
 
-The current GUI MVP intentionally does **not** include:
-- daemon auto-launch,
-- tray/background integrations,
-- real-time log streaming,
-- daemon auto-launched diagnostics subscriptions.
+Ownership rules:
+- if a daemon already answers on the configured address, the GUI adopts it and
+  never stops it — that is the path for a headless `tunnelmuxd` used by the CLI
+- otherwise the GUI starts the embedded daemon and stops it on exit, terminating
+  the provider processes it owns
+
+The GUI intentionally does **not**:
+- ship or spawn a separate `tunnelmuxd` sidecar binary,
+- fall back to a `PATH`-resolved daemon when the configured one is unreachable,
+- auto-launch diagnostics subscriptions before a tunnel exists.
 
 ## Design Principles
 
@@ -66,6 +80,7 @@ The current GUI MVP intentionally does **not** include:
 - clear control-plane/data-plane separation
 - API-first integration surface
 - local-first security (loopback binding + optional bearer token)
+- single owner per resource (one control port, one state file, one provider set)
 - explicit config/runtime separation (`config.json` desired state vs `state.json` runtime snapshot)
 - caller-independent design (no embedded business adapters)
 - equal-client model (`CLI` and `GUI` are peers over the same daemon API)

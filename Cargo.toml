@@ -33,6 +33,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["http1"
 hyper-util = { version = "0.1.18", features = ["client", "client-legacy", "http1", "tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 regex = "1.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "signal", "process", "io-util", "sync", "time", "fs"] }
@@ -42,3 +43,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2.5"
 tunnelmux-core = { version = "0.3.0", path = "crates/tunnelmux-core" }
 tunnelmux-control-client = { version = "0.3.0", path = "crates/tunnelmux-control-client" }
+tunnelmuxd = { version = "0.3.0", path = "crates/tunnelmuxd" }

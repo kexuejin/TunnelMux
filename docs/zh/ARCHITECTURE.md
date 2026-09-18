@@ -29,6 +29,11 @@ TunnelMux 刻意保持与具体产品无关。
 - 暴露 provider 日志与 SSE 日志流
 - 暴露上游健康快照与流
 
+`tunnelmuxd` 同时构建为**库与二进制**：库导出 `DaemonArgs`、`start()`、`serve()`，
+二进制只是它们的薄 CLI 包装。无头部署运行二进制；桌面应用链接该库，把同一个
+daemon 跑在自身进程内 —— 这正是它能成为控制端口、状态文件、api token 与
+provider 子进程唯一 owner 的原因。
+
 ### 2. 网关数据面
 
 职责：
@@ -61,16 +66,22 @@ TunnelMux 刻意保持与具体产品无关。
 职责：
 
 - 为运维人员提供本地操作控制台
-- 只保存本地 GUI 连接设置（daemon `base_url` 与可选 token）
+- 通过链接 `tunnelmuxd` 库，**在进程内托管 daemon**，使应用成为隧道生命周期的唯一 owner
+- 把它实际探测到的连接设置（daemon `base_url` 与 token）落盘，冷启动即可连回同一端口
 - 调用委托给共享控制客户端的 Tauri 命令
-- 呈现仪表盘、隧道控制、路由 CRUD 与诊断，不拥有 daemon 生命周期
+- 呈现仪表盘、隧道控制、路由 CRUD、诊断与托盘图标
 
-当前 GUI MVP 刻意**不**包含：
+所有权规则：
 
-- daemon 自动拉起
-- 托盘 / 后台集成
-- 实时日志流
-- daemon 自动拉起的诊断订阅
+- 若配置地址上已有 daemon 在应答，GUI 直接接管（adopt）且永不停止它 —— 这是 CLI 所用
+  无头 `tunnelmuxd` 的路径
+- 否则 GUI 启动内嵌 daemon，并在退出时停止它，同时终止它自己拥有的 provider 进程
+
+GUI 刻意**不**做：
+
+- 打包或拉起独立的 `tunnelmuxd` sidecar 二进制
+- 在配置的 daemon 不可达时回落到 `PATH` 上的 daemon
+- 在隧道存在之前自动拉起诊断订阅
 
 ## 设计原则
 
@@ -78,6 +89,7 @@ TunnelMux 刻意保持与具体产品无关。
 - 清晰的 控制面 / 数据面 分离
 - API-first 的集成面
 - 本地优先安全（loopback 绑定 + 可选 bearer token）
+- 每个资源只有一个 owner（一个控制端口、一份状态文件、一组 provider）
 - 显式的配置 / 运行时分离（`config.json` 期望状态 vs `state.json` 运行时快照）
 - 与调用方无关的设计（不内嵌业务适配器）
 - 客户端平等模型（CLI 与 GUI 通过同一 daemon API 对等访问）
