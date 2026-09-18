@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod daemon_manager;
+pub mod embedded_daemon;
 pub mod provider_installer;
 pub mod settings;
 pub mod state;
@@ -7,6 +8,10 @@ pub mod tray;
 pub mod view_models;
 
 pub fn run() {
+    // The daemon is embedded, so its tracing output has nowhere to go unless
+    // this process installs the subscriber. Without it the daemon is silent.
+    tunnelmuxd::init_tracing();
+
     tauri::Builder::default()
         .manage(state::GuiAppState::default())
         .setup(|app| {
@@ -86,10 +91,24 @@ pub fn run() {
 
             use tauri::Manager;
 
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                if let Some(state) = app.try_state::<state::GuiAppState>() {
-                    state.exit_requested.store(true, Ordering::SeqCst);
+            match event {
+                tauri::RunEvent::ExitRequested { .. } => {
+                    if let Some(state) = app.try_state::<state::GuiAppState>() {
+                        state.exit_requested.store(true, Ordering::SeqCst);
+                    }
                 }
+                tauri::RunEvent::Exit => {
+                    // The daemon lives in this process, so quitting means the
+                    // tunnels it owns stop here. Tear them down explicitly so no
+                    // provider process is left holding the public hostname.
+                    if let Some(state) = app.try_state::<state::GuiAppState>() {
+                        let daemon_runtime = state.daemon_runtime.clone();
+                        tauri::async_runtime::block_on(daemon_manager::shutdown_embedded_daemon(
+                            &daemon_runtime,
+                        ));
+                    }
+                }
+                _ => {}
             }
         });
 }

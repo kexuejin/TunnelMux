@@ -512,19 +512,36 @@ async fn bootstrap_local_daemon_with_state<R: tauri::Runtime>(
     state: &GuiAppState,
 ) -> Result<DaemonStatusSnapshot, String> {
     let settings_dir = resolve_settings_dir(app, state)?;
-    let settings = load_settings_from_dir(&settings_dir).map_err(command_error)?;
+    let mut settings = load_settings_from_dir(&settings_dir).map_err(command_error)?;
 
     match startup_reconnect_mode(&settings) {
         SettingsSaveReconnectMode::EnsureLocalDaemon => {
-            daemon_manager::ensure_local_daemon(app, &state.daemon_runtime, &settings)
-                .await
-                .map_err(command_error)
+            let before = settings.clone();
+            let snapshot =
+                daemon_manager::ensure_local_daemon(&state.daemon_runtime, &mut settings)
+                    .await
+                    .map_err(command_error)?;
+            persist_daemon_alignment(&settings_dir, &before, &settings);
+            Ok(snapshot)
         }
         SettingsSaveReconnectMode::ProbeConnection => {
             probe_connection_from_settings_dir(&settings_dir)
                 .await
                 .map(daemon_status_snapshot_from_connection)
         }
+    }
+}
+
+/// The embedded daemon decides which port it binds and may mint the api token,
+/// so the settings file has to follow it. Without this, the next cold start
+/// would look for a daemon on an address nobody is listening on.
+fn persist_daemon_alignment(settings_dir: &Path, before: &GuiSettings, after: &GuiSettings) {
+    if before.base_url == after.base_url && before.token == after.token {
+        return;
+    }
+
+    if let Err(error) = save_settings_to_dir(settings_dir, after) {
+        eprintln!("failed to persist the daemon connection settings: {error}");
     }
 }
 
@@ -580,9 +597,9 @@ pub async fn save_settings(
 ) -> Result<SaveSettingsResult, String> {
     let settings_dir = resolve_settings_dir(&app, state.inner())?;
     save_settings_to_dir(&settings_dir, &settings).map_err(command_error)?;
-    let settings = load_settings_from_dir(&settings_dir).map_err(command_error)?;
+    let mut settings = load_settings_from_dir(&settings_dir).map_err(command_error)?;
     let daemon_status =
-        reconnect_after_settings_save(&app, state.inner(), &settings_dir, &settings).await;
+        reconnect_after_settings_save(state.inner(), &settings_dir, &mut settings).await;
     Ok(SaveSettingsResult {
         settings,
         daemon_status,
@@ -1001,29 +1018,27 @@ fn daemon_status_snapshot_from_connection(connection: ConnectionStatus) -> Daemo
     }
 }
 
-async fn reconnect_after_settings_save<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+async fn reconnect_after_settings_save(
     state: &GuiAppState,
     settings_dir: &Path,
-    settings: &GuiSettings,
+    settings: &mut GuiSettings,
 ) -> DaemonStatusSnapshot {
     match settings_save_reconnect_mode(settings) {
         SettingsSaveReconnectMode::EnsureLocalDaemon => {
-            match daemon_manager::ensure_local_daemon(app, &state.daemon_runtime, settings).await {
-                Ok(snapshot) => snapshot,
+            let before = settings.clone();
+            match daemon_manager::ensure_local_daemon(&state.daemon_runtime, settings).await {
+                Ok(snapshot) => {
+                    persist_daemon_alignment(settings_dir, &before, settings);
+                    snapshot
+                }
                 Err(error) => DaemonStatusSnapshot {
                     ownership: daemon_manager::DaemonOwnership::Unavailable,
                     bootstrapping: false,
                     connected: false,
-                    message: {
-                        let error = command_error(error);
-                        let friendly = daemon_manager::friendly_daemon_unavailable_message(&error);
-                        Some(if friendly == error {
-                            format!("Could not start local TunnelMux: {error}")
-                        } else {
-                            friendly
-                        })
-                    },
+                    message: Some(format!(
+                        "Could not start local TunnelMux: {}",
+                        command_error(error)
+                    )),
                 },
             }
         }
@@ -1537,6 +1552,15 @@ pub fn save_tunnel_profile_to_settings_dir(
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| next_tunnel_profile_id(&settings.tunnels));
+    // This form has no control for `cloudflared_protocol` (`TunnelProfileInput`
+    // carries no such field), so the existing value is carried through rather
+    // than overwritten: saving a profile must not silently drop a transport an
+    // operator pinned by hand in settings.json.
+    let cloudflared_protocol = settings
+        .tunnels
+        .iter()
+        .find(|item| item.id == tunnel_id)
+        .and_then(|item| item.cloudflared_protocol.clone());
     let next_profile = crate::settings::TunnelProfileSettings {
         id: tunnel_id.clone(),
         name: profile.name,
@@ -1546,6 +1570,7 @@ pub fn save_tunnel_profile_to_settings_dir(
         cloudflared_tunnel_token: profile.cloudflared_tunnel_token,
         ngrok_authtoken: profile.ngrok_authtoken,
         ngrok_domain: profile.ngrok_domain,
+        cloudflared_protocol,
     };
 
     if let Some(index) = settings
@@ -2676,6 +2701,7 @@ mod tests {
             cloudflared_tunnel_token: None,
             ngrok_authtoken: None,
             ngrok_domain: None,
+            cloudflared_protocol: None,
         };
 
         assert_eq!(
@@ -2703,6 +2729,7 @@ mod tests {
             cloudflared_tunnel_token: None,
             ngrok_authtoken: None,
             ngrok_domain: None,
+            cloudflared_protocol: None,
         };
 
         assert_eq!(
@@ -2730,6 +2757,7 @@ mod tests {
             cloudflared_tunnel_token: None,
             ngrok_authtoken: None,
             ngrok_domain: None,
+            cloudflared_protocol: None,
         };
 
         assert_eq!(
@@ -2832,6 +2860,7 @@ mod tests {
             cloudflared_tunnel_token: None,
             ngrok_authtoken: Some("token".to_string()),
             ngrok_domain: Some("demo.ngrok.app".to_string()),
+            cloudflared_protocol: None,
         };
 
         assert_eq!(
@@ -2872,6 +2901,7 @@ mod tests {
             cloudflared_tunnel_token: Some("cf-token".to_string()),
             ngrok_authtoken: None,
             ngrok_domain: None,
+            cloudflared_protocol: None,
         };
 
         assert_eq!(
@@ -2949,6 +2979,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: None,
                     ngrok_domain: None,
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -3081,6 +3112,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: None,
                     ngrok_domain: None,
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -3119,6 +3151,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: Some("ngrok-token".to_string()),
                     ngrok_domain: Some("https://demo.ngrok.app/path".to_string()),
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -3171,6 +3204,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: Some("ngrok-token".to_string()),
                     ngrok_domain: Some("demo.ngrok.app".to_string()),
+                    cloudflared_protocol: None,
                 }],
             },
         )
@@ -3245,6 +3279,7 @@ mod tests {
                     cloudflared_tunnel_token: Some("cf-token".to_string()),
                     ngrok_authtoken: None,
                     ngrok_domain: None,
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -3313,6 +3348,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: None,
                     ngrok_domain: None,
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -3452,6 +3488,7 @@ mod tests {
                     cloudflared_tunnel_token: Some("cf-token".to_string()),
                     ngrok_authtoken: None,
                     ngrok_domain: None,
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -3747,6 +3784,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: None,
                     ngrok_domain: None,
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -3791,6 +3829,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: None,
                     ngrok_domain: None,
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -3835,6 +3874,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: None,
                     ngrok_domain: None,
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },
@@ -4274,6 +4314,7 @@ mod tests {
                     cloudflared_tunnel_token: None,
                     ngrok_authtoken: Some("ngrok-token".to_string()),
                     ngrok_domain: Some("demo.ngrok.app".to_string()),
+                    cloudflared_protocol: None,
                 }],
                 ..GuiSettings::default()
             },

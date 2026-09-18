@@ -7,6 +7,14 @@ pub const DEFAULT_GUI_GATEWAY_TARGET_URL: &str = "http://127.0.0.1:48080";
 pub const DEFAULT_TUNNEL_NAME: &str = "Main Tunnel";
 pub const DEFAULT_TUNNEL_ID: &str = "primary";
 
+/// The `--protocol` sent when a profile does not pin one.
+///
+/// `auto` is cloudflared's own default *and* its documented recommendation: it
+/// probes both transports and picks a reachable one. Anything else here means
+/// this app overrides a value it has no reason to override — which is exactly
+/// what a hardcoded `http2` did.
+pub const DEFAULT_CLOUDFLARED_PROTOCOL: &str = "auto";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct TunnelProfileSettings {
@@ -18,6 +26,14 @@ pub struct TunnelProfileSettings {
     pub cloudflared_tunnel_token: Option<String>,
     pub ngrok_authtoken: Option<String>,
     pub ngrok_domain: Option<String>,
+    /// `--protocol` for cloudflared: `auto`, `quic` or `http2`.
+    ///
+    /// `None` (and any value cloudflared would reject) means `auto`, which is
+    /// cloudflared's own default: it probes both transports and picks one that
+    /// is actually reachable. Pinning a transport is an escape hatch for a
+    /// network that behaves badly on the other one — it is not the norm, and it
+    /// must not be a hidden constant this app applies on the user's behalf.
+    pub cloudflared_protocol: Option<String>,
 }
 
 impl Default for TunnelProfileSettings {
@@ -31,6 +47,7 @@ impl Default for TunnelProfileSettings {
             cloudflared_tunnel_token: None,
             ngrok_authtoken: None,
             ngrok_domain: None,
+            cloudflared_protocol: None,
         }
     }
 }
@@ -153,6 +170,20 @@ fn normalize_token(value: Option<String>) -> Option<String> {
         .filter(|item| !item.is_empty())
 }
 
+/// Keep only the values cloudflared itself documents.
+///
+/// Anything else becomes `None`, which the daemon turns into "no `--protocol`
+/// flag" — i.e. cloudflared's `auto`. Dropping a typo is deliberate: passing it
+/// through would abort the start with `unknown protocol`, so a mistyped setting
+/// would look like a broken tunnel rather than a setting to fix.
+fn normalize_cloudflared_protocol(value: Option<String>) -> Option<String> {
+    let protocol = normalize_token(value)?.to_ascii_lowercase();
+    match protocol.as_str() {
+        "auto" | "quic" | "http2" => Some(protocol),
+        _ => None,
+    }
+}
+
 fn normalize_tunnel_profiles(profiles: Vec<TunnelProfileSettings>) -> Vec<TunnelProfileSettings> {
     profiles
         .into_iter()
@@ -169,6 +200,7 @@ fn normalize_tunnel_profiles(profiles: Vec<TunnelProfileSettings>) -> Vec<Tunnel
                 cloudflared_tunnel_token: normalize_token(profile.cloudflared_tunnel_token),
                 ngrok_authtoken: normalize_token(profile.ngrok_authtoken),
                 ngrok_domain: normalize_token(profile.ngrok_domain),
+                cloudflared_protocol: normalize_cloudflared_protocol(profile.cloudflared_protocol),
             })
         })
         .collect()
@@ -183,6 +215,7 @@ fn migrate_legacy_tunnel_profile(value: &serde_json::Value) -> Option<TunnelProf
         || object.contains_key("cloudflared_tunnel_token")
         || object.contains_key("ngrok_authtoken")
         || object.contains_key("ngrok_domain")
+        || object.contains_key("cloudflared_protocol")
         || object.contains_key("token");
 
     if !has_legacy_tunnel_fields {
@@ -233,6 +266,12 @@ fn migrate_legacy_tunnel_profile(value: &serde_json::Value) -> Option<TunnelProf
                 .and_then(|item| item.as_str())
                 .map(ToString::to_string),
         ),
+        cloudflared_protocol: normalize_cloudflared_protocol(
+            object
+                .get("cloudflared_protocol")
+                .and_then(|item| item.as_str())
+                .map(ToString::to_string),
+        ),
     })
 }
 
@@ -265,6 +304,8 @@ mod tests {
         assert_eq!(profile.cloudflared_tunnel_token, None);
         assert_eq!(profile.ngrok_authtoken, None);
         assert_eq!(profile.ngrok_domain, None);
+        // `None` means "let cloudflared choose" (`auto`), not "http2".
+        assert_eq!(profile.cloudflared_protocol, None);
     }
 
     #[test]
@@ -283,6 +324,7 @@ mod tests {
                 cloudflared_tunnel_token: Some("cf-token".to_string()),
                 ngrok_authtoken: Some("ngrok-token".to_string()),
                 ngrok_domain: Some("demo.ngrok.app".to_string()),
+                cloudflared_protocol: Some("quic".to_string()),
             }],
         };
 
@@ -323,6 +365,27 @@ mod tests {
             loaded.tunnels[0].gateway_target_url,
             DEFAULT_GUI_GATEWAY_TARGET_URL
         );
+    }
+
+    #[test]
+    fn load_settings_normalizes_cloudflared_protocol_and_drops_unsupported_values() {
+        let temp_dir = prepare_temp_dir();
+        let path = settings_path(&temp_dir);
+        std::fs::write(
+            &path,
+            "{\n  \"tunnels\": [\n    {\"id\":\"primary\",\"name\":\"Main\",\"provider\":\"cloudflared\",\"cloudflared_protocol\":\"  HTTP2 \"},\n    {\"id\":\"second\",\"name\":\"Second\",\"provider\":\"cloudflared\",\"cloudflared_protocol\":\"ftp\"}\n  ]\n}\n",
+        )
+        .expect("settings fixture should write");
+
+        let loaded = load_settings_from_dir(&temp_dir).expect("fixture should load");
+
+        // Case/whitespace are normalized; `ftp` is dropped so the daemon omits
+        // `--protocol` and cloudflared applies `auto` instead of failing.
+        assert_eq!(
+            loaded.tunnels[0].cloudflared_protocol.as_deref(),
+            Some("http2")
+        );
+        assert_eq!(loaded.tunnels[1].cloudflared_protocol, None);
     }
 
     fn prepare_temp_dir() -> PathBuf {

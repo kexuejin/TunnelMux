@@ -27,9 +27,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": [
-      "bin/tunnelmuxd"
-    ],
     "category": "DeveloperTool",
     "publisher": "TunnelMux",
     "shortDescription": "Desktop control console for TunnelMux tunnels, routes, and diagnostics.",

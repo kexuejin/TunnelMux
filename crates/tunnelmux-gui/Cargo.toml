@@ -25,6 +25,7 @@ tauri = { version = "2.10.3", features = ["tray-icon", "image-png"] }
 tokio.workspace = true
 tunnelmux-control-client.workspace = true
 tunnelmux-core.workspace = true
+tunnelmuxd.workspace = true
 url.workspace = true
 
 [build-dependencies]

@@ -103,10 +103,6 @@ jobs:
       - name: Build daemon and CLI
         run: cargo build --release --locked --target ${{ matrix.target }} -p tunnelmuxd -p tunnelmux-cli
 
-      - name: Stage GUI daemon sidecar
-        shell: bash
-        run: bash scripts/stage-gui-daemon-binary.sh crates/tunnelmux-gui "${{ matrix.target }}"
-
       - name: Build GUI
         run: cargo build --release --locked --target ${{ matrix.target }} -p tunnelmux-gui
 
@@ -203,13 +199,6 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
-
-      - name: Build bundled daemon binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --release --locked --target ${{ matrix.target }} -p tunnelmuxd
-          bash scripts/stage-gui-daemon-binary.sh crates/tunnelmux-gui "${{ matrix.target }}"
 
       - name: Install Windows signing CLI
         if: runner.os == 'Windows' && steps.signing_overrides.outputs.windows_signing_required == 'true'
