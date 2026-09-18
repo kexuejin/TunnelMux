@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import * as viewModels from './tunnel-picker-helpers.mjs';
 
 import {
+  MOUNTED_SPA_PRESETS,
   applyProviderAvailabilitySnapshot,
   classifyRoutesPanel,
   formatCurrentTunnelMeta,
@@ -18,6 +19,7 @@ import {
   shouldOpenTunnelAdvanced,
   shouldPassiveDrawerProviderRefresh,
   resolveDashboardStatus,
+  resolveMountedSpaPresetFields,
   resolveRouteFormTitle,
   summarizePassiveDrawerProviderRefresh,
   summarizeShareStatusAction,
@@ -1489,11 +1491,13 @@ test('summarizeDaemonRecoveryAction prefers retry for the default local daemon p
   );
 });
 
-test('summarizeDaemonUnavailableMessage translates missing tunnelmuxd startup failures into install guidance', () => {
+test('summarizeDaemonUnavailableMessage passes startup failures through untrimmed text intact', () => {
   assert.equal(
-    summarizeDaemonUnavailableMessage('Could not start local TunnelMux: tunnelmuxd binary could not be found in bundled resources or PATH'),
-    'TunnelMux could not start its local daemon because the tunnelmuxd component is unavailable. Reinstall the TunnelMux app, or install tunnelmuxd separately and make sure it is on your PATH.',
+    summarizeDaemonUnavailableMessage('Could not start local TunnelMux: another process is already using the TunnelMux control port'),
+    'Could not start local TunnelMux: another process is already using the TunnelMux control port',
   );
+
+  assert.equal(summarizeDaemonUnavailableMessage('   '), '');
 });
 
 test('summarizeDiagnosticsLoadError maps daemon request failures to friendly diagnostics copy', () => {
@@ -2255,4 +2259,119 @@ test('classifyRoutesPanel distinguishes empty from request failure', () => {
     classifyRoutesPanel({ routes: [], message: 'Failed to load services: request failed' }, 2),
     { mode: 'stale', notice: 'Could not refresh services. Showing the last known list.' },
   );
+});
+
+test('mounted SPA preset keeps what was typed and only fills the blanks', () => {
+  const fields = resolveMountedSpaPresetFields(MOUNTED_SPA_PRESETS.deepseek, {
+    routeId: '  my-app  ',
+    upstreamUrl: ' http://127.0.0.1:5173 ',
+    pathPrefix: '/webui',
+  });
+
+  assert.equal(fields.routeId, 'my-app');
+  assert.equal(fields.upstreamUrl, 'http://127.0.0.1:5173');
+  assert.equal(fields.pathPrefix, '/webui');
+});
+
+test('mounted SPA preset supplies its own values when the drawer is blank', () => {
+  const fields = resolveMountedSpaPresetFields(MOUNTED_SPA_PRESETS.deepseek, {});
+
+  assert.equal(fields.routeId, 'deepseek');
+  assert.equal(fields.upstreamUrl, 'http://127.0.0.1:3080');
+  assert.equal(fields.pathPrefix, '/deepseek');
+});
+
+test('mounted SPA preset never renames the service being edited', () => {
+  const fields = resolveMountedSpaPresetFields(MOUNTED_SPA_PRESETS.deepseek, {
+    routeId: 'existing',
+    isEditing: true,
+  });
+
+  // undefined means "leave the field as it is" — the name identifies the service.
+  assert.equal(fields.routeId, undefined);
+  // The mounting fields still apply: an edit may legitimately re-mount a service.
+  assert.equal(fields.upstreamUrl, 'http://127.0.0.1:3080');
+  assert.equal(fields.pathPrefix, '/deepseek');
+});
+
+test('mounted SPA preset applies the loopback-safe structural fields', () => {
+  const fields = resolveMountedSpaPresetFields(MOUNTED_SPA_PRESETS.deepseek, {});
+
+  assert.equal(fields.exposureMode, 'path');
+  assert.equal(fields.matchHost, '');
+  assert.equal(fields.forwardHostHeader, false);
+  assert.equal(fields.rewriteResponsePaths, true);
+  assert.equal(fields.healthCheckEnabled, false);
+  assert.equal(fields.healthCheckPath, '');
+  assert.equal(fields.fallbackUpstreamUrl, '');
+});
+
+test('mounted SPA preset only re-gates a service that was explicitly public', () => {
+  const gateFor = (accessMode) => resolveMountedSpaPresetFields(
+    MOUNTED_SPA_PRESETS.deepseek,
+    { accessMode },
+  ).accessMode;
+
+  assert.equal(gateFor('public'), 'inherit');
+  assert.equal(gateFor('inherit'), 'inherit');
+  assert.equal(gateFor('custom'), 'custom');
+});
+
+test('mounted SPA presets are pure data: another app needs no drawer change', () => {
+  const fields = resolveMountedSpaPresetFields(
+    { routeId: 'webui', upstreamUrl: 'http://127.0.0.1:8080', pathPrefix: '/webui' },
+    {},
+  );
+
+  assert.equal(fields.routeId, 'webui');
+  assert.equal(fields.upstreamUrl, 'http://127.0.0.1:8080');
+  assert.equal(fields.pathPrefix, '/webui');
+});
+
+test('a preset field left out is never invented', () => {
+  const fields = resolveMountedSpaPresetFields(
+    { pathPrefix: '/app' },
+    { upstreamUrl: 'http://127.0.0.1:3000' },
+  );
+
+  assert.equal(fields.routeId, '');
+  assert.equal(fields.upstreamUrl, 'http://127.0.0.1:3000');
+  assert.equal(fields.pathPrefix, '/app');
+});
+
+test('the bundled preset table is frozen so the drawer cannot mutate it', () => {
+  assert.equal(Object.isFrozen(MOUNTED_SPA_PRESETS), true);
+  assert.equal(Object.isFrozen(MOUNTED_SPA_PRESETS.deepseek), true);
+});
+
+test('the SPA preset stays app-agnostic in app.js while keeping its documented label', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+
+  // App-specific values and names live only in the helper's preset table.
+  assert.doesNotMatch(appJs, /3080/);
+  assert.doesNotMatch(appJs, /applyDeepSeekPreset|applyDeepseekPreset|apply-deepseek-preset/);
+  assert.match(appJs, /function applyMountedSpaPreset\(preset = MOUNTED_SPA_PRESETS\.deepseek\) \{/);
+  assert.match(appJs, /elements\.applyMountedSpaPreset = document\.getElementById\('route-apply-spa-preset'\);/);
+  // The README and docs site promise this exact button label.
+  assert.match(html, /<button id="route-apply-spa-preset"[^>]*>DeepSeek \/ SPA Preset<\/button>/);
+});
+
+test('every string the SPA preset writes has a translation keyed to its source', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+
+  // Markup strings: the key is the visible text, so it must still match the HTML.
+  for (const text of [
+    'Forward original Host header (advanced; leave off for loopback-protected mounted SPAs)',
+    'DeepSeek / SPA Preset',
+  ]) {
+    assert.ok(appJs.includes(`'${text}': '`), `missing Chinese translation for: ${text}`);
+    assert.ok(html.includes(text), `translation key drifted from the markup: ${text}`);
+  }
+
+  // Generated strings: the key is the literal passed to renderRouteTestStatus.
+  const status = 'Mounted SPA preset applied. Root / stays closed unless another service exposes it.';
+  assert.ok(appJs.includes(`'${status}': '`), `missing Chinese translation for: ${status}`);
+  assert.match(appJs, new RegExp(`renderRouteTestStatus\\('${status.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'\\)`));
 });

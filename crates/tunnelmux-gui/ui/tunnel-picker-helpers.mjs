@@ -298,21 +298,10 @@ export function shouldOpenTunnelAdvanced(tunnel, recoveryTarget = null) {
 }
 
 export function summarizeDaemonUnavailableMessage(message) {
-  const text = String(message ?? '').trim();
-  const lower = text.toLowerCase();
-
-  if (!text) {
-    return '';
-  }
-
-  if (
-    lower.includes('tunnelmuxd binary could not be found')
-    || lower.includes('tunnelmuxd component is unavailable')
-  ) {
-    return 'TunnelMux could not start its local daemon because the tunnelmuxd component is unavailable. Reinstall the TunnelMux app, or install tunnelmuxd separately and make sure it is on your PATH.';
-  }
-
-  return text;
+  // The daemon ships inside the app now, so there is no longer a
+  // "tunnelmuxd binary is missing" failure to translate into install guidance.
+  // Startup failures arrive already phrased for the user, so pass them through.
+  return String(message ?? '').trim();
 }
 
 export function summarizeDiagnosticsLoadError(sectionLabel, error) {
@@ -650,6 +639,48 @@ export function resolveServiceDrawerPrimaryField({ editing_route_id, route_count
   }
 
   return 'route-id';
+}
+
+// Presets for apps that have to be mounted under a subpath rather than at root:
+// a loopback port that rejects non-loopback Host/Origin headers and emits
+// root-relative URLs. Every app-specific value lives in this table and nowhere
+// else, so the apply logic stays app-agnostic — supporting another app is a
+// data-only change, no new branch in the drawer code.
+export const MOUNTED_SPA_PRESETS = Object.freeze({
+  deepseek: Object.freeze({
+    routeId: 'deepseek',
+    upstreamUrl: 'http://127.0.0.1:3080',
+    pathPrefix: '/deepseek',
+  }),
+});
+
+// Fold a mounted-SPA preset into whatever the drawer already holds, returning the
+// complete field patch so the caller never has to know what a preset sets.
+// Typed values always win: the preset only fills blanks. A preset field that is
+// missing or empty means "do not invent a value for this one".
+export function resolveMountedSpaPresetFields(preset, current = {}) {
+  const trimmed = (value) => String(value ?? '').trim();
+  const pick = (presetValue, typedValue) => trimmed(typedValue) || trimmed(presetValue);
+
+  return {
+    // While editing, the name identifies the service being edited, so it is never
+    // rewritten — undefined tells the caller to leave the field alone.
+    routeId: current.isEditing ? undefined : pick(preset?.routeId, current.routeId),
+    upstreamUrl: pick(preset?.upstreamUrl, current.upstreamUrl),
+    pathPrefix: pick(preset?.pathPrefix, current.pathPrefix),
+    // A mounted app is reached through its subpath, so no host match and no root.
+    matchHost: '',
+    exposureMode: 'path',
+    healthCheckEnabled: false,
+    healthCheckPath: '',
+    fallbackUpstreamUrl: '',
+    // Keep the original Host off: loopback-protected apps reject the public one.
+    forwardHostHeader: false,
+    // Root-relative URLs in the app's HTML/JS must carry the subpath prefix.
+    rewriteResponsePaths: true,
+    // Mounting never opts a service out of the machine's access code.
+    accessMode: current.accessMode === 'public' ? 'inherit' : current.accessMode,
+  };
 }
 
 export function summarizeEmptyStateProviderGuidance(

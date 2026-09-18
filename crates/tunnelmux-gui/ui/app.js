@@ -1,4 +1,5 @@
 import {
+  MOUNTED_SPA_PRESETS,
   applyProviderAvailabilitySnapshot,
   classifyRoutesPanel,
   formatCurrentTunnelMeta,
@@ -8,6 +9,7 @@ import {
   resolveCreateTunnelDefaults,
   resolveDashboardPublicUrlActions,
   resolveDashboardStatus,
+  resolveMountedSpaPresetFields,
   resolveRouteFormTitle,
   resolveServiceDrawerPrimaryField,
   shouldPassiveCurrentTunnelProviderRefresh,
@@ -52,6 +54,8 @@ const CLOUDFLARE_TUNNEL_DOCS_URL = 'https://developers.cloudflare.com/cloudflare
 
 const UI_LANGUAGE_STORAGE_KEY = 'tunnelmux.uiLanguage';
 const SUPPORTED_UI_LANGUAGES = new Set(['auto', 'en', 'zh-CN']);
+const UI_THEME_STORAGE_KEY = 'tunnelmux.uiTheme';
+const SUPPORTED_UI_THEMES = new Set(['auto', 'dark', 'light']);
 const i18nTextSources = new WeakMap();
 const i18nAttrNames = ['placeholder', 'aria-label', 'title'];
 let i18nObserver = null;
@@ -79,7 +83,10 @@ const I18N_ZH = {
   'Public URL': '公网 URL',
   'Not running': '未运行',
   'Start a tunnel to get a shareable public URL.': '启动隧道后会得到可分享的公网 URL。',
-  'Provider': 'Provider',
+  'Provider': '服务提供方',
+  'Provider Readiness': '服务提供方就绪状态',
+  'Active Services': '对外服务',
+  'Running': '运行中',
   'Connected': '连接状态',
   'Services': '服务',
   'Start Tunnel': '启动隧道',
@@ -109,9 +116,24 @@ const I18N_ZH = {
   'Health Check Path': '健康检查路径',
   'Enable health check': '启用健康检查',
   'Fallback Local URL': '备用本地 URL',
-  'Forward original Host header (advanced; leave off for loopback-protected mounted SPAs like DeepSeek Harness)': '转发原始 Host header（高级；DeepSeek Harness 这类 loopback 保护的子路径 SPA 请保持关闭）',
+  'Forward original Host header (advanced; leave off for loopback-protected mounted SPAs)': '转发原始 Host header（高级；loopback 保护的子路径 SPA 请保持关闭）',
   'Rewrite HTML/JS so root-relative URLs carry the Public Path prefix': '重写 HTML/JS，让根相对 URL 携带公网路径前缀',
   'Access Gate': '访问门禁',
+  'Access code': '访问码',
+  'Code in effect': '当前生效的访问码',
+  'Access code for this service': '该服务的访问码',
+  'The code visitors must enter to open this service. Services that inherit the default gate always follow the code configured in Settings → Default service access, so you only change it in one place.': '访客打开该服务时需要输入的访问码。继承默认门禁的服务始终跟随「设置 → 默认服务访问」里配置的访问码，所以你只需要在一个地方修改。',
+  'This is the access code visitors type on your public URL. Every service that inherits the default gate follows it, so you only have to change it here. Individual services can still override it or stay public.': '这就是访客在公网 URL 上输入的访问码。所有继承默认门禁的服务都会跟随它，所以你只需要在这里修改。单个服务仍可覆盖它或保持公开。',
+  'Local lock (this machine only)': '本机锁（仅本机）',
+  'A separate short code that only unlocks this app\'s own control plane. The daemon creates it at startup and re-creates it every time the lock is re-armed, so it changes on its own — it is NOT the access code visitors type on the public URL. That one lives under “Default service access” above.': '这是一个独立的短码，只用于解锁本 App 自己的控制面。它由守护进程在启动时生成，并且每次重新上锁都会换一个，会自己变化——它不是访客在公网 URL 上输入的访问码。后者在上面「默认服务访问」里配置。',
+  'Current local code': '当前本机锁码',
+  'Public — no access code required': '公开 — 无需访问码',
+  'No access code — this service is open': '未设置访问码 — 该服务当前是公开的',
+  'No default gate is set, so visitors need no code.': '未设置默认门禁，访客无需访问码。',
+  'This service inherits the default gate. Change it in Settings → Default service access.': '该服务继承默认门禁。请在「设置 → 默认服务访问」里修改。',
+  'No access code — every service is open': '未设置访问码 — 所有服务都是公开的',
+  'Visitors must enter the service code below.': '访客必须输入下面这个服务访问码。',
+  'This service stays public even when a default gate is configured.': '即使配置了默认门禁，该服务也始终公开。',
   'Inherit default gate': '继承默认门禁',
   'Use custom service code': '使用服务自定义访问码',
   'Always public': '始终公开',
@@ -123,6 +145,10 @@ const I18N_ZH = {
   'App Settings': '应用设置',
   'Only open this when you need to change how the desktop app connects to the local daemon.': '只有需要修改桌面应用连接本地守护进程的方式时才打开这里。',
   'Interface': '界面',
+  'Appearance': '外观',
+  'Dark': '深色',
+  'Light': '浅色',
+  'Choose the language and appearance of the desktop UI. Auto follows your system.': '选择桌面界面的语言与外观；自动模式跟随系统。',
   'Choose the language used by the desktop UI. Auto follows your system language.': '选择桌面界面使用的语言；自动模式跟随系统语言。',
   'Connection': '连接',
   'Base URL': 'Base URL',
@@ -145,7 +171,6 @@ const I18N_ZH = {
   'Status': '状态',
   'Current code': '当前访问码',
   'Enter code': '输入访问码',
-  'Access code': '访问码',
   'Unlock': '解锁',
   'Lock now': '立即锁定',
   'Refresh': '刷新',
@@ -190,7 +215,7 @@ const I18N_ZH = {
   'Add a service before sharing this URL. It replaces the default welcome page.': '分享该 URL 前请先添加服务；它会替换默认欢迎页。',
   'Root / is exposed by this service.': '根路径 / 由该服务暴露。',
   'Root / stays closed unless another service exposes it.': '根路径 / 保持关闭，除非另一个服务显式暴露它。',
-  'Default gate is enabled. Services inherit it unless they override or opt out.': '默认门禁已启用；服务会继承它，除非覆盖或选择公开。',
+  'Default gate is on. Services that inherit it ask for the code below.': '默认门禁已启用；继承它的服务会要求输入下面这个访问码。',
   'No default service gate is set. Services are public unless they use a custom code.': '未设置默认服务门禁；服务默认为公开，除非使用自定义访问码。',
   'Default service gate saved.': '默认服务门禁已保存。',
   'Default service gate cleared.': '默认服务门禁已清除。',
@@ -210,7 +235,7 @@ const I18N_ZH = {
   'Testing route and upstream…': '正在测试路由和上游…',
   'Route test completed.': '路由测试完成。',
   'Route test failed: ': '路由测试失败：',
-  'DeepSeek / mounted SPA preset applied. Root / stays closed unless another service exposes it.': 'DeepSeek / 子路径 SPA 预设已应用。根路径 / 仍保持关闭，除非另一个服务显式暴露它。',
+  'Mounted SPA preset applied. Root / stays closed unless another service exposes it.': '子路径 SPA 预设已应用。根路径 / 仍保持关闭，除非另一个服务显式暴露它。',
   'Restart TunnelMux?': '重启 TunnelMux？',
   'TunnelMux will restart now so the newly installed binaries can take effect.': 'TunnelMux 将立即重启，以便新安装的二进制文件生效。',
   'Checking GitHub Releases…': '正在检查 GitHub Releases…',
@@ -226,6 +251,41 @@ const I18N_ZH = {
   ' · no SHA256 in metadata.': ' · 元数据未提供 SHA256。',
   'not provided': '未提供',
   'Locked': '已锁定',
+  // --- sidebar / view navigation ---
+  'Overview': '概览',
+  'Tunnels': '隧道',
+  'Diagnostics': '诊断',
+  'Tunnel status, public URL and exposed services.': '隧道状态、公网地址与对外服务。',
+  'Create, switch and edit tunnel profiles.': '创建、切换与编辑隧道配置。',
+  'Map local addresses to public paths and control who can reach them.': '把本机地址映射到公网路径，并决定谁能访问。',
+  'Runtime state, upstream health and recent logs.': '运行时状态、上游健康与最近日志。',
+  'Access codes, the local lock, and how this app reaches the local daemon.': '访问码、本机控制锁，以及本应用连接本地守护进程的方式。',
+  'Starting…': '正在启动…',
+  'Advanced: connection and updates': '高级：连接与更新',
+  // --- service drawer copy that had no translation yet ---
+  'The code visitors must enter to open this service.': '访客打开这个服务时需要输入的访问码。',
+  'Services inherit the default gate unless you choose a custom code or make this service public.': '除非你选择独立访问码或设为公开，服务会继承默认门禁。',
+  // --- diagnostics ---
+  'Runtime Summary': '运行时摘要',
+  'Tunnel State': '隧道状态',
+  'Pending Restart': '待重启',
+  'Enabled Services': '已启用服务',
+  'Config Reload': '配置重载',
+  'Reload Interval': '重载间隔',
+  'Last Reload': '最近一次重载',
+  'Provider Log File': 'Provider 日志文件',
+  'Last Reload Error': '最近一次重载错误',
+  'Upstream Health': '上游健康',
+  'Tail Size': '读取行数',
+  'No logs loaded yet.': '暂无日志。',
+  'No upstream health data yet.': '暂无上游健康数据。',
+  'Refresh Details': '刷新详情',
+  'Last Checked': '最近检查',
+  'Last Error': '最近错误',
+  'healthy': '正常',
+  'unhealthy': '异常',
+  'Gated': '需访问码',
+  'Add First Service': '添加第一个服务',
 };
 
 const elements = {};
@@ -242,6 +302,7 @@ const state = {
   updateCheck: null,
   updateInstalled: false,
   uiLanguagePreference: 'auto',
+  uiThemePreference: 'auto',
   editingOriginalId: null,
   settingsDrawerOpen: false,
   serviceDrawerOpen: false,
@@ -286,6 +347,8 @@ const state = {
 window.addEventListener('DOMContentLoaded', async () => {
   bindElements();
   bindEvents();
+  bindNavigation();
+  initializeTheme();
   initializeLanguage();
   resetRouteForm();
 
@@ -405,8 +468,11 @@ function bindElements() {
   elements.routeAccessCodeField = document.getElementById('route-access-code-field');
   elements.routeAccessHint = document.getElementById('route-access-hint');
   elements.routeRequireAccessCode = document.getElementById('route-require-access-code');
+  elements.routeGateBadge = document.getElementById('route-gate-badge');
+  elements.routeEffectiveCode = document.getElementById('route-effective-code');
+  elements.settingsDefaultCodeEffective = document.getElementById('settings-default-code-effective');
   elements.routeTestStatus = document.getElementById('route-test-status');
-  elements.applyDeepseekPreset = document.getElementById('apply-deepseek-preset');
+  elements.applyMountedSpaPreset = document.getElementById('route-apply-spa-preset');
   elements.generateRouteCode = document.getElementById('generate-route-code');
   elements.copyRouteCode = document.getElementById('copy-route-code');
   elements.testRoute = document.getElementById('test-route');
@@ -449,6 +515,7 @@ function bindElements() {
   elements.settingsDrawer = document.getElementById('settings-drawer');
   elements.closeSettings = document.getElementById('close-settings');
   elements.settingsUiLanguage = document.getElementById('settings-ui-language');
+  elements.settingsUiTheme = document.getElementById('settings-ui-theme');
   elements.baseUrl = document.getElementById('settings-base-url');
   elements.token = document.getElementById('settings-token');
   elements.updateStatus = document.getElementById('update-status');
@@ -494,10 +561,99 @@ function bindElements() {
   elements.recentLogs = document.getElementById('recent-logs');
 }
 
+// ---------------------------------------------------------------------------
+// View navigation: the sidebar switches between top-level views. Each view is a
+// plain section tagged with [data-view-panel]; app.js keeps addressing elements
+// by id, so views stay independent from the existing show/hide logic.
+// ---------------------------------------------------------------------------
+const VIEW_META = {
+  overview: ['Overview', 'Tunnel status, public URL and exposed services.'],
+  tunnels: ['Tunnels', 'Create, switch and edit tunnel profiles.'],
+  services: ['Services', 'Map local addresses to public paths and control who can reach them.'],
+  diagnostics: ['Diagnostics', 'Runtime state, upstream health and recent logs.'],
+  settings: ['Settings', 'Access codes, the local lock, and how this app reaches the local daemon.'],
+};
+
+let activeView = 'overview';
+
+function showView(name) {
+  if (!VIEW_META[name]) {
+    return;
+  }
+  activeView = name;
+
+  document.querySelectorAll('[data-view-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.viewPanel !== name;
+  });
+  document.querySelectorAll('.nav-item').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.view === name);
+  });
+
+  const title = document.getElementById('view-title');
+  const desc = document.getElementById('view-desc');
+  if (title) {
+    title.textContent = translateText(VIEW_META[name][0]);
+  }
+  if (desc) {
+    desc.textContent = translateText(VIEW_META[name][1]);
+  }
+}
+
+function bindNavigation() {
+  document.querySelectorAll('.nav-item').forEach((button) => {
+    button.addEventListener('click', () => {
+      const name = button.dataset.view;
+      showView(name);
+      if (name === 'settings') {
+        void refreshAuthStatus();
+      }
+      if (name === 'diagnostics') {
+        void refreshDiagnosticsWorkspace({ manual: false });
+      }
+    });
+  });
+  showView('overview');
+  observeSidebarStatus();
+}
+
+// Mirror the dashboard state pill onto the sidebar, so the current tunnel state
+// stays visible no matter which view is open.
+function observeSidebarStatus() {
+  const badge = document.getElementById('dashboard-state-badge');
+  const dot = document.getElementById('statusline-dot');
+  const label = document.getElementById('sidebar-status');
+  if (!badge) {
+    return;
+  }
+
+  const sync = () => {
+    if (label) {
+      label.textContent = badge.textContent.trim();
+    }
+    if (dot) {
+      dot.className = 'statusline-dot';
+      if (badge.classList.contains('running') || badge.classList.contains('success')) {
+        dot.classList.add('ok');
+      } else if (badge.classList.contains('error')) {
+        dot.classList.add('error');
+      } else if (badge.classList.contains('warning')) {
+        dot.classList.add('warn');
+      }
+    }
+  };
+
+  if (typeof MutationObserver === 'function') {
+    const observer = new MutationObserver(sync);
+    observer.observe(badge, { childList: true, characterData: true, subtree: true, attributes: true });
+  }
+  sync();
+}
+
 function bindEvents() {
   elements.openSettings?.addEventListener('click', () => { openSettingsDrawer(); void refreshAuthStatus(); });
   elements.uiLanguage?.addEventListener('change', () => setLanguagePreference(elements.uiLanguage.value));
   elements.settingsUiLanguage?.addEventListener('change', () => setLanguagePreference(elements.settingsUiLanguage.value));
+  elements.settingsUiTheme?.addEventListener('change', () => setThemePreference(elements.settingsUiTheme.value));
   elements.statusAction?.addEventListener('click', () => withBusy(handleStatusAction));
   elements.closeSettings?.addEventListener('click', closeSettingsDrawer);
   elements.settingsBackdrop?.addEventListener('click', closeSettingsDrawer);
@@ -582,9 +738,19 @@ function bindEvents() {
   });
   elements.cancelRouteEdit?.addEventListener('click', closeServiceDrawer);
   elements.serviceBackdrop?.addEventListener('click', closeServiceDrawer);
-  elements.applyDeepseekPreset?.addEventListener('click', applyDeepSeekPreset);
-  elements.generateRouteCode?.addEventListener('click', () => setGeneratedAccessCode(elements.routeRequireAccessCode, 'Service access code generated.'));
-  elements.copyRouteCode?.addEventListener('click', () => copyTextValue(elements.routeRequireAccessCode?.value?.trim(), 'Service access code copied.', 'Failed to copy service code'));
+  elements.applyMountedSpaPreset?.addEventListener('click', () => applyMountedSpaPreset());
+  elements.generateRouteCode?.addEventListener('click', () => {
+    // Generating a code only matters if the service actually uses its own code,
+    // so switch the gate to "custom" as part of the action.
+    setRouteAccessMode('custom');
+    setGeneratedAccessCode(elements.routeRequireAccessCode, 'Service access code generated.');
+    syncRouteAccessControls();
+  });
+  elements.copyRouteCode?.addEventListener('click', () => {
+    // Copy the code that is really in effect, not just whatever is in the box —
+    // when the service inherits the default gate the box is intentionally empty.
+    void copyTextValue(currentRouteGateCode(), 'Service access code copied.', 'Failed to copy service code');
+  });
   elements.testRoute?.addEventListener('click', () => withBusy(testCurrentRoute));
   elements.saveRoute?.addEventListener('click', () => withBusy(saveRoute));
   elements.serviceExposureMode?.addEventListener('change', applyExposureMode);
@@ -613,16 +779,14 @@ function bindEvents() {
   });
 }
 
+// Settings is its own sidebar view now, so "opening" it means switching views.
 function openSettingsDrawer() {
   state.settingsDrawerOpen = true;
-  elements.settingsBackdrop.hidden = false;
-  elements.settingsDrawer.hidden = false;
+  showView('settings');
 }
 
 function closeSettingsDrawer() {
   state.settingsDrawerOpen = false;
-  elements.settingsBackdrop.hidden = true;
-  elements.settingsDrawer.hidden = true;
 }
 async function refreshAuthStatus() {
   if (!elements.authStatusLine || !elements.authCodeLine) return;
@@ -713,6 +877,7 @@ function openServiceEditorForRoute(routeId = null) {
 
 function highlightServicesPanel() {
   const firstCard = elements.routesList?.querySelector('.service-card');
+  showView('services');
   elements.servicesShell?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   elements.servicesShell?.classList.add('needs-attention');
   firstCard?.classList.add('needs-attention');
@@ -850,6 +1015,72 @@ function populateSettingsFields(settings) {
 }
 
 
+function normalizeThemePreference(value) {
+  return SUPPORTED_UI_THEMES.has(value) ? value : 'auto';
+}
+
+function loadThemePreference() {
+  try {
+    return normalizeThemePreference(localStorage.getItem(UI_THEME_STORAGE_KEY) || 'auto');
+  } catch {
+    return 'auto';
+  }
+}
+
+function saveThemePreference(value) {
+  try {
+    localStorage.setItem(UI_THEME_STORAGE_KEY, value);
+  } catch {
+    // Ignore storage failures in restricted preview contexts.
+  }
+}
+
+function systemPrefersLight() {
+  return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: light)').matches;
+}
+
+function resolvedTheme() {
+  if (state.uiThemePreference === 'dark') return 'dark';
+  if (state.uiThemePreference === 'light') return 'light';
+  return systemPrefersLight() ? 'light' : 'dark';
+}
+
+function applyTheme() {
+  const theme = resolvedTheme();
+  // 只写 light；深色是 :root 默认值，去掉属性即可回落。
+  if (theme === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+}
+
+function initializeTheme() {
+  state.uiThemePreference = loadThemePreference();
+  syncThemeSelectors();
+  applyTheme();
+  // auto 模式下跟随系统外观变化
+  if (typeof window.matchMedia === 'function') {
+    const query = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = () => {
+      if (state.uiThemePreference === 'auto') applyTheme();
+    };
+    if (typeof query.addEventListener === 'function') query.addEventListener('change', onChange);
+    else if (typeof query.addListener === 'function') query.addListener(onChange);
+  }
+}
+
+function setThemePreference(value) {
+  state.uiThemePreference = normalizeThemePreference(value);
+  saveThemePreference(state.uiThemePreference);
+  syncThemeSelectors();
+  applyTheme();
+}
+
+function syncThemeSelectors() {
+  if (elements.settingsUiTheme) elements.settingsUiTheme.value = state.uiThemePreference;
+}
+
 function normalizeLanguagePreference(value) {
   return SUPPORTED_UI_LANGUAGES.has(value) ? value : 'auto';
 }
@@ -938,16 +1169,23 @@ function translateTextNodes(root, { preferExisting = false } = {}) {
   });
   let node = walker.nextNode();
   while (node) {
-    const current = node.nodeValue.trim();
+    const raw = node.nodeValue;
+    const current = raw.trim();
     const existing = i18nTextSources.get(node);
     const existingRendered = existing ? translateText(existing) : null;
     const source = existing && (preferExisting || current === existing || current === existingRendered) ? existing : current;
     const translated = translateText(source);
-    if (translated !== current || existing) {
-      const leading = node.nodeValue.match(/^\s*/)?.[0] ?? '';
-      const trailing = node.nodeValue.match(/\s*$/)?.[0] ?? '';
-      i18nTextSources.set(node, source);
-      node.nodeValue = leading + translated + trailing;
+    const leading = raw.match(/^\s*/)?.[0] ?? '';
+    const trailing = raw.match(/\s*$/)?.[0] ?? '';
+    const next = leading + translated + trailing;
+    i18nTextSources.set(node, source);
+    // Only write when the value actually changes. Re-writing an identical
+    // nodeValue still fires a characterData mutation, which this module's
+    // own MutationObserver handles by re-applying i18n — an identical
+    // rewrite therefore loops forever and spins the WebContent process
+    // (white / unresponsive window).
+    if (next !== raw) {
+      node.nodeValue = next;
     }
     node = walker.nextNode();
   }
@@ -962,8 +1200,14 @@ function translateAttributes(root, { preferExisting = false } = {}) {
       const existingRendered = existing ? translateText(existing) : null;
       const source = existing && (preferExisting || current === existing || current === existingRendered) ? existing : current;
       const translated = translateText(source);
-      if (translated !== current || existing) {
+      // Idempotent writes only: setting an attribute to the value it already
+      // has still queues an attributes mutation record (with attributeFilter
+      // covering these names), which re-triggers the MutationObserver and,
+      // combined with the always-true `existing` branch, spun the loop forever.
+      if (existing !== source) {
         element.setAttribute(sourceAttr, source);
+      }
+      if (translated !== current) {
         element.setAttribute(attr, translated);
       }
     });
@@ -1186,8 +1430,9 @@ function renderTunnelWorkspace(workspace) {
 
   elements.tunnelEmptyState.hidden = hasCurrentTunnel;
   elements.tunnelContextBar.hidden = !hasCurrentTunnel;
-  elements.homeGrid.hidden = !hasCurrentTunnel;
-  elements.servicesShell.hidden = !hasCurrentTunnel;
+  // Each view owns its own visibility now. The overview keeps showing the public
+  // URL panel (with a "not running" state) and services stay listable/editable
+  // before a tunnel exists, instead of collapsing to a blank view.
 
   if (!hasCurrentTunnel) {
     renderEmptyStateProviderGuidance();
@@ -1711,13 +1956,13 @@ function renderDaemonStatus(snapshot) {
     return;
   }
 
-  if (connected && ownership === 'managed') {
-    renderStatus(message || 'Connected to a GUI-managed local TunnelMux daemon.', false, null);
+  if (connected && ownership === 'embedded') {
+    renderStatus(message || 'TunnelMux is running inside this app.', false, null);
     return;
   }
 
   if (connected && ownership === 'external') {
-    renderStatus(message || 'Using an existing local TunnelMux daemon.', false, null);
+    renderStatus(message || 'Using a TunnelMux daemon that is already running on this machine.', false, null);
     return;
   }
 
@@ -1743,14 +1988,7 @@ async function refreshRoutes() {
       invoke('list_routes'),
       invoke('list_route_access').catch(() => ({ routes: [] })),
     ]);
-    state.defaultRouteGate = {
-      gated: Boolean(gates?.default_gated),
-      cookie_ttl_ms: gates?.default_cookie_ttl_ms ?? null,
-    };
-    state.routeGates = {};
-    for (const gate of Array.isArray(gates?.routes) ? gates.routes : []) {
-      state.routeGates[gate.route_id] = gate;
-    }
+    applyRouteGateSnapshot(gates);
     renderDefaultRouteAccessStatus();
     renderRoutes(snapshot);
   } catch (error) {
@@ -1902,6 +2140,8 @@ async function saveRoute() {
     const nextEnabledServices = Array.isArray(snapshot?.routes)
       ? snapshot.routes.filter((route) => route.enabled).length
       : previousEnabledServices;
+    // Saving may have changed the gate, so re-read it before repainting badges.
+    await refreshRouteGates();
     renderRoutes(snapshot);
     await refreshTunnelWorkspace();
     const startAction = previousEnabledServices === 0 && nextEnabledServices > 0
@@ -2434,8 +2674,16 @@ function populateRouteForm(route) {
   elements.routeEnabled.checked = Boolean(route.enabled);
   elements.routeForwardHostHeader.checked = Boolean(route.forward_host_header ?? false);
   elements.routeRewriteResponsePaths.checked = Boolean(route.rewrite_response_paths ?? false);
-  setRouteAccessMode(routeGateFor(route.id)?.mode ?? 'inherit');
+  const gate = routeGateFor(route.id);
+  setRouteAccessMode(gate?.mode ?? 'inherit');
+  // Prefill the real code: leaving this box mysteriously empty is what made the
+  // gate look unconfigured. Blank is no longer ambiguous — it now means "no code".
+  if (elements.routeRequireAccessCode) {
+    elements.routeRequireAccessCode.value = gate?.require_access_code ?? '';
+  }
   elements.serviceExposureMode.value = route.match_host ? 'subdomain' : 'path';
+  // The access gate is no longer inside Advanced, so stop forcing it open for
+  // gate overrides.
   elements.serviceAdvanced.open = Boolean(
     route.match_host
       || route.fallback_upstream_url
@@ -2443,7 +2691,6 @@ function populateRouteForm(route) {
       || route.health_check_enabled === false
       || route.forward_host_header === true
       || route.rewrite_response_paths === true
-      || routeGateFor(route.id)?.explicit === true
   );
   applyExposureMode();
   syncRouteAccessControls();
@@ -2491,40 +2738,96 @@ function syncRouteAccessControls() {
   if (elements.routeAccessCodeField) {
     elements.routeAccessCodeField.hidden = mode !== 'custom';
   }
-  if (elements.routeAccessHint) {
-    const inherited = state.defaultRouteGate?.gated ? 'default gate is enabled' : 'no default gate is set';
-    elements.routeAccessHint.textContent = mode === 'custom'
-      ? 'Visitors must enter this service-specific code. Leave blank while editing to keep the existing custom code.'
-      : mode === 'public'
-        ? 'This service stays public even when a default gate is configured.'
-        : 'This service inherits the default gate (' + inherited + ').';
+
+  const gate = routeGateFor(state.editingOriginalId);
+  const defaultCode = state.defaultRouteGate?.require_access_code ?? null;
+  const typedCode = elements.routeRequireAccessCode?.value?.trim() || null;
+  const inheritedCode = gate?.require_access_code ?? defaultCode;
+  const effectiveCode = mode === 'custom'
+    ? (typedCode ?? inheritedCode)
+    : mode === 'inherit'
+      ? inheritedCode
+      : null;
+
+  if (elements.routeGateBadge) {
+    const badge = elements.routeGateBadge;
+    badge.textContent = mode === 'public' ? 'Public' : effectiveCode ? 'Gated' : 'Open';
+    badge.className = 'service-badge ' + (mode === 'public' ? 'public' : effectiveCode ? 'gated' : 'open');
   }
+
+  if (elements.routeEffectiveCode) {
+    const line = elements.routeEffectiveCode;
+    if (effectiveCode) {
+      line.textContent = effectiveCode;
+      line.classList.remove('muted');
+    } else {
+      line.textContent = translateText(
+        mode === 'public'
+          ? 'Public — no access code required'
+          : 'No access code — this service is open',
+      );
+      line.classList.add('muted');
+    }
+  }
+
+  if (elements.routeAccessHint) {
+    elements.routeAccessHint.textContent = mode === 'custom'
+      ? translateText('Visitors must enter the service code below.')
+      : mode === 'public'
+        ? translateText('This service stays public even when a default gate is configured.')
+        : inheritedCode
+          ? translateText('This service inherits the default gate. Change it in Settings → Default service access.')
+          : translateText('No default gate is set, so visitors need no code.');
+  }
+}
+
+/** The access code that would actually apply with the form's current state. */
+function currentRouteGateCode() {
+  const mode = elements.routeAccessMode?.value ?? 'inherit';
+  if (mode === 'public') return null;
+  const typed = elements.routeRequireAccessCode?.value?.trim() || null;
+  if (mode === 'custom') {
+    return typed ?? routeGateFor(state.editingOriginalId)?.require_access_code ?? null;
+  }
+  const gate = routeGateFor(state.editingOriginalId);
+  return gate?.require_access_code ?? state.defaultRouteGate?.require_access_code ?? null;
 }
 
 function applyExposureMode() {
   elements.serviceHostField.hidden = elements.serviceExposureMode.value !== 'subdomain';
 }
 
-function applyDeepSeekPreset() {
-  if (!state.editingOriginalId && !elements.routeId.value.trim()) {
-    elements.routeId.value = 'deepseek';
+// App-specific values come from MOUNTED_SPA_PRESETS; this function only knows how
+// to fill the service drawer, so supporting another app needs no change here.
+function applyMountedSpaPreset(preset = MOUNTED_SPA_PRESETS.deepseek) {
+  const fields = resolveMountedSpaPresetFields(preset, {
+    routeId: elements.routeId.value,
+    upstreamUrl: elements.routeUpstreamUrl.value,
+    pathPrefix: elements.routeMatchPathPrefix.value,
+    accessMode: elements.routeAccessMode.value,
+    isEditing: Boolean(state.editingOriginalId),
+  });
+
+  // undefined means "leave the name alone" — see resolveMountedSpaPresetFields.
+  if (fields.routeId !== undefined) {
+    elements.routeId.value = fields.routeId;
   }
-  elements.routeUpstreamUrl.value = elements.routeUpstreamUrl.value.trim() || 'http://127.0.0.1:3080';
-  elements.routeMatchPathPrefix.value = elements.routeMatchPathPrefix.value.trim() || '/deepseek';
-  elements.routeMatchHost.value = '';
-  elements.serviceExposureMode.value = 'path';
-  elements.routeHealthCheckEnabled.checked = false;
-  elements.routeHealthCheckPath.value = '';
-  elements.routeFallbackUpstreamUrl.value = '';
-  elements.routeForwardHostHeader.checked = false;
-  elements.routeRewriteResponsePaths.checked = true;
-  if (elements.routeAccessMode.value === 'public') {
-    setRouteAccessMode('inherit');
+  elements.routeUpstreamUrl.value = fields.upstreamUrl;
+  elements.routeMatchPathPrefix.value = fields.pathPrefix;
+  elements.routeMatchHost.value = fields.matchHost;
+  elements.serviceExposureMode.value = fields.exposureMode;
+  elements.routeHealthCheckEnabled.checked = fields.healthCheckEnabled;
+  elements.routeHealthCheckPath.value = fields.healthCheckPath;
+  elements.routeFallbackUpstreamUrl.value = fields.fallbackUpstreamUrl;
+  elements.routeForwardHostHeader.checked = fields.forwardHostHeader;
+  elements.routeRewriteResponsePaths.checked = fields.rewriteResponsePaths;
+  if (fields.accessMode !== elements.routeAccessMode.value) {
+    setRouteAccessMode(fields.accessMode);
   }
   elements.serviceAdvanced.open = true;
   applyExposureMode();
   syncRouteAccessControls();
-  renderRouteTestStatus('DeepSeek / mounted SPA preset applied. Root / stays closed unless another service exposes it.');
+  renderRouteTestStatus('Mounted SPA preset applied. Root / stays closed unless another service exposes it.');
 }
 
 function generateAccessCode(length = 8) {
@@ -2672,17 +2975,7 @@ async function saveDefaultRouteAccess() {
   try {
     const code = elements.defaultRouteAccessCode?.value.trim() || null;
     const gates = await invoke('set_default_route_access', { code });
-    state.defaultRouteGate = {
-      gated: Boolean(gates?.default_gated),
-      cookie_ttl_ms: gates?.default_cookie_ttl_ms ?? null,
-    };
-    state.routeGates = {};
-    for (const gate of Array.isArray(gates?.routes) ? gates.routes : []) {
-      state.routeGates[gate.route_id] = gate;
-    }
-    if (elements.defaultRouteAccessCode) {
-      elements.defaultRouteAccessCode.value = '';
-    }
+    applyRouteGateSnapshot(gates);
     renderDefaultRouteAccessStatus();
     renderRoutes({ routes: state.routeCache });
     renderStatus(state.defaultRouteGate.gated ? 'Default service gate saved.' : 'Default service gate cleared.');
@@ -2691,10 +2984,51 @@ async function saveDefaultRouteAccess() {
   }
 }
 
+/** Keep the cached gate snapshot (defaults + per-route) in one place. */
+function applyRouteGateSnapshot(gates) {
+  state.defaultRouteGate = {
+    gated: Boolean(gates?.default_gated),
+    require_access_code: gates?.default_require_access_code ?? null,
+    cookie_ttl_ms: gates?.default_cookie_ttl_ms ?? null,
+  };
+  state.routeGates = {};
+  for (const gate of Array.isArray(gates?.routes) ? gates.routes : []) {
+    state.routeGates[gate.route_id] = gate;
+  }
+}
+
+/** Refresh just the gate snapshot, so badges keep showing the real code. */
+async function refreshRouteGates() {
+  try {
+    applyRouteGateSnapshot(await invoke('list_route_access'));
+  } catch {
+    // Keep the previous snapshot; the dashboard refresh reports failures.
+  }
+}
+
 function renderDefaultRouteAccessStatus() {
+  const code = state.defaultRouteGate?.require_access_code ?? null;
+
+  if (elements.settingsDefaultCodeEffective) {
+    const line = elements.settingsDefaultCodeEffective;
+    if (code) {
+      line.textContent = code;
+      line.classList.remove('muted');
+    } else {
+      line.textContent = translateText('No access code — every service is open');
+      line.classList.add('muted');
+    }
+  }
+
+  // Show the stored code in the input instead of leaving it blank: an empty box
+  // used to be ambiguous between "no code" and "a code you cannot see".
+  if (elements.defaultRouteAccessCode && document.activeElement !== elements.defaultRouteAccessCode) {
+    elements.defaultRouteAccessCode.value = code ?? '';
+  }
+
   if (!elements.defaultRouteAccessStatus) return;
-  elements.defaultRouteAccessStatus.textContent = state.defaultRouteGate?.gated
-    ? translateText('Default gate is enabled. Services inherit it unless they override or opt out.')
+  elements.defaultRouteAccessStatus.textContent = code
+    ? translateText('Default gate is on. Services that inherit it ask for the code below.') + ' (' + code + ')'
     : translateText('No default service gate is set. Services are public unless they use a custom code.');
 }
 
@@ -2704,6 +3038,8 @@ function routeGateFor(routeId) {
     gated: Boolean(state.defaultRouteGate?.gated),
     mode: state.defaultRouteGate?.gated ? 'inherited' : 'open',
     explicit: false,
+    require_access_code: state.defaultRouteGate?.require_access_code ?? null,
+    cookie_ttl_ms: state.defaultRouteGate?.cookie_ttl_ms ?? null,
   };
 }
 
@@ -2715,11 +3051,17 @@ function renderRouteGateBadge(gate) {
   if (!gate?.gated) {
     return '<span class="service-badge open" title="No route or default access gate applies.">Open</span>';
   }
+  // Put the code in the badge: seeing it straight in the service list is the
+  // whole point, since nothing else used to reveal it. The label stays in its
+  // own element so it is still translated; the code must not be.
+  const code = gate?.require_access_code ?? '';
   const label = mode === 'inherited' ? 'Gated · default' : 'Gated · custom';
   const title = mode === 'inherited'
     ? 'Protected by the default service access code.'
     : 'Protected by a service-specific access code.';
-  return '<span class="service-badge gated" title="' + escapeAttribute(title) + '">' + escapeHtml(label) + '</span>';
+  const codeHtml = code ? '<code class="badge-code">' + escapeHtml(code) + '</code>' : '';
+  return '<span class="service-badge gated" title="' + escapeAttribute(title) + '"><span>'
+    + escapeHtml(label) + '</span>' + codeHtml + '</span>';
 }
 
 async function copyPublicUrl() {
@@ -3048,27 +3390,18 @@ async function handleStatusAction() {
   }
 }
 
+// Diagnostics is its own sidebar view now, so "opening" it means switching views.
 async function openErrorDetailsDialog() {
-  if (elements.errorDetailsBackdrop) {
-    elements.errorDetailsBackdrop.hidden = false;
-  }
-  if (elements.errorDetailsDialog) {
-    elements.errorDetailsDialog.hidden = false;
-  }
   if (elements.diagnosticsOverview) {
     elements.diagnosticsOverview.textContent = state.statusMessage || 'Error details';
     elements.diagnosticsOverview.classList.add('error');
   }
+  showView('diagnostics');
   await refreshDiagnosticsWorkspace({ manual: false });
 }
 
 function closeErrorDetailsDialog() {
-  if (elements.errorDetailsBackdrop) {
-    elements.errorDetailsBackdrop.hidden = true;
-  }
-  if (elements.errorDetailsDialog) {
-    elements.errorDetailsDialog.hidden = true;
-  }
+  // The diagnostics view is dismissed by switching views in the sidebar.
 }
 
 async function requestConfirmation({ title, message, confirmLabel }) {

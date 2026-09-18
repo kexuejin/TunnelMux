@@ -8,502 +8,576 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <header class="app-header">
+    <div class="app">
+      <!-- ==================== sidebar ==================== -->
+      <aside class="sidebar">
         <div class="brand">
           <img class="brand-icon" src="./assets/brand-icon.png" alt="TunnelMux icon" />
-          <div>
-            <p class="eyebrow">TunnelMux</p>
-            <h1>Expose local services instantly</h1>
-            <div class="status-row">
-              <p id="app-status" class="subtle">Loading your current tunnel and services…</p>
-              <button id="status-action" type="button" class="secondary inline-action" hidden>Retry Local Daemon</button>
-              <button id="status-error-details" type="button" class="secondary inline-action" hidden>View Error Details</button>
-            </div>
+          <div class="brand-copy">
+            <p class="brand-name">TunnelMux</p>
+            <p class="brand-sub" id="sidebar-status">Starting…</p>
           </div>
         </div>
-        <div class="header-actions">
-          <label class="language-switcher" aria-label="Language">
-            <span>Language</span>
-            <select id="ui-language">
-              <option value="auto">Auto</option>
-              <option value="en">English</option>
-              <option value="zh-CN">简体中文</option>
-            </select>
-          </label>
-          <button id="open-settings" type="button" class="secondary settings-button" aria-label="Open Settings">
-            Settings
+
+        <nav class="nav" id="main-nav">
+          <button class="nav-item is-active" type="button" data-view="overview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+            <span>Overview</span>
           </button>
-        </div>
-      </header>
+          <button class="nav-item" type="button" data-view="tunnels">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20V9.5a8 8 0 0116 0V20"/><path d="M9 20v-8a3 3 0 016 0v8"/></svg>
+            <span>Tunnels</span>
+          </button>
+          <button class="nav-item" type="button" data-view="services">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+            <span>Services</span>
+          </button>
+          <button class="nav-item" type="button" data-view="diagnostics">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>
+            <span>Diagnostics</span>
+          </button>
+        </nav>
 
-      <section class="layout-stack">
-        <section id="tunnel-empty-state" class="panel empty-state tunnel-empty-state" hidden>
-          <p class="eyebrow card-eyebrow">Get Started</p>
-          <h2>No tunnel yet</h2>
-          <p class="panel-subtle">
-            Create Tunnel → Install provider if needed → Start Tunnel → Add Service → Share URL
-          </p>
-          <p id="empty-provider-copy" class="panel-subtle" hidden></p>
-          <div class="actions">
-            <button id="create-tunnel-empty" type="button">Create Tunnel</button>
-            <button id="empty-provider-action" type="button" class="secondary" hidden>Copy Install Command</button>
-            <button id="empty-provider-follow-up-action" type="button" class="secondary" hidden>Recheck Provider</button>
-          </div>
-        </section>
-
-        <section id="tunnel-context-bar" class="panel tunnel-context-bar" hidden>
-          <div class="panel-header">
-            <div>
-              <p class="eyebrow card-eyebrow">Current Tunnel</p>
-              <div class="title-row">
-                <h2 id="current-tunnel-name">Main Tunnel</h2>
-                <span id="current-tunnel-badge" class="status-pill idle">Idle</span>
-              </div>
-              <p id="current-tunnel-meta" class="panel-subtle">cloudflared • quick tunnel</p>
-              <p id="current-tunnel-url" class="panel-subtle" hidden>Public URL not active.</p>
-            </div>
-            <div class="actions">
-              <div id="tunnel-picker-shell" class="tunnel-picker-shell" hidden>
-                <button id="tunnel-picker-trigger" type="button" class="secondary picker-trigger" aria-expanded="false">
-                  Switch Tunnel
-                </button>
-                <div id="tunnel-picker-popover" class="tunnel-picker-popover" hidden>
-                  <div id="tunnel-picker-list" class="tunnel-picker-list"></div>
-                </div>
-              </div>
-              <button id="new-tunnel" type="button" class="secondary">New Tunnel</button>
-              <button id="edit-tunnel" type="button" class="secondary">Edit Tunnel</button>
-            </div>
-          </div>
-        </section>
-
-        <section id="home-grid" class="home-grid">
-          <article class="panel hero-card">
-            <div class="panel-header">
-              <div>
-                <div id="dashboard-state-badge" class="status-pill idle">Tunnel inactive</div>
-                <p class="eyebrow card-eyebrow">Public URL</p>
-                <h2 id="dashboard-public-url" class="hero-url">Not running</h2>
-                <p id="home-public-url-meta" class="panel-subtle">
-                  Start a tunnel to get a shareable public URL.
-                </p>
-              </div>
-            </div>
-            <dl class="hero-meta">
-              <div><dt>Provider</dt><dd id="dashboard-provider">—</dd></div>
-              <div><dt>Connected</dt><dd id="dashboard-connected">Unknown</dd></div>
-              <div><dt>Services</dt><dd id="services-enabled-count">0 enabled</dd></div>
-            </dl>
-            <div class="actions hero-actions">
-              <button id="start-tunnel" type="button">Start Tunnel</button>
-              <button id="hero-add-service" type="button" hidden>Add Service</button>
-              <button id="home-provider-action" type="button" hidden>Copy Install Command</button>
-              <button id="home-provider-follow-up-action" type="button" class="secondary" hidden>Recheck Provider</button>
-              <button id="copy-public-url" type="button" class="secondary">Copy URL</button>
-              <button id="open-public-url" type="button" class="secondary">Open</button>
-              <button id="manage-provider" type="button" class="secondary" hidden>Open Cloudflare</button>
-              <button id="stop-tunnel" type="button" class="secondary">Stop Tunnel</button>
-            </div>
-            <p id="home-provider-hint" class="message muted">No tunnel data yet.</p>
-          </article>
-
-          <article id="provider-status-card" class="panel provider-status-card" hidden>
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow card-eyebrow">Provider Status</p>
-                <h2 id="provider-status-title">Provider Ready</h2>
-                <p id="provider-status-message" class="panel-subtle">Tunnel provider is connected and ready.</p>
-              </div>
-              <div id="provider-status-badge" class="status-pill idle">Info</div>
-            </div>
-            <div class="actions compact-actions">
-              <button id="provider-status-action" type="button" class="secondary" hidden>Review</button>
-              <button id="provider-status-follow-up-action" type="button" class="secondary" hidden>Recheck Provider</button>
-            </div>
-          </article>
-        </section>
-
-        <section id="services-shell" class="panel services-shell">
-          <div class="panel-header">
-            <div>
-              <p class="eyebrow card-eyebrow">Active Services</p>
-              <h2>Services</h2>
-              <p id="routes-message" class="panel-subtle">Services exposed through your current tunnel.</p>
-            </div>
-            <button id="new-route" type="button" class="secondary action-link">+ Add Service</button>
-          </div>
-
-          <div id="services-notice" class="panel-subtle services-notice" hidden>Could not load services.</div>
-
-          <div id="routes-empty" class="empty-state">
-            <p id="routes-empty-title" class="empty-title">No services yet.</p>
-            <p id="routes-empty-copy" class="panel-subtle">
-              Add a local service before sharing this URL.
-            </p>
-            <div class="actions">
-              <button id="new-route-empty" type="button">Add Service</button>
-            </div>
-          </div>
-
-          <div id="routes-list" class="service-list"></div>
-          <p id="dashboard-message" class="message muted">No service data yet.</p>
-        </section>
-
-      </section>
-
-      <div id="service-backdrop" class="drawer-backdrop" hidden></div>
-      <aside id="service-drawer" class="drawer service-drawer" hidden aria-label="Service editor">
-        <div class="drawer-header">
-          <div>
-            <p class="eyebrow">Service</p>
-            <h2 id="route-form-title">Add Service</h2>
-            <p class="panel-subtle">Keep the basics simple. Expand Advanced only when needed.</p>
-          </div>
-          <div class="row compact-actions header-actions">
-            <button id="apply-deepseek-preset" type="button" class="secondary">DeepSeek / SPA Preset</button>
-            <button id="cancel-route-edit" type="button" class="secondary">Close</button>
-          </div>
-        </div>
-
-        <div class="drawer-body">
-          <label class="field">
-            <span>Service Name</span>
-            <input id="route-id" type="text" placeholder="web-app" />
-          </label>
-          <label class="field">
-            <span>Local Service URL</span>
-            <input id="route-upstream-url" type="text" placeholder="http://127.0.0.1:3000" />
-          </label>
-          <label class="field">
-            <span>Public Path</span>
-            <input id="route-match-path-prefix" type="text" placeholder="/" value="/" />
-          </label>
-          <label class="checkbox-row">
-            <input id="route-enabled" type="checkbox" checked />
-            <span>Service enabled</span>
-          </label>
-
-          <details id="service-advanced" class="advanced-section">
-            <summary>Advanced</summary>
-
-            <label class="field">
-              <span>Exposure</span>
-              <select id="service-exposure-mode">
-                <option value="path">Path</option>
-                <option value="subdomain">Subdomain</option>
-              </select>
-            </label>
-
-            <label id="service-host-field" class="field" hidden>
-              <span>Public Host</span>
-              <input id="route-match-host" type="text" placeholder="app.example.com" />
-            </label>
-
-            <label class="field">
-              <span>Health Check Path</span>
-              <input id="route-health-check-path" type="text" placeholder="/healthz" />
-            </label>
-            <label class="checkbox-row">
-              <input id="route-health-check-enabled" type="checkbox" checked />
-              <span>Enable health check</span>
-            </label>
-
-            <label class="field">
-              <span>Fallback Local URL</span>
-              <input id="route-fallback-upstream-url" type="text" placeholder="http://127.0.0.1:3001" />
-            </label>
-
-            <label class="checkbox-row">
-              <input id="route-forward-host-header" type="checkbox" />
-              <span>Forward original Host header (advanced; leave off for loopback-protected mounted SPAs like DeepSeek Harness)</span>
-            </label>
-            <label class="checkbox-row">
-              <input id="route-rewrite-response-paths" type="checkbox" />
-              <span>Rewrite HTML/JS so root-relative URLs carry the Public Path prefix</span>
-            </label>
-
-            <label class="field">
-              <span>Access Gate</span>
-              <select id="route-access-mode">
-                <option value="inherit">Inherit default gate</option>
-                <option value="custom">Use custom service code</option>
-                <option value="public">Always public</option>
-              </select>
-            </label>
-            <label id="route-access-code-field" class="field" hidden>
-              <span>Service Access Code</span>
-              <input id="route-require-access-code" type="text" placeholder="Leave blank to keep existing custom code" autocomplete="off" />
-            </label>
-            <div class="row compact-actions field-actions">
-              <button id="generate-route-code" type="button" class="secondary">Generate Code</button>
-              <button id="copy-route-code" type="button" class="secondary">Copy Code</button>
-            </div>
-            <p id="route-access-hint" class="panel-subtle">Services inherit the default gate unless you choose a custom code or make this service public.</p>
-            <p id="route-test-status" class="panel-subtle route-test-status" hidden></p>
-          </details>
-        </div>
-
-        <div class="drawer-footer">
-          <button id="test-route" type="button" class="secondary">Test Route</button>
-          <button id="save-route" type="button">Save Service</button>
+        <div class="sidebar-foot">
+          <button class="nav-item" type="button" data-view="settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-1.8-.3 1.6 1.6 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.6 1.6 0 00-1-1.5 1.6 1.6 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.6 1.6 0 00.3-1.8 1.6 1.6 0 00-1.5-1H3a2 2 0 110-4h.1a1.6 1.6 0 001.5-1 1.6 1.6 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.6 1.6 0 001.8.3H9a1.6 1.6 0 001-1.5V3a2 2 0 114 0v.1a1.6 1.6 0 001 1.5 1.6 1.6 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.6 1.6 0 00-.3 1.8V9a1.6 1.6 0 001.5 1H21a2 2 0 110 4h-.1a1.6 1.6 0 00-1.5 1z"/></svg>
+            <span>Settings</span>
+          </button>
         </div>
       </aside>
 
-      <div id="settings-backdrop" class="drawer-backdrop" hidden></div>
-      <aside id="settings-drawer" class="drawer settings-drawer" hidden aria-label="Settings">
-        <div class="drawer-header">
-          <div>
-            <p class="eyebrow">App Settings</p>
-            <h2>App Settings</h2>
-            <p class="panel-subtle">Only open this when you need to change how the desktop app connects to the local daemon.</p>
+      <!-- ==================== main ==================== -->
+      <div class="main">
+        <header class="topbar">
+          <div class="topbar-copy">
+            <h1 id="view-title">Overview</h1>
+            <p id="view-desc">Tunnel status, public URL and exposed services.</p>
           </div>
-          <button id="close-settings" type="button" class="secondary">Close</button>
-        </div>
-
-        <div class="drawer-body">
-          <section class="drawer-section drawer-section-highlight">
-            <h3>Interface</h3>
-            <p class="panel-subtle">Choose the language used by the desktop UI. Auto follows your system language.</p>
-            <label class="field">
-              <span>Language</span>
-              <select id="settings-ui-language">
+          <div class="topbar-actions">
+            <label class="lang-switch" aria-label="Language">
+              <select id="ui-language">
                 <option value="auto">Auto</option>
                 <option value="en">English</option>
                 <option value="zh-CN">简体中文</option>
               </select>
             </label>
-          </section>
-
-          <section class="drawer-section">
-            <h3>Connection</h3>
-            <label class="field">
-              <span>Base URL</span>
-              <input id="settings-base-url" type="text" placeholder="http://127.0.0.1:4765" />
-            </label>
-            <label class="field">
-              <span>Bearer Token</span>
-              <input id="settings-token" type="password" placeholder="Optional" />
-            </label>
-          </section>
-
-          <section class="drawer-section">
-            <h3>App Updates</h3>
-            <p class="panel-subtle">Check GitHub Releases, download the matching build for this Mac, verify SHA256, and install the bundled TunnelMux binaries.</p>
-            <p id="update-status" class="panel-subtle">No update check yet.</p>
-            <div class="row">
-              <button id="check-update" type="button" class="secondary">Check for Updates</button>
-              <button id="install-update" type="button" class="secondary" disabled>Download & Install</button>
-              <button id="restart-app" type="button" class="secondary" disabled>Restart Now</button>
-            </div>
-          </section>
-
-          <section class="drawer-section">
-            <h3>Default service access</h3>
-            <p class="panel-subtle">Optional default code for all routed services. Individual services can inherit, override, or stay public.</p>
-            <label class="field">
-              <span>Default service code</span>
-              <input id="settings-default-route-access-code" type="text" placeholder="Leave blank to clear default" autocomplete="off" />
-            </label>
-            <div class="row compact-actions field-actions">
-              <button id="generate-default-route-code" type="button" class="secondary">Generate Code</button>
-              <button id="copy-default-route-code" type="button" class="secondary">Copy Code</button>
-              <button id="save-default-route-access" type="button" class="secondary">Save Default Gate</button>
-            </div>
-            <p id="settings-default-route-access-status" class="panel-subtle">Default gate status not loaded yet.</p>
-          </section>
-
-          <section class="drawer-section">
-            <h3>Control-plane access</h3>
-            <p class="panel-subtle">Locked until you enter the current access code. Only works from this machine; external access always needs the bearer token.</p>
-            <div class="field">
-              <span>Status</span>
-              <span id="auth-status-line">—</span>
-            </div>
-            <div class="field">
-              <span>Current code</span>
-              <span id="auth-code-line">—</span>
-            </div>
-            <label class="field">
-              <span>Enter code</span>
-              <input id="auth-code-input" type="text" placeholder="Access code" autocomplete="off" />
-            </label>
-            <div class="row">
-              <button id="auth-unlock" type="button">Unlock</button>
-              <button id="auth-relock" type="button" class="secondary">Lock now</button>
-              <button id="auth-refresh" type="button" class="secondary">Refresh</button>
-            </div>
-          </section>
-        </div>
-
-        <div class="drawer-footer">
-          <button id="save-settings" type="button">Save Settings</button>
-        </div>
-      </aside>
-
-      <div id="tunnel-backdrop" class="drawer-backdrop" hidden></div>
-      <aside id="tunnel-drawer" class="drawer settings-drawer" hidden aria-label="Tunnel">
-        <div class="drawer-header">
-          <div>
-            <p class="eyebrow">Tunnel</p>
-            <h2 id="tunnel-form-title">Create Tunnel</h2>
-            <p class="panel-subtle">Start simple. You can change provider settings before launch or edit them later.</p>
+            <button id="open-settings" type="button" class="btn btn-outline" aria-label="Open Settings">Settings</button>
           </div>
-          <button id="close-tunnel" type="button" class="secondary">Close</button>
+        </header>
+
+        <div class="statusline">
+          <span class="statusline-dot" id="statusline-dot"></span>
+          <p id="app-status" class="subtle">Loading your current tunnel and services…</p>
+          <button id="status-action" type="button" class="btn btn-ghost btn-sm" hidden>Retry Local Daemon</button>
+          <button id="status-error-details" type="button" class="btn btn-ghost btn-sm" hidden>View Error Details</button>
         </div>
 
-        <div class="drawer-body">
-          <section class="drawer-section">
-            <label class="field">
-              <span>Tunnel Name</span>
-              <input id="tunnel-name" type="text" placeholder="Main Tunnel" />
-            </label>
-            <label class="field">
-              <span>Provider</span>
-              <select id="tunnel-provider">
-                <option value="cloudflared">cloudflared</option>
-                <option value="ngrok">ngrok</option>
-              </select>
-            </label>
+        <div class="content">
+
+          <!-- ---------- overview ---------- -->
+          <section class="view" data-view-panel="overview">
+            <section id="home-grid" class="home-grid">
+              <article class="panel hero-card">
+                <div class="panel-header">
+                  <div>
+                    <div id="dashboard-state-badge" class="status-pill idle">Tunnel inactive</div>
+                    <p class="eyebrow">Public URL</p>
+                    <p id="home-public-url-meta" class="panel-subtle">Start a tunnel to get a shareable public URL.</p>
+                  </div>
+                </div>
+
+                <div class="url-row">
+                  <h2 id="dashboard-public-url" class="hero-url">Not running</h2>
+                  <div class="url-actions">
+                    <button id="copy-public-url" type="button" class="btn btn-outline btn-sm">Copy URL</button>
+                    <button id="open-public-url" type="button" class="btn btn-ghost btn-sm">Open</button>
+                  </div>
+                </div>
+
+                <dl class="hero-meta">
+                  <div><dt>Provider</dt><dd id="dashboard-provider">—</dd></div>
+                  <div><dt>Connected</dt><dd id="dashboard-connected">Unknown</dd></div>
+                  <div><dt>Services</dt><dd id="services-enabled-count">0 enabled</dd></div>
+                </dl>
+
+                <div class="actions hero-actions">
+                  <button id="start-tunnel" type="button" class="btn btn-primary">Start Tunnel</button>
+                  <button id="stop-tunnel" type="button" class="btn btn-outline">Stop Tunnel</button>
+                  <button id="hero-add-service" type="button" class="btn btn-outline" hidden>Add Service</button>
+                  <button id="manage-provider" type="button" class="btn btn-outline" hidden>Open Cloudflare</button>
+                  <button id="home-provider-action" type="button" class="btn btn-outline" hidden>Copy Install Command</button>
+                  <button id="home-provider-follow-up-action" type="button" class="btn btn-outline" hidden>Recheck Provider</button>
+                </div>
+                <p id="home-provider-hint" class="message muted">No tunnel data yet.</p>
+              </article>
+
+              <article id="provider-status-card" class="panel provider-status-card" hidden>
+                <div class="panel-header">
+                  <div>
+                    <p class="eyebrow">Provider Status</p>
+                    <h2 id="provider-status-title">Provider Ready</h2>
+                    <p id="provider-status-message" class="panel-subtle">Tunnel provider is connected and ready.</p>
+                  </div>
+                  <div id="provider-status-badge" class="status-pill idle">Info</div>
+                </div>
+                <div class="actions compact-actions">
+                  <button id="provider-status-action" type="button" class="btn btn-outline btn-sm" hidden>Review</button>
+                  <button id="provider-status-follow-up-action" type="button" class="btn btn-outline btn-sm" hidden>Recheck Provider</button>
+                </div>
+              </article>
+            </section>
           </section>
 
-          <section class="drawer-section">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Provider Readiness</p>
-                <h3 id="tunnel-provider-readiness-title">Checking provider</h3>
-                <p id="tunnel-provider-readiness-message" class="panel-subtle">
-                  TunnelMux will verify whether this provider is installed before you start the tunnel.
-                </p>
-              </div>
-              <div id="tunnel-provider-readiness-badge" class="status-pill idle">Info</div>
-            </div>
-            <div class="actions compact-actions">
-              <button id="tunnel-provider-install-action" type="button" class="secondary" hidden>Copy Install Command</button>
-              <button id="tunnel-provider-recheck-action" type="button" class="secondary" hidden>Recheck Provider</button>
-            </div>
-          </section>
-
-          <details id="tunnel-advanced" class="advanced-section">
-            <summary>Advanced tunnel settings</summary>
-            <label class="field">
-              <span>Gateway Target URL</span>
-              <input id="tunnel-gateway-target-url" type="text" placeholder="http://127.0.0.1:48080" />
-            </label>
-            <label class="checkbox-row">
-              <input id="tunnel-auto-restart" type="checkbox" checked />
-              <span>Auto restart tunnel</span>
-            </label>
-
-            <div id="tunnel-cloudflared-fields">
-              <label class="field">
-                <span>Cloudflare Tunnel Token</span>
-                <input id="tunnel-cloudflared-tunnel-token" type="password" placeholder="Optional" />
-              </label>
-              <label class="field">
-                <span>Public Hostname</span>
-                <input id="tunnel-cloudflared-public-hostname" type="text" placeholder="openai.example.com" />
-              </label>
+          <!-- ---------- tunnels ---------- -->
+          <section class="view" data-view-panel="tunnels" hidden>
+            <section id="tunnel-empty-state" class="panel empty-state tunnel-empty-state" hidden>
+              <p class="eyebrow">Get Started</p>
+              <h2>No tunnel yet</h2>
               <p class="panel-subtle">
-                Leave the token empty for a quick tunnel. For a named tunnel, add the token and hostname you configured in Cloudflare.
+                Create Tunnel → Install provider if needed → Start Tunnel → Add Service → Share URL
               </p>
-            </div>
-
-            <div id="tunnel-ngrok-fields" hidden>
-              <label class="field">
-                <span>ngrok Authtoken</span>
-                <input id="tunnel-ngrok-authtoken" type="password" placeholder="Optional" />
-              </label>
-              <label class="field">
-                <span>ngrok Reserved Domain</span>
-                <input id="tunnel-ngrok-domain" type="text" placeholder="Optional" />
-              </label>
-            </div>
-          </details>
-        </div>
-
-        <div class="drawer-footer tunnel-drawer-footer">
-          <button id="delete-tunnel" type="button" class="secondary danger-chip" hidden>Delete Tunnel</button>
-          <button id="save-tunnel" type="button" class="secondary">Save</button>
-          <button id="save-and-start-tunnel" type="button">Save and Start</button>
-        </div>
-      </aside>
-
-      <div id="confirm-backdrop" class="drawer-backdrop" hidden></div>
-      <aside id="confirm-dialog" class="confirm-dialog" hidden aria-label="Confirm action" aria-modal="true" role="dialog">
-        <div class="drawer-header">
-          <div>
-            <p class="eyebrow">Confirm</p>
-            <h2 id="confirm-title">Confirm Action</h2>
-            <p id="confirm-message" class="panel-subtle">Please confirm this action.</p>
-          </div>
-        </div>
-        <div class="drawer-footer confirm-dialog-footer">
-          <button id="confirm-cancel" type="button" class="secondary">Cancel</button>
-          <button id="confirm-confirm" type="button" class="danger-solid">Delete</button>
-        </div>
-      </aside>
-
-      <div id="error-details-backdrop" class="drawer-backdrop" hidden></div>
-      <aside id="error-details-dialog" class="drawer error-details-dialog" hidden aria-label="Error details" aria-modal="true" role="dialog">
-        <div class="drawer-header">
-          <div>
-            <p class="eyebrow">Diagnostics</p>
-            <h2>Error Details</h2>
-            <p id="diagnostics-overview" class="panel-subtle">Not loaded yet.</p>
-          </div>
-          <button id="close-error-details" type="button" class="secondary">Close</button>
-        </div>
-        <div class="drawer-body">
-          <div class="actions compact-actions">
-            <button id="refresh-diagnostics" type="button">Refresh Details</button>
-            <button id="refresh-logs" type="button" class="secondary">Refresh Logs</button>
-            <button id="clear-logs" type="button" class="secondary">Clear Logs</button>
-          </div>
-
-          <section class="drawer-section diagnostics-panel">
-            <h3>Runtime Summary</h3>
-            <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
-            <dl class="stats-list diagnostics-stats">
-              <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
-              <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
-              <div><dt>Services</dt><dd id="diagnostics-route-count">—</dd></div>
-              <div><dt>Enabled Services</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
-              <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
-              <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
-              <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
-              <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
-              <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
-            </dl>
-          </section>
-
-          <section class="drawer-section diagnostics-panel">
-            <h3>Upstream Health</h3>
-            <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
-            <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
-            <div id="upstreams-list" class="diagnostics-list"></div>
-          </section>
-
-          <section class="drawer-section diagnostics-panel">
-            <div class="panel-header">
-              <div>
-                <h3>Recent Logs</h3>
-                <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
+              <p id="empty-provider-copy" class="panel-subtle" hidden></p>
+              <div class="actions">
+                <button id="create-tunnel-empty" type="button" class="btn btn-primary">Create Tunnel</button>
+                <button id="empty-provider-action" type="button" class="btn btn-outline" hidden>Copy Install Command</button>
+                <button id="empty-provider-follow-up-action" type="button" class="btn btn-outline" hidden>Recheck Provider</button>
               </div>
-              <label class="inline-field">
-                <span>Tail Size</span>
-                <select id="log-lines-select">
-                  <option value="50">50</option>
-                  <option value="100" selected>100</option>
-                  <option value="200">200</option>
+            </section>
+
+            <section id="tunnel-context-bar" class="panel tunnel-context-bar" hidden>
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Current Tunnel</p>
+                  <div class="title-row">
+                    <h2 id="current-tunnel-name">Main Tunnel</h2>
+                    <span id="current-tunnel-badge" class="status-pill idle">Idle</span>
+                  </div>
+                  <p id="current-tunnel-meta" class="panel-subtle">cloudflared • quick tunnel</p>
+                  <p id="current-tunnel-url" class="panel-subtle" hidden>Public URL not active.</p>
+                </div>
+                <div class="actions">
+                  <div id="tunnel-picker-shell" class="tunnel-picker-shell" hidden>
+                    <button id="tunnel-picker-trigger" type="button" class="btn btn-outline picker-trigger" aria-expanded="false">
+                      Switch Tunnel
+                    </button>
+                    <div id="tunnel-picker-popover" class="tunnel-picker-popover" hidden>
+                      <div id="tunnel-picker-list" class="tunnel-picker-list"></div>
+                    </div>
+                  </div>
+                  <button id="new-tunnel" type="button" class="btn btn-outline">New Tunnel</button>
+                  <button id="edit-tunnel" type="button" class="btn btn-primary">Edit Tunnel</button>
+                </div>
+              </div>
+            </section>
+          </section>
+
+          <!-- ---------- services ---------- -->
+          <section class="view" data-view-panel="services" hidden>
+            <section id="services-shell" class="panel services-shell">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Active Services</p>
+                  <p id="routes-message" class="panel-subtle">Services exposed through your current tunnel.</p>
+                </div>
+                <button id="new-route" type="button" class="btn btn-primary">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+                  Add Service
+                </button>
+              </div>
+
+              <div id="services-notice" class="panel-subtle services-notice" hidden>Could not load services.</div>
+
+              <div id="routes-empty" class="empty-state">
+                <p id="routes-empty-title" class="empty-title">No services yet.</p>
+                <p id="routes-empty-copy" class="panel-subtle">
+                  Add a local service before sharing this URL.
+                </p>
+                <div class="actions">
+                  <button id="new-route-empty" type="button" class="btn btn-primary">Add Service</button>
+                </div>
+              </div>
+
+              <div id="routes-list" class="service-list"></div>
+              <p id="dashboard-message" class="message muted">No service data yet.</p>
+            </section>
+          </section>
+
+          <!-- ---------- diagnostics ---------- -->
+          <section class="view" data-view-panel="diagnostics" hidden>
+            <div class="view-intro">
+              <p id="diagnostics-overview" class="panel-subtle">Not loaded yet.</p>
+              <div class="actions compact-actions">
+                <button id="refresh-diagnostics" type="button" class="btn btn-primary btn-sm">Refresh Details</button>
+                <button id="refresh-logs" type="button" class="btn btn-outline btn-sm">Refresh Logs</button>
+                <button id="clear-logs" type="button" class="btn btn-outline btn-sm">Clear Logs</button>
+              </div>
+            </div>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Runtime Summary</h2>
+                  <p id="diagnostics-summary-meta" class="panel-subtle">Not loaded yet.</p>
+                </div>
+              </div>
+              <dl class="stats-list">
+                <div><dt>Tunnel State</dt><dd id="diagnostics-tunnel-state">—</dd></div>
+                <div><dt>Pending Restart</dt><dd id="diagnostics-pending-restart">—</dd></div>
+                <div><dt>Services</dt><dd id="diagnostics-route-count">—</dd></div>
+                <div><dt>Enabled Services</dt><dd id="diagnostics-enabled-route-count">—</dd></div>
+                <div><dt>Config Reload</dt><dd id="diagnostics-config-reload">—</dd></div>
+                <div><dt>Reload Interval</dt><dd id="diagnostics-config-reload-interval">—</dd></div>
+                <div><dt>Last Reload</dt><dd id="diagnostics-last-reload-at">—</dd></div>
+                <div><dt>Provider Log File</dt><dd id="diagnostics-provider-log-file">—</dd></div>
+                <div><dt>Last Reload Error</dt><dd id="diagnostics-last-reload-error">—</dd></div>
+              </dl>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Upstream Health</h2>
+                  <p id="upstreams-meta" class="panel-subtle">Not loaded yet.</p>
+                </div>
+              </div>
+              <div id="upstreams-empty" class="empty-state">No upstream health data yet.</div>
+              <div id="upstreams-list" class="diagnostics-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Recent Logs</h2>
+                  <p id="logs-meta" class="panel-subtle">Not loaded yet.</p>
+                </div>
+                <label class="inline-field">
+                  <span>Tail Size</span>
+                  <select id="log-lines-select">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                  </select>
+                </label>
+              </div>
+              <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
+            </section>
+          </section>
+
+          <!-- ---------- settings ---------- -->
+          <section class="view" data-view-panel="settings" hidden>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Interface</h2>
+                  <p class="panel-subtle">Choose the language and appearance of the desktop UI. Auto follows your system.</p>
+                </div>
+              </div>
+              <label class="field field-inline">
+                <span>Language</span>
+                <select id="settings-ui-language">
+                  <option value="auto">Auto</option>
+                  <option value="en">English</option>
+                  <option value="zh-CN">简体中文</option>
                 </select>
               </label>
-            </div>
-            <pre id="recent-logs" class="log-tail">No logs loaded yet.</pre>
+              <label class="field field-inline">
+                <span>Appearance</span>
+                <select id="settings-ui-theme">
+                  <option value="auto">Auto</option>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </label>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Default service access</h2>
+                  <p class="panel-subtle">This is the access code visitors type on your public URL. Every service that inherits the default gate follows it, so you only have to change it here. Individual services can still override it or stay public.</p>
+                </div>
+              </div>
+              <div class="field">
+                <span>Code in effect</span>
+                <span id="settings-default-code-effective" class="gate-code">—</span>
+              </div>
+              <label class="field">
+                <span>Default service code</span>
+                <input id="settings-default-route-access-code" type="text" placeholder="Leave blank to clear default" autocomplete="off" spellcheck="false" />
+              </label>
+              <div class="row compact-actions field-actions">
+                <button id="generate-default-route-code" type="button" class="btn btn-outline btn-sm">Generate Code</button>
+                <button id="copy-default-route-code" type="button" class="btn btn-outline btn-sm">Copy Code</button>
+                <button id="save-default-route-access" type="button" class="btn btn-primary btn-sm">Save Default Gate</button>
+              </div>
+              <p id="settings-default-route-access-status" class="panel-subtle">Default gate status not loaded yet.</p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Local lock (this machine only)</h2>
+                  <p class="panel-subtle">A separate short code that only unlocks this app's own control plane. The daemon creates it at startup and re-creates it every time the lock is re-armed, so it changes on its own — it is NOT the access code visitors type on the public URL. That one lives under “Default service access” above.</p>
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <span>Status</span>
+                  <span id="auth-status-line">—</span>
+                </div>
+                <div class="field">
+                  <span>Current local code</span>
+                  <span id="auth-code-line">—</span>
+                </div>
+              </div>
+              <label class="field">
+                <span>Enter code</span>
+                <input id="auth-code-input" type="text" placeholder="Access code" autocomplete="off" />
+              </label>
+              <div class="row">
+                <button id="auth-unlock" type="button" class="btn btn-primary">Unlock</button>
+                <button id="auth-relock" type="button" class="btn btn-outline">Lock now</button>
+                <button id="auth-refresh" type="button" class="btn btn-outline">Refresh</button>
+              </div>
+            </section>
+
+            <details id="settings-advanced" class="advanced-section">
+              <summary>Advanced: connection and updates</summary>
+              <label class="field">
+                <span>Base URL</span>
+                <input id="settings-base-url" type="text" placeholder="http://127.0.0.1:4765" />
+              </label>
+              <label class="field">
+                <span>Bearer Token</span>
+                <input id="settings-token" type="password" placeholder="Optional" />
+              </label>
+              <p class="panel-subtle">Check GitHub Releases, download the matching build for this Mac, verify SHA256, and install the bundled TunnelMux binaries.</p>
+              <p id="update-status" class="panel-subtle">No update check yet.</p>
+              <div class="row">
+                <button id="check-update" type="button" class="btn btn-outline btn-sm">Check for Updates</button>
+                <button id="install-update" type="button" class="btn btn-outline btn-sm" disabled>Download &amp; Install</button>
+                <button id="restart-app" type="button" class="btn btn-outline btn-sm" disabled>Restart Now</button>
+              </div>
+              <div class="row compact-actions">
+                <button id="save-settings" type="button" class="btn btn-primary btn-sm">Save Settings</button>
+              </div>
+            </details>
           </section>
         </div>
-      </aside>
-    </main>
+      </div>
+    </div>
+
+    <!-- ==================== service drawer ==================== -->
+    <div id="service-backdrop" class="drawer-backdrop" hidden></div>
+    <aside id="service-drawer" class="drawer service-drawer" hidden aria-label="Service editor">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Service</p>
+          <h2 id="route-form-title">Add Service</h2>
+        </div>
+        <button id="cancel-route-edit" type="button" class="btn btn-ghost btn-sm">Close</button>
+      </div>
+
+      <div class="drawer-body">
+        <label class="field">
+          <span>Service Name</span>
+          <input id="route-id" type="text" placeholder="web-app" />
+        </label>
+        <label class="field">
+          <span>Local Service URL</span>
+          <input id="route-upstream-url" type="text" placeholder="http://127.0.0.1:3000" />
+        </label>
+        <label class="field">
+          <span>Public Path</span>
+          <input id="route-match-path-prefix" type="text" placeholder="/" value="/" />
+        </label>
+        <label class="checkbox-row">
+          <input id="route-enabled" type="checkbox" checked />
+          <span>Service enabled</span>
+        </label>
+
+        <section class="gate-panel">
+          <div class="gate-panel-head">
+            <h3>Access code</h3>
+            <span id="route-gate-badge" class="service-badge gated">—</span>
+          </div>
+          <p class="panel-subtle">The code visitors must enter to open this service.</p>
+
+          <div class="field">
+            <span>Code in effect</span>
+            <span id="route-effective-code" class="gate-code">—</span>
+          </div>
+
+          <label class="field">
+            <span>Access Gate</span>
+            <select id="route-access-mode">
+              <option value="inherit">Inherit default gate</option>
+              <option value="custom">Use custom service code</option>
+              <option value="public">Always public</option>
+            </select>
+          </label>
+          <label id="route-access-code-field" class="field" hidden>
+            <span>Service Access Code</span>
+            <input id="route-require-access-code" type="text" placeholder="Access code for this service" autocomplete="off" spellcheck="false" />
+          </label>
+          <div class="row compact-actions field-actions">
+            <button id="generate-route-code" type="button" class="btn btn-outline btn-sm">Generate Code</button>
+            <button id="copy-route-code" type="button" class="btn btn-outline btn-sm">Copy Code</button>
+          </div>
+          <p id="route-access-hint" class="panel-subtle">Services inherit the default gate unless you choose a custom code or make this service public.</p>
+        </section>
+
+        <details id="service-advanced" class="advanced-section">
+          <summary>Advanced</summary>
+
+          <label class="field">
+            <span>Exposure</span>
+            <select id="service-exposure-mode">
+              <option value="path">Path</option>
+              <option value="subdomain">Subdomain</option>
+            </select>
+          </label>
+
+          <label id="service-host-field" class="field" hidden>
+            <span>Public Host</span>
+            <input id="route-match-host" type="text" placeholder="app.example.com" />
+          </label>
+
+          <label class="field">
+            <span>Health Check Path</span>
+            <input id="route-health-check-path" type="text" placeholder="/healthz" />
+          </label>
+          <label class="checkbox-row">
+            <input id="route-health-check-enabled" type="checkbox" checked />
+            <span>Enable health check</span>
+          </label>
+
+          <label class="field">
+            <span>Fallback Local URL</span>
+            <input id="route-fallback-upstream-url" type="text" placeholder="http://127.0.0.1:3001" />
+          </label>
+
+          <label class="checkbox-row">
+            <input id="route-forward-host-header" type="checkbox" />
+            <span>Forward original Host header (advanced; leave off for loopback-protected mounted SPAs)</span>
+          </label>
+          <label class="checkbox-row">
+            <input id="route-rewrite-response-paths" type="checkbox" />
+            <span>Rewrite HTML/JS so root-relative URLs carry the Public Path prefix</span>
+          </label>
+
+          <p id="route-test-status" class="panel-subtle route-test-status" hidden></p>
+        </details>
+
+        <div class="drawer-footer-actions">
+          <button id="route-apply-spa-preset" type="button" class="btn btn-outline btn-sm">DeepSeek / SPA Preset</button>
+          <button id="test-route" type="button" class="btn btn-outline">Test Route</button>
+          <button id="save-route" type="button" class="btn btn-primary">Save Service</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ==================== tunnel drawer ==================== -->
+    <div id="tunnel-backdrop" class="drawer-backdrop" hidden></div>
+    <aside id="tunnel-drawer" class="drawer tunnel-drawer" hidden aria-label="Tunnel">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Tunnel</p>
+          <h2 id="tunnel-form-title">Create Tunnel</h2>
+        </div>
+        <button id="close-tunnel" type="button" class="btn btn-ghost btn-sm">Close</button>
+      </div>
+
+      <div class="drawer-body">
+        <label class="field">
+          <span>Tunnel Name</span>
+          <input id="tunnel-name" type="text" placeholder="Main Tunnel" />
+        </label>
+        <label class="field">
+          <span>Provider</span>
+          <select id="tunnel-provider">
+            <option value="cloudflared">cloudflared</option>
+            <option value="ngrok">ngrok</option>
+          </select>
+        </label>
+
+        <section class="drawer-section">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Provider Readiness</p>
+              <h3 id="tunnel-provider-readiness-title">Checking provider</h3>
+              <p id="tunnel-provider-readiness-message" class="panel-subtle">
+                TunnelMux will verify whether this provider is installed before you start the tunnel.
+              </p>
+            </div>
+            <div id="tunnel-provider-readiness-badge" class="status-pill idle">Info</div>
+          </div>
+          <div class="actions compact-actions">
+            <button id="tunnel-provider-install-action" type="button" class="btn btn-outline btn-sm" hidden>Copy Install Command</button>
+            <button id="tunnel-provider-recheck-action" type="button" class="btn btn-outline btn-sm" hidden>Recheck Provider</button>
+          </div>
+        </section>
+
+        <details id="tunnel-advanced" class="advanced-section">
+          <summary>Advanced tunnel settings</summary>
+          <label class="field">
+            <span>Gateway Target URL</span>
+            <input id="tunnel-gateway-target-url" type="text" placeholder="http://127.0.0.1:48080" />
+          </label>
+          <label class="checkbox-row">
+            <input id="tunnel-auto-restart" type="checkbox" checked />
+            <span>Auto restart tunnel</span>
+          </label>
+
+          <div id="tunnel-cloudflared-fields">
+            <label class="field">
+              <span>Cloudflare Tunnel Token</span>
+              <input id="tunnel-cloudflared-tunnel-token" type="password" placeholder="Optional" />
+            </label>
+            <label class="field">
+              <span>Public Hostname</span>
+              <input id="tunnel-cloudflared-public-hostname" type="text" placeholder="openai.example.com" />
+            </label>
+            <p class="panel-subtle">
+              Leave the token empty for a quick tunnel. For a named tunnel, add the token and hostname you configured in Cloudflare.
+            </p>
+          </div>
+
+          <div id="tunnel-ngrok-fields" hidden>
+            <label class="field">
+              <span>ngrok Authtoken</span>
+              <input id="tunnel-ngrok-authtoken" type="password" placeholder="Optional" />
+            </label>
+            <label class="field">
+              <span>ngrok Reserved Domain</span>
+              <input id="tunnel-ngrok-domain" type="text" placeholder="Optional" />
+            </label>
+          </div>
+        </details>
+
+        <div class="drawer-footer-actions">
+          <button id="delete-tunnel" type="button" class="btn btn-danger btn-sm" hidden>Delete Tunnel</button>
+          <button id="save-tunnel" type="button" class="btn btn-outline">Save</button>
+          <button id="save-and-start-tunnel" type="button" class="btn btn-primary">Save and Start</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ==================== confirm dialog ==================== -->
+    <div id="confirm-backdrop" class="drawer-backdrop" hidden></div>
+    <aside id="confirm-dialog" class="confirm-dialog" hidden aria-label="Confirm action" aria-modal="true" role="dialog">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Confirm</p>
+          <h2 id="confirm-title">Confirm Action</h2>
+          <p id="confirm-message" class="panel-subtle">Please confirm this action.</p>
+        </div>
+      </div>
+      <div class="confirm-dialog-footer">
+        <button id="confirm-cancel" type="button" class="btn btn-outline">Cancel</button>
+        <button id="confirm-confirm" type="button" class="btn btn-danger">Delete</button>
+      </div>
+    </aside>
 
     <script type="module" src="./app.js"></script>
   </body>
