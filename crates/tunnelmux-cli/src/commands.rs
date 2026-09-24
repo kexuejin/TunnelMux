@@ -4,6 +4,11 @@ const PRIMARY_TUNNEL_ID: &str = "primary";
 
 pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
     let control_client = build_control_client(&cli);
+    if !control_client.is_loopback() && control_client.token().is_none() {
+        return Err(anyhow!(
+            "remote TunnelMux connections require --token or TUNNELMUX_API_TOKEN"
+        ));
+    }
     let base_url = control_client.base_url().to_string();
     let token = control_client.token().map(str::to_string);
     let client = Client::new();

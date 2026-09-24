@@ -38,9 +38,11 @@ reading `~/.tunnelmux/api-token` if present.
 The generated token file is derived from the state file, so a daemon started
 with `--data-file /tmp/scratch/state.json` writes `/tmp/scratch/api-token` and
 leaves the default token alone. Use `--api-token-file <PATH>` to place it
-somewhere else entirely.
+somewhere else entirely. Client auto-discovery is restricted to loopback base
+URLs; a remote daemon requires an explicit token.
 
-`GET /v1/health` is always exempt from authentication.
+`GET /v1/health` is always exempt from authentication and never carries a
+control token.
 ### Access-code unlock (loopback)
 
 For interactive use on the host machine you may unlock loopback control with a
@@ -54,7 +56,9 @@ rotated on each relock when unset. Unlock lasts for `--unlock-window` ms
 - A **non-loopback** request always requires a valid bearer token (the access
   code never unlocks external access).
 
-Auth endpoints are loopback-only:
+Auth endpoints are loopback-only and require the control bearer token; the
+access code is the body-level credential used to unlock the local control
+window:
 
 | method | path | purpose |
 |---|---|---|

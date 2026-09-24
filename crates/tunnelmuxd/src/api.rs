@@ -106,6 +106,38 @@ pub(super) async fn control_auth_middleware(
     .into_response()
 }
 
+/// Auth endpoints return the current unlock code, so they must not rely on the
+/// peer address alone: a local SSH tunnel or reverse proxy also appears as
+/// loopback to the daemon. The access code remains the body-level unlock
+/// credential, but the endpoint itself requires the control bearer token.
+pub(super) async fn auth_endpoint_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if auth_endpoint_request_allowed(&state, &request) {
+        return next.run(request).await;
+    }
+
+    ApiError {
+        status: StatusCode::UNAUTHORIZED,
+        message: "unauthorized: auth endpoints require a control bearer token".to_string(),
+    }
+    .into_response()
+}
+
+pub(super) fn auth_endpoint_request_allowed(state: &Arc<AppState>, request: &Request) -> bool {
+    match state.control_auth {
+        ControlAuthMode::Off => true,
+        ControlAuthMode::Optional if state.api_token.is_none() => false,
+        _ => is_authorized_request(
+            request.headers(),
+            state.control_auth,
+            state.api_token.as_deref(),
+        ),
+    }
+}
+
 /// Whether a control-plane request is allowed under the current mode. A loopback
 /// request passes when the access-code window is open; any request also passes
 /// with a valid bearer token (required for non-loopback). `off` opens everything.

@@ -36,11 +36,11 @@ description: TunnelMux 控制面 HTTP API：认证、隧道生命周期、路由
 | `optional` | 向后兼容：配置了 token 就强制执行；没有 token 的 daemon 保持开放。 |
 | `off` | 从不强制（仅限本地开发）。 |
 
-可以用 `--api-token <TOKEN>` 或 `TUNNELMUX_API_TOKEN` 显式设置 token。CLI、GUI 与 `dsh-tunnelmux-remote` 使用同一个 token；未传 token 时，这些客户端会回退读取 `~/.tunnelmux/api-token`（若存在）。
+可以用 `--api-token <TOKEN>` 或 `TUNNELMUX_API_TOKEN` 显式设置 token。CLI、GUI 与 `dsh-tunnelmux-remote` 使用同一个 token；只有 loopback base URL 才会自动回退读取 `~/.tunnelmux/api-token`（若存在），远端 daemon 必须显式配置 token。
 
 生成的 token 文件跟随状态文件：用 `--data-file /tmp/scratch/state.json` 启动的 daemon 会写到 `/tmp/scratch/api-token`，不会覆盖默认路径上的 token。需要放在别处时用 `--api-token-file <PATH>`。
 
-`GET /v1/health` 始终免认证。
+`GET /v1/health` 始终免认证，也不会携带 control token。
 
 ### 访问码解锁（loopback）
 
@@ -49,7 +49,7 @@ description: TunnelMux 控制面 HTTP API：认证、隧道生命周期、路由
 - **loopback** 请求在解锁窗口开启 *或* 携带有效 bearer token 时允许通过。
 - **非 loopback** 请求始终要求有效 bearer token（访问码永远不能解锁外部访问）。
 
-认证端点仅限 loopback：
+认证端点仅限 loopback，且必须携带 control bearer token；访问码只是用于解锁窗口的 body 级凭据：
 
 | 方法 | 路径 | 用途 |
 |---|---|---|

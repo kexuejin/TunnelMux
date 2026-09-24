@@ -10,6 +10,7 @@ use tunnelmux_core::{
     TunnelLogsResponse, TunnelStartRequest, TunnelStatusResponse, TunnelWorkspaceResponse,
     UpdateHealthCheckSettingsRequest, UpstreamsHealthResponse,
 };
+use url::{Host, Url};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlClientConfig {
@@ -19,13 +20,33 @@ pub struct ControlClientConfig {
 
 impl ControlClientConfig {
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
-        Self {
-            base_url: normalize_base_url(&base_url.into()),
-            // When no token is passed, fall back to the auto-generated token the
-            // daemon persists for local clients (require mode), so the CLI and
-            // GUI keep working without manual configuration.
-            token: normalize_token(token.or_else(default_api_token_from_disk)),
-        }
+        Self::from_parts(base_url.into(), token, default_api_token_from_disk)
+    }
+
+    fn from_parts(
+        base_url: String,
+        token: Option<String>,
+        token_reader: impl FnOnce() -> Option<String>,
+    ) -> Self {
+        let base_url = normalize_base_url(&base_url);
+        let token = match token {
+            Some(token) => normalize_token(Some(token)),
+            None if is_loopback_base_url(&base_url) => normalize_token(token_reader()),
+            None => None,
+        };
+        Self { base_url, token }
+    }
+}
+
+fn is_loopback_base_url(base_url: &str) -> bool {
+    let Ok(url) = Url::parse(base_url) else {
+        return false;
+    };
+    match url.host() {
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
     }
 }
 
@@ -66,12 +87,23 @@ impl TunnelmuxControlClient {
         &self.config.base_url
     }
 
+    pub fn is_loopback(&self) -> bool {
+        is_loopback_base_url(&self.config.base_url)
+    }
+
     pub fn token(&self) -> Option<&str> {
         self.config.token.as_deref()
     }
 
     pub async fn health(&self) -> anyhow::Result<HealthResponse> {
-        self.get("/v1/health").await
+        let url = self.url("/v1/health");
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
     }
 
     pub async fn tunnel_status(&self, tunnel_id: &str) -> anyhow::Result<TunnelStatusResponse> {
@@ -443,8 +475,44 @@ mod tests {
     #[derive(Debug, Default)]
     struct TestState {
         auth_headers: Mutex<Vec<Option<String>>>,
+        health_auth_headers: Mutex<Vec<Option<String>>>,
         log_line_queries: Mutex<Vec<Option<String>>>,
         tunnel_queries: Mutex<Vec<Option<String>>>,
+    }
+
+    #[test]
+    fn token_auto_discovery_is_limited_to_loopback_urls() {
+        let remote = ControlClientConfig::from_parts(
+            "https://daemon.example.test".to_string(),
+            None,
+            || Some("local-token".to_string()),
+        );
+        assert_eq!(remote.token, None);
+
+        let local =
+            ControlClientConfig::from_parts("http://127.0.0.1:4765".to_string(), None, || {
+                Some("local-token".to_string())
+            });
+        assert_eq!(local.token.as_deref(), Some("local-token"));
+    }
+
+    #[tokio::test]
+    async fn health_request_does_not_send_control_token() {
+        let state = Arc::new(TestState::default());
+        let app = Router::new()
+            .route("/v1/health", get(health_handler))
+            .with_state(state.clone());
+        let base_url = spawn_test_server(app).await;
+        let client = TunnelmuxControlClient::new(ControlClientConfig::new(
+            base_url,
+            Some("dev-token".to_string()),
+        ));
+
+        client
+            .health()
+            .await
+            .expect("health request should succeed");
+        assert_eq!(state.health_auth_headers.lock().await.as_slice(), &[None]);
     }
 
     #[tokio::test]
@@ -617,6 +685,23 @@ mod tests {
             err.to_string().contains("duplicate route id"),
             "unexpected error: {err:#}"
         );
+    }
+
+    async fn health_handler(
+        State(state): State<Arc<TestState>>,
+        headers: HeaderMap,
+    ) -> Json<HealthResponse> {
+        state.health_auth_headers.lock().await.push(
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+        );
+        Json(HealthResponse {
+            ok: true,
+            service: "tunnelmuxd".to_string(),
+            version: "test".to_string(),
+        })
     }
 
     async fn tunnel_status_handler(

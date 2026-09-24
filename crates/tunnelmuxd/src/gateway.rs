@@ -28,7 +28,7 @@ pub(super) async fn route_access_gate_response(
     let code = config.require_access_code.as_deref()?;
 
     let cookie_name = route_access_cookie_name(&route.id);
-    let cookie_ok = extract_cookie(headers, &cookie_name) == Some(code);
+    let cookie_ok = cookie_value_matches(headers, &cookie_name, code);
     let bearer_ok = extract_bearer_token(headers) == Some(code);
     if cookie_ok || bearer_ok {
         return None;
@@ -110,6 +110,15 @@ fn resolve_effective_route_access(
 
 fn trimmed_access_code(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+async fn effective_route_access_code(state: &Arc<AppState>, route: &RouteRule) -> Option<String> {
+    let runtime = state.runtime.lock().await;
+    resolve_effective_route_access(
+        runtime.persisted.route_access.get(&route.id),
+        &runtime.persisted.default_route_access,
+    )?
+    .require_access_code
 }
 
 fn build_route_access_form_response(
@@ -286,6 +295,31 @@ fn extract_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     None
 }
 
+fn cookie_value_matches(headers: &HeaderMap, name: &str, expected: &str) -> bool {
+    let Some(encoded) = extract_cookie(headers, name) else {
+        return false;
+    };
+    let encoded_pair = format!("cookie={encoded}");
+    url::form_urlencoded::parse(encoded_pair.as_bytes())
+        .next()
+        .is_some_and(|(_, value)| value == expected)
+}
+
+fn strip_cookie_header(value: &str, name: &str) -> Option<String> {
+    let mut kept = Vec::new();
+    let mut removed = false;
+    for part in value.split(';') {
+        let trimmed = part.trim();
+        let key = trimmed.split_once('=').map(|(key, _)| key.trim());
+        if key == Some(name) {
+            removed = true;
+        } else if !trimmed.is_empty() {
+            kept.push(trimmed);
+        }
+    }
+    removed.then(|| kept.join("; "))
+}
+
 pub(super) async fn proxy_request_for_tunnel(
     State(gateway_state): State<Arc<TunnelGatewayState>>,
     request: Request,
@@ -329,13 +363,25 @@ pub(super) async fn proxy_request_for_tunnel(
         }
     };
 
+    let gate_code = effective_route_access_code(state, &route).await;
+    let gate_cookie_name = route_access_cookie_name(&route.id);
+
     if is_websocket_upgrade_request(&method, &headers) {
         if let Some(gate_response) =
             route_access_gate_response(state, &route, &method, &headers, &path, None).await
         {
             return Ok(gate_response);
         }
-        return proxy_websocket_request(state, request, route, &path, query.as_deref()).await;
+        return proxy_websocket_request(
+            state,
+            request,
+            route,
+            &path,
+            query.as_deref(),
+            gate_code.as_deref(),
+            &gate_cookie_name,
+        )
+        .await;
     }
 
     let body = to_bytes(request.into_body(), 16 * 1024 * 1024)
@@ -372,6 +418,8 @@ pub(super) async fn proxy_request_for_tunnel(
             &body,
             &path,
             query.as_deref(),
+            gate_code.as_deref(),
+            &gate_cookie_name,
         )
         .await
         {
@@ -561,6 +609,8 @@ pub(super) async fn proxy_websocket_request(
     route: RouteRule,
     path: &str,
     query: Option<&str>,
+    gate_code: Option<&str>,
+    gate_cookie_name: &str,
 ) -> Result<Response, ApiError> {
     let method = request.method().clone();
     let version = request.version();
@@ -591,6 +641,8 @@ pub(super) async fn proxy_websocket_request(
                 upstream_headers,
                 &headers,
                 route.forward_host_header,
+                gate_code,
+                gate_cookie_name,
             );
         }
         let upstream_request = upstream_builder.body(Body::empty()).map_err(|err| {
@@ -695,11 +747,18 @@ pub(super) async fn send_http_upstream(
     body: &axum::body::Bytes,
     path: &str,
     query: Option<&str>,
+    gate_code: Option<&str>,
+    gate_cookie_name: &str,
 ) -> Result<reqwest::Response, ApiError> {
     let upstream_url = build_upstream_url(upstream_base_url, route, path, query)?;
     let mut upstream_request = state.proxy_client.request(method.clone(), upstream_url);
-    upstream_request =
-        copy_headers_to_upstream(upstream_request, headers, route.forward_host_header);
+    upstream_request = copy_headers_to_upstream(
+        upstream_request,
+        headers,
+        route.forward_host_header,
+        gate_code,
+        gate_cookie_name,
+    );
     upstream_request = upstream_request.body(body.clone());
 
     upstream_request.send().await.map_err(|err| {
@@ -1107,6 +1166,8 @@ pub(super) fn copy_headers_to_upstream(
     mut builder: reqwest::RequestBuilder,
     headers: &HeaderMap,
     forward_host_header: bool,
+    gate_code: Option<&str>,
+    gate_cookie_name: &str,
 ) -> reqwest::RequestBuilder {
     for (name, value) in headers {
         if is_hop_by_hop_header(name) {
@@ -1118,6 +1179,21 @@ pub(super) fn copy_headers_to_upstream(
         {
             continue;
         }
+        if name == reqwest::header::AUTHORIZATION
+            && gate_code.is_some_and(|code| extract_bearer_token(headers) == Some(code))
+        {
+            continue;
+        }
+        if name == reqwest::header::COOKIE {
+            if let Ok(raw) = value.to_str() {
+                if let Some(filtered) = strip_cookie_header(raw, gate_cookie_name) {
+                    if !filtered.is_empty() {
+                        builder = builder.header(name, filtered);
+                    }
+                    continue;
+                }
+            }
+        }
         builder = builder.header(name, value);
     }
     builder
@@ -1127,13 +1203,36 @@ pub(super) fn copy_headers_for_websocket_upstream(
     target: &mut HeaderMap,
     source: &HeaderMap,
     forward_host_header: bool,
+    gate_code: Option<&str>,
+    gate_cookie_name: &str,
 ) {
     for (name, value) in source {
+        if is_hop_by_hop_header(name)
+            && !name.as_str().eq_ignore_ascii_case("connection")
+            && !name.as_str().eq_ignore_ascii_case("upgrade")
+        {
+            continue;
+        }
         if !forward_host_header
             && (name.as_str().eq_ignore_ascii_case("host")
                 || name.as_str().eq_ignore_ascii_case("origin"))
         {
             continue;
+        }
+        if name == reqwest::header::AUTHORIZATION
+            && gate_code.is_some_and(|code| extract_bearer_token(source) == Some(code))
+        {
+            continue;
+        }
+        if name == reqwest::header::COOKIE {
+            if let Ok(raw) = value.to_str() {
+                if let Some(filtered) = strip_cookie_header(raw, gate_cookie_name) {
+                    if !filtered.is_empty() {
+                        target.insert(name, filtered.parse().expect("valid filtered cookie"));
+                    }
+                    continue;
+                }
+            }
         }
         target.insert(name, value.clone());
     }
@@ -1296,8 +1395,33 @@ mod tests {
     use http_body_util::BodyExt;
 
     use super::{
-        build_http_proxy_response, rewrite_cookie_path, rewrite_root_location, rewrite_root_paths,
+        build_http_proxy_response, cookie_value_matches, rewrite_cookie_path,
+        rewrite_root_location, rewrite_root_paths, strip_cookie_header,
     };
+
+    #[test]
+    fn cookie_value_matches_decodes_form_encoding() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            "tunnelmux_access_svc=hello+world; other=1"
+                .parse()
+                .expect("valid cookie"),
+        );
+
+        assert!(cookie_value_matches(
+            &headers,
+            "tunnelmux_access_svc",
+            "hello world"
+        ));
+        assert_eq!(
+            strip_cookie_header(
+                "tunnelmux_access_svc=hello+world; other=1",
+                "tunnelmux_access_svc"
+            ),
+            Some("other=1".to_string())
+        );
+    }
 
     #[test]
     fn rewrite_prefixes_html_refs_and_manifest_urls() {

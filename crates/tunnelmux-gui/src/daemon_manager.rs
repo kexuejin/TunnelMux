@@ -158,6 +158,11 @@ pub async fn ensure_local_daemon(
         settings.base_url.clone(),
         settings.token.clone(),
     ));
+    if !client.is_loopback() && client.token().is_none() {
+        return Err(anyhow!(
+            "remote TunnelMux connections require an explicit bearer token"
+        ));
+    }
 
     // An already-answering daemon always wins.
     if client.health().await.is_ok() {

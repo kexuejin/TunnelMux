@@ -56,8 +56,8 @@ const TUNNELMUX_RELEASE_API: &str =
     "https://api.github.com/repos/kexuejin/TunnelMux/releases/latest";
 const TUNNELMUX_RELEASE_MANIFEST_URL: &str =
     "https://github.com/kexuejin/TunnelMux/releases/latest/download/tunnelmux-latest.json";
-const TUNNELMUX_RELEASE_DOWNLOAD_PREFIX: &str =
-    "https://github.com/kexuejin/TunnelMux/releases/download/";
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_UPDATE_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppUpdateAssetVm {
@@ -182,7 +182,8 @@ async fn check_app_update_from_manifest(
         .find(|asset| {
             asset.target.as_deref() == Some(target.as_str())
                 && asset.kind.as_deref().unwrap_or("raw_archive") == "raw_archive"
-                && asset.name.ends_with(".tar.gz")
+                && is_safe_update_asset_name(&asset.name)
+                && asset.sha256.as_deref().is_some_and(is_valid_sha256)
         })
         .map(|asset| AppUpdateAssetVm {
             name: asset.name.clone(),
@@ -220,7 +221,12 @@ async fn check_app_update_from_github_api(
     let asset = release
         .assets
         .iter()
-        .find(|asset| is_update_asset_for_target(&asset.name, &target))
+        .find(|asset| {
+            is_update_asset_for_target(&asset.name, &target)
+                && checksums
+                    .get(&asset.name)
+                    .is_some_and(|checksum| is_valid_sha256(checksum))
+        })
         .map(|asset| AppUpdateAssetVm {
             name: asset.name.clone(),
             url: asset.browser_download_url.clone(),
@@ -247,6 +253,9 @@ fn build_update_check_response(
     asset: Option<AppUpdateAssetVm>,
     source: &str,
 ) -> anyhow::Result<AppUpdateCheckVm> {
+    if !is_valid_release_version(&latest_version) {
+        anyhow::bail!("release metadata contains an invalid version: {latest_version}");
+    }
     let update_available = version_is_newer(&latest_version, &current_version);
     let message = if asset.is_none() {
         format!("No raw archive update asset found for {target} in {latest_version}.")
@@ -329,9 +338,59 @@ fn os_vendor_component() -> &'static str {
 }
 
 fn is_update_asset_for_target(name: &str, target: &str) -> bool {
-    name.starts_with("tunnelmux-")
-        && name.contains(target)
-        && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
+    name.starts_with("tunnelmux-") && name.contains(target) && name.ends_with(".tar.gz")
+}
+
+fn is_valid_release_version(value: &str) -> bool {
+    let value = normalize_release_version(value);
+    let parts = value.split('.').collect::<Vec<_>>();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn is_safe_update_asset_name(value: &str) -> bool {
+    value.ends_with(".tar.gz")
+        && !value.contains('/')
+        && !value.contains('\\')
+        && Path::new(value).file_name().and_then(OsStr::to_str) == Some(value)
+}
+
+fn is_valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_update_inputs(
+    asset_url: &str,
+    asset_name: &str,
+    expected_sha256: Option<&str>,
+    version: &str,
+) -> anyhow::Result<()> {
+    let parsed_url =
+        Url::parse(asset_url).with_context(|| format!("invalid update URL: {asset_url}"))?;
+    if parsed_url.scheme() != "https"
+        || parsed_url.host_str() != Some("github.com")
+        || !parsed_url
+            .path()
+            .starts_with("/kexuejin/TunnelMux/releases/download/")
+    {
+        anyhow::bail!("refusing update URL outside the TunnelMux GitHub release host: {asset_url}");
+    }
+    if !is_valid_release_version(version) {
+        anyhow::bail!("invalid update version: {version}");
+    }
+    if !is_safe_update_asset_name(asset_name) {
+        anyhow::bail!("invalid update asset name: {asset_name}");
+    }
+    let expected_sha256 = expected_sha256
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("update metadata is missing a SHA-256 checksum"))?;
+    if !is_valid_sha256(expected_sha256) {
+        anyhow::bail!("invalid update SHA-256 checksum");
+    }
+    Ok(())
 }
 
 fn normalize_release_version(value: &str) -> String {
@@ -359,33 +418,38 @@ async fn download_and_install_app_update_impl(
     expected_sha256: Option<&str>,
     version: &str,
 ) -> anyhow::Result<AppUpdateInstallVm> {
-    if !asset_url.starts_with(TUNNELMUX_RELEASE_DOWNLOAD_PREFIX) {
-        anyhow::bail!("refusing to download update from unsupported URL: {asset_url}");
-    }
-    if !asset_name.ends_with(".tar.gz") {
-        anyhow::bail!(
-            "automatic install currently supports .tar.gz raw archives only: {asset_name}"
-        );
-    }
+    validate_update_inputs(asset_url, asset_name, expected_sha256, version)?;
+    let install_dir = install_directory()?;
 
     let client = reqwest::Client::builder()
         .user_agent(format!("TunnelMux/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(UPDATE_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let bytes = client
-        .get(asset_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-    let actual_sha256 = hex_sha256(&bytes);
-    if let Some(expected) = expected_sha256
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let mut response = client.get(asset_url).send().await?.error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_UPDATE_ARCHIVE_BYTES as u64)
     {
-        if actual_sha256 != expected.to_ascii_lowercase() {
-            anyhow::bail!("download checksum mismatch: expected {expected}, got {actual_sha256}");
+        anyhow::bail!("update archive exceeds the maximum supported size");
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_UPDATE_ARCHIVE_BYTES {
+            anyhow::bail!("update archive exceeds the maximum supported size");
         }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    let actual_sha256 = hex_sha256(&bytes);
+    let expected_sha256 = expected_sha256
+        .map(str::trim)
+        .expect("validated update checksum");
+    if actual_sha256 != expected_sha256.to_ascii_lowercase() {
+        anyhow::bail!(
+            "download checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
+        );
     }
 
     let update_dir = settings_dir.join("updates").join(version);
@@ -400,7 +464,6 @@ async fn download_and_install_app_update_impl(
     fs::create_dir_all(&extract_dir)?;
     extract_update_archive(&archive_path, &extract_dir)?;
 
-    let install_dir = install_directory()?;
     let installed_binaries = install_update_binaries(&extract_dir, &install_dir)?;
     Ok(AppUpdateInstallVm {
         version: version.to_string(),
@@ -433,8 +496,20 @@ fn extract_update_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Re
     anyhow::bail!("automatic install currently supports .tar.gz raw archives only")
 }
 
+fn is_native_bundle_executable(path: &Path) -> bool {
+    let text = path.to_string_lossy().replace('\\', "/");
+    text.contains("/Contents/MacOS/")
+        || text.contains("/Program Files/")
+        || text.contains("/usr/bin/")
+}
+
 fn install_directory() -> anyhow::Result<PathBuf> {
     let exe = std::env::current_exe()?;
+    if is_native_bundle_executable(&exe) {
+        anyhow::bail!(
+            "automatic updates are disabled for native installer bundles; use the platform package manager or release page"
+        );
+    }
     exe.parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow::anyhow!("failed to resolve current executable directory"))
@@ -1147,12 +1222,7 @@ async fn start_tunnel_from_settings_dir_with_provider_probe(
         .map(|tunnel| tunnel.id.clone())
         .ok_or_else(|| "no tunnel selected".to_string())?;
     ensure_tunnel_start_is_configured(current_tunnel, &input.provider)?;
-    let metadata = build_tunnel_metadata(
-        current_tunnel,
-        &input.provider,
-        provider_probe.availability(&input.provider),
-        settings.base_url == crate::settings::DEFAULT_BASE_URL,
-    );
+    let metadata = build_tunnel_metadata(current_tunnel, &input.provider);
     let request = TunnelStartRequest {
         tunnel_id,
         provider: input.provider.clone(),
@@ -2289,6 +2359,9 @@ fn load_client(settings_dir: &Path) -> Result<(GuiSettings, TunnelmuxControlClie
         settings.base_url.clone(),
         settings.token.clone(),
     ));
+    if !client.is_loopback() && client.token().is_none() {
+        return Err("remote TunnelMux connections require an explicit bearer token".to_string());
+    }
     Ok((settings, client))
 }
 
@@ -2491,19 +2564,8 @@ fn friendly_route_save_error(
 fn build_tunnel_metadata(
     tunnel: Option<&crate::settings::TunnelProfileSettings>,
     provider: &TunnelProvider,
-    availability: &ProviderBinaryAvailability,
-    include_system_provider_path: bool,
 ) -> Option<HashMap<String, String>> {
     let mut metadata = HashMap::new();
-
-    if availability.source == ProviderInstallSource::LocalTools
-        || (include_system_provider_path
-            && availability.source == ProviderInstallSource::SystemPath)
-    {
-        if let Some(path) = availability.resolved_path.as_ref() {
-            metadata.insert("providerBinaryPath".to_string(), path.display().to_string());
-        }
-    }
 
     match provider {
         TunnelProvider::Cloudflared => {
@@ -2555,6 +2617,37 @@ mod tests {
     use tar::{Builder, Header};
     use tokio::net::TcpListener;
     use tunnelmux_core::{TunnelStartRequest, TunnelStatus, TunnelStatusResponse};
+
+    #[test]
+    fn update_inputs_fail_closed_for_unsafe_paths_and_missing_hash() {
+        let url = "https://github.com/kexuejin/TunnelMux/releases/download/v0.3.1/tunnelmux-0.3.1-x86_64-apple-darwin.tar.gz";
+        let hash = "a".repeat(64);
+        assert!(
+            validate_update_inputs(
+                url,
+                "tunnelmux-0.3.1-x86_64-apple-darwin.tar.gz",
+                Some(&hash),
+                "0.3.1",
+            )
+            .is_ok()
+        );
+        assert!(validate_update_inputs(url, "../evil.tar.gz", Some(&hash), "0.3.1").is_err());
+        assert!(validate_update_inputs(url, "evil.tar.gz", None, "0.3.1").is_err());
+        assert!(validate_update_inputs(url, "evil.tar.gz", Some(&hash), "../0.3.1").is_err());
+    }
+
+    #[test]
+    fn native_bundle_paths_are_not_self_update_targets() {
+        assert!(is_native_bundle_executable(Path::new(
+            "/Applications/TunnelMux.app/Contents/MacOS/tunnelmux-gui"
+        )));
+        assert!(is_native_bundle_executable(Path::new(
+            "C:/Program Files/TunnelMux/tunnelmux-gui.exe"
+        )));
+        assert!(!is_native_bundle_executable(Path::new(
+            "/home/user/.local/bin/tunnelmux-gui"
+        )));
+    }
 
     #[tokio::test]
     async fn refresh_dashboard_returns_tunnel_snapshot_for_connected_daemon() {
@@ -3404,50 +3497,32 @@ mod tests {
             .await
             .clone()
             .expect("start request should be captured");
-        assert_eq!(
+        assert!(
             payload
                 .metadata
                 .as_ref()
                 .and_then(|value| value.get("providerBinaryPath"))
-                .map(String::as_str),
-            local_cloudflared.to_str()
+                .is_none()
         );
     }
 
     #[test]
-    fn build_tunnel_metadata_includes_system_provider_binary_path_for_default_local_daemon() {
+    fn build_tunnel_metadata_does_not_control_provider_executable() {
         let settings = GuiSettings::default();
-        let availability = ProviderBinaryAvailability::from_path(
-            ProviderInstallSource::SystemPath,
-            PathBuf::from("/opt/homebrew/bin/cloudflared"),
-        );
+        let metadata =
+            build_tunnel_metadata(settings.current_tunnel(), &TunnelProvider::Cloudflared)
+                .expect("metadata should be built");
 
-        let metadata = build_tunnel_metadata(
-            settings.current_tunnel(),
-            &TunnelProvider::Cloudflared,
-            &availability,
-            true,
-        )
-        .expect("metadata should be built");
-
-        assert_eq!(
-            metadata.get("providerBinaryPath").map(String::as_str),
-            Some("/opt/homebrew/bin/cloudflared")
-        );
+        assert!(!metadata.contains_key("providerBinaryPath"));
     }
 
     #[test]
     fn build_tunnel_metadata_defaults_cloudflared_to_auto_protocol() {
         let settings = GuiSettings::default();
-        let availability = ProviderAvailabilityProbe::from_install_flags(true, false).cloudflared;
 
-        let metadata = build_tunnel_metadata(
-            settings.current_tunnel(),
-            &TunnelProvider::Cloudflared,
-            &availability,
-            false,
-        )
-        .expect("metadata should be built");
+        let metadata =
+            build_tunnel_metadata(settings.current_tunnel(), &TunnelProvider::Cloudflared)
+                .expect("metadata should be built");
 
         // Not `http2`: an unpinned profile must hand cloudflared its own
         // default, which probes both transports instead of failing the pinned
@@ -3470,15 +3545,9 @@ mod tests {
             }],
             ..GuiSettings::default()
         };
-        let availability = ProviderAvailabilityProbe::from_install_flags(true, false).cloudflared;
-
-        let metadata = build_tunnel_metadata(
-            settings.current_tunnel(),
-            &TunnelProvider::Cloudflared,
-            &availability,
-            false,
-        )
-        .expect("metadata should be built");
+        let metadata =
+            build_tunnel_metadata(settings.current_tunnel(), &TunnelProvider::Cloudflared)
+                .expect("metadata should be built");
 
         assert_eq!(
             metadata.get("cloudflaredProtocol").map(String::as_str),
@@ -3489,14 +3558,8 @@ mod tests {
     #[test]
     fn build_tunnel_metadata_leaves_ngrok_without_a_cloudflared_protocol() {
         let settings = GuiSettings::default();
-        let availability = ProviderAvailabilityProbe::from_install_flags(false, true).ngrok;
 
-        let metadata = build_tunnel_metadata(
-            settings.current_tunnel(),
-            &TunnelProvider::Ngrok,
-            &availability,
-            false,
-        );
+        let metadata = build_tunnel_metadata(settings.current_tunnel(), &TunnelProvider::Ngrok);
 
         assert!(
             metadata

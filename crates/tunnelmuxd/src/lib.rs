@@ -845,11 +845,17 @@ pub async fn start(args: DaemonArgs) -> anyhow::Result<DaemonHandle> {
             shared.clone(),
             control_auth_middleware,
         ));
-    let control_app = Router::new()
-        .route("/v1/health", get(health))
+    let auth_app = Router::new()
         .route("/v1/auth/unlock", post(unlock_auth))
         .route("/v1/auth/status", get(auth_status))
         .route("/v1/auth/relock", post(relock_auth))
+        .layer(middleware::from_fn_with_state(
+            shared.clone(),
+            auth_endpoint_middleware,
+        ));
+    let control_app = Router::new()
+        .route("/v1/health", get(health))
+        .merge(auth_app)
         .merge(protected_control_app)
         .with_state(shared.clone());
 
@@ -4647,6 +4653,23 @@ mod tests {
             Some("expected")
         ));
         assert!(is_authorized_request(&headers, ControlAuthMode::Off, None));
+    }
+
+    #[test]
+    fn auth_endpoint_requires_control_bearer_in_require_mode() {
+        let state = test_state_with_lock_require(Some("secret-token"), Some("unlock-code"));
+        let request = axum::http::Request::builder()
+            .uri("/v1/auth/status")
+            .body(axum::body::Body::empty())
+            .expect("request should build");
+        assert!(!auth_endpoint_request_allowed(&state, &request));
+
+        let authorized = axum::http::Request::builder()
+            .uri("/v1/auth/status")
+            .header("authorization", "Bearer secret-token")
+            .body(axum::body::Body::empty())
+            .expect("request should build");
+        assert!(auth_endpoint_request_allowed(&state, &authorized));
     }
 
     #[test]
