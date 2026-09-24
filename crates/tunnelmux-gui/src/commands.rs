@@ -1252,7 +1252,7 @@ async fn test_route_from_settings_dir(
         Some(url) => Some(fetch_status(&http, url).await?),
         None => None,
     };
-    let upstream_status = Some(fetch_status(&http, &route.upstream_url).await?);
+    let upstream_status = fetch_status(&http, &route.upstream_url).await?;
     let mut details = Vec::new();
     if let Some(url) = public_url.as_ref() {
         details.push(format!(
@@ -1264,8 +1264,7 @@ async fn test_route_from_settings_dir(
     }
     details.push(format!(
         "upstream {} => HTTP {}",
-        route.upstream_url,
-        upstream_status.unwrap_or(0)
+        route.upstream_url, upstream_status
     ));
     if route.match_path_prefix.as_deref().unwrap_or("/") != "/" {
         details.push("root / remains closed unless another service exposes it".to_string());
@@ -1274,7 +1273,7 @@ async fn test_route_from_settings_dir(
         route_id: route_id.to_string(),
         public_url,
         auth_gate_status,
-        upstream_status,
+        upstream_status: Some(upstream_status),
         message: details.join("; "),
     })
 }
@@ -3308,7 +3307,6 @@ mod tests {
                     ngrok_domain: None,
                     cloudflared_protocol: None,
                 }],
-                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -3377,7 +3375,6 @@ mod tests {
                     ngrok_domain: None,
                     cloudflared_protocol: None,
                 }],
-                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -3569,7 +3566,6 @@ mod tests {
                     ngrok_domain: None,
                     cloudflared_protocol: None,
                 }],
-                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -3909,7 +3905,6 @@ mod tests {
                     ngrok_domain: None,
                     cloudflared_protocol: None,
                 }],
-                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -3954,7 +3949,6 @@ mod tests {
                     ngrok_domain: None,
                     cloudflared_protocol: None,
                 }],
-                ..GuiSettings::default()
             },
         )
         .expect("settings should save");
@@ -3999,7 +3993,6 @@ mod tests {
                     ngrok_domain: None,
                     cloudflared_protocol: None,
                 }],
-                ..GuiSettings::default()
             },
         )
         .expect("settings should save");

@@ -30,7 +30,7 @@ on:
           - "false"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -226,16 +226,7 @@ jobs:
           CONFIG_DIR="crates/tunnelmux-gui/.ci"
           CONFIG_DIR_ARG=".ci"
           mkdir -p "$CONFIG_DIR"
-          DAEMON_CONFIG_PATH="$CONFIG_DIR/tauri.gui.daemon.bundle.conf.json"
-          DAEMON_CONFIG_ARG="$CONFIG_DIR_ARG/tauri.gui.daemon.bundle.conf.json"
-          cat > "$DAEMON_CONFIG_PATH" <<'JSON'
-          {
-            "bundle": {
-              "externalBin": ["bin/tunnelmuxd"]
-            }
-          }
-          JSON
-          COMBINED_CONFIG_ARG="$DAEMON_CONFIG_ARG"
+          COMBINED_CONFIG_ARG=""
 
           macos_required="${EFFECTIVE_MACOS_SIGNING_REQUIRED:-}"
           windows_required="${EFFECTIVE_WINDOWS_SIGNING_REQUIRED:-}"
@@ -299,7 +290,6 @@ jobs:
                 COMBINED_CONFIG_PATH="$CONFIG_DIR/tauri.gui.combined.conf.json"
                 COMBINED_CONFIG_ARG="$CONFIG_DIR_ARG/tauri.gui.combined.conf.json"
                 jq -s 'reduce .[] as $item ({}; . * $item)' \
-                  "$DAEMON_CONFIG_PATH" \
                   "$signing_config" > "$COMBINED_CONFIG_PATH"
                 echo "TAURI_WINDOWS_SIGNING_CONFIG=$signing_config" >> "$GITHUB_ENV"
                 echo "GUI_SIGNING_MODE=windows-signed" >> "$GITHUB_ENV"
@@ -315,7 +305,9 @@ jobs:
               ;;
           esac
 
-          BUILD_ARGS="$BUILD_ARGS -c $COMBINED_CONFIG_ARG"
+          if [[ -n "$COMBINED_CONFIG_ARG" ]]; then
+            BUILD_ARGS="$BUILD_ARGS -c $COMBINED_CONFIG_ARG"
+          fi
           echo "TAURI_BUILD_ARGS=$BUILD_ARGS" >> "$GITHUB_ENV"
 
       - name: Build signed macOS GUI bundle
@@ -377,6 +369,8 @@ jobs:
           path: dist/*
 
   publish:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     needs:
       - build

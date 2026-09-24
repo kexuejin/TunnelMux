@@ -37,6 +37,7 @@ pub(super) enum StreamAttemptError {
     Fatal(anyhow::Error),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn stream_sse_with_reconnect<F>(
     client: &Client,
     base_url: &str,

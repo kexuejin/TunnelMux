@@ -296,7 +296,7 @@ fn derive_route_id_from_upstream_url(upstream_url: &str) -> Option<String> {
     };
     let path_label = url
         .path_segments()
-        .and_then(|segments| segments.filter(|segment| !segment.trim().is_empty()).last())
+        .and_then(|mut segments| segments.rfind(|segment| !segment.trim().is_empty()))
         .map(sanitize_route_id_fragment)
         .filter(|segment| !segment.is_empty());
 

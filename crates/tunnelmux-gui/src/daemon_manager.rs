@@ -334,7 +334,7 @@ fn binary_is_executable(path: &Path) -> bool {
     {
         use std::os::unix::fs::PermissionsExt;
 
-        return metadata.permissions().mode() & 0o111 != 0;
+        metadata.permissions().mode() & 0o111 != 0
     }
 
     #[cfg(not(unix))]

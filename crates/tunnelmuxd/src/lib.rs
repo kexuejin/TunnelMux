@@ -5408,7 +5408,7 @@ mod tests {
         assert!(updated);
         assert_eq!(routes[1].upstream_url, "http://127.0.0.1:3010");
         assert_eq!(routes[1].match_host.as_deref(), Some("demo.local"));
-        assert_eq!(routes[1].enabled, false);
+        assert!(!routes[1].enabled);
     }
 
     #[test]

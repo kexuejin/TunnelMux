@@ -27,6 +27,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
@@ -34,10 +39,18 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Shell script syntax check
-        run: bash -n scripts/install.sh
+        run: bash -n scripts/*.sh
+
+      - name: GUI JavaScript checks
+        run: |
+          node --check crates/tunnelmux-gui/ui/app.js
+          node --test \
+            crates/tunnelmux-gui/ui/app.test.mjs \
+            scripts/verify-easy-path.test.mjs \
+            scripts/package-local-release-archive.test.mjs
 
       - name: Test
         run: cargo test --workspace --locked

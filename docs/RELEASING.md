@@ -48,7 +48,7 @@ Asset naming:
 - as a raw desktop binary inside the platform archive package
 - as a native GUI installer asset where supported
 
-GUI installers also embed `tunnelmuxd` as a bundled external binary so the desktop app can auto-start a local daemon for installer users.
+The GUI links the `tunnelmuxd` library and runs the daemon in the same process; installers do not ship a separate daemon sidecar.
 
 Current first-release native GUI installers include:
 - `.dmg`
@@ -135,7 +135,7 @@ Run this after you have a host-platform GUI artifact that reflects the current w
 
 - a fresh enough GUI state that you can still rehearse `Create Tunnel` without stale runtime noise;
 - the current host-platform GUI artifact (`target/release/tunnelmux-gui` is fine for local rehearsal);
-- a matching `tunnelmuxd` binary available next to the GUI binary or bundled in the app;
+- a current host-platform GUI artifact; the GUI hosts `tunnelmuxd` in-process and does not require a colocated daemon binary;
 - one local test service on `http://127.0.0.1:3000`.
 
 Example local test service:
@@ -150,7 +150,7 @@ Windows PowerShell:
 py -m http.server 3000
 ```
 
-If `cloudflared` is already installed and you want a deterministic missing-provider pass, temporarily launch the GUI with a trimmed `PATH` so `cloudflared` is hidden while the colocated `tunnelmuxd` binary is still discoverable:
+If `cloudflared` is already installed and you want a deterministic missing-provider pass, temporarily launch the GUI with a trimmed `PATH` so `cloudflared` is hidden:
 
 ```bash
 env PATH="/usr/bin:/bin:/usr/sbin:/sbin" target/release/tunnelmux-gui

@@ -24,9 +24,7 @@ pub(super) async fn route_access_gate_response(
             &runtime.persisted.default_route_access,
         )
     };
-    let Some(config) = config else {
-        return None;
-    };
+    let config = config?;
     let code = config.require_access_code.as_deref()?;
 
     let cookie_name = route_access_cookie_name(&route.id);
@@ -337,7 +335,7 @@ pub(super) async fn proxy_request_for_tunnel(
         {
             return Ok(gate_response);
         }
-        return proxy_websocket_request(&state, request, route, &path, query.as_deref()).await;
+        return proxy_websocket_request(state, request, route, &path, query.as_deref()).await;
     }
 
     let body = to_bytes(request.into_body(), 16 * 1024 * 1024)
@@ -365,7 +363,7 @@ pub(super) async fn proxy_request_for_tunnel(
     for (index, target) in targets.iter().enumerate() {
         let has_more_target = index + 1 < targets.len();
         match send_http_upstream(
-            &state,
+            state,
             &route.id,
             &route,
             target,
@@ -686,6 +684,7 @@ pub(super) async fn proxy_websocket_request(
     Ok(client_response)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn send_http_upstream(
     state: &Arc<AppState>,
     route_id: &str,
@@ -719,7 +718,7 @@ pub(super) async fn build_http_proxy_response(
         let is_rewritable = upstream_headers
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|content_type| is_rewritable_content_type(content_type));
+            .is_some_and(is_rewritable_content_type);
         let encoded = upstream_headers.contains_key(reqwest::header::CONTENT_ENCODING);
         if is_rewritable && !encoded {
             // The whole body must be visible to rewrite root-relative URLs;

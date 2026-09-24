@@ -31,3 +31,16 @@ test('verify-easy-path script covers focused GUI readiness, ngrok start prefligh
   assert.match(script, /cargo test -p tunnelmux-gui friendly_route_save_error_/);
   assert.match(script, /cargo test -p tunnelmux-gui provider_status_summary/);
 });
+
+test('release and installer configuration stays fail-closed and embedded-daemon-only', () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const tauriConfig = JSON.parse(
+    readFileSync(new URL('../crates/tunnelmux-gui/tauri.conf.json', import.meta.url), 'utf8'),
+  );
+  const installer = readFileSync(new URL('./install.sh', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(release, /externalBin|tauri\.gui\.daemon\.bundle/);
+  assert.equal(tauriConfig.bundle?.externalBin, undefined);
+  assert.match(installer, /refusing to install without checksum verification/);
+  assert.match(installer, /exit 1/);
+});

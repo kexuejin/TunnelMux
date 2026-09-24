@@ -156,7 +156,8 @@ if command -v sha256sum >/dev/null 2>&1; then
 elif command -v shasum >/dev/null 2>&1; then
   (cd "$TMP_DIR" && shasum -a 256 -c SHA256SUMS.asset)
 else
-  echo "Warning: sha256sum/shasum not found, skipping checksum verification." >&2
+  echo "Error: sha256sum/shasum not found; refusing to install without checksum verification." >&2
+  exit 1
 fi
 
 tar -xzf "${TMP_DIR}/${ASSET}" -C "${TMP_DIR}"
