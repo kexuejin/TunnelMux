@@ -153,9 +153,10 @@ pub fn route_health_check_enabled(route: &RouteRule) -> bool {
 /// service gate. Real service route ids should not use this value.
 pub const DEFAULT_ROUTE_ACCESS_ID: &str = "__default__";
 
-/// Gateway access gate configuration. Stored as a side table keyed by route
-/// `id` for service overrides, plus one daemon-wide default. Routes inherit the
-/// default unless they define their own code or set `public` to true.
+/// Gateway access gate configuration. Stored as a side table keyed by tunnel
+/// and route id for service overrides, plus one daemon-wide default. Routes
+/// inherit the default unless they define their own code or set `public` to
+/// true.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteAccessConfig {
     /// Access code required to reach the route through the gateway. Empty/None
@@ -177,6 +178,10 @@ pub struct RouteAccessConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetRouteAccessRequest {
     pub route_id: String,
+    /// Tunnel scope for the route. Older clients may omit this when the route
+    /// id is unique; the daemon rejects ambiguous legacy requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_access_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,6 +193,8 @@ pub struct SetRouteAccessRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetRouteAccessResponse {
     pub route_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_id: Option<String>,
     pub require_access_code: Option<String>,
     pub public: Option<bool>,
     pub cookie_ttl_ms: Option<u64>,
@@ -196,6 +203,8 @@ pub struct SetRouteAccessResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteAccessSummary {
     pub route_id: String,
+    #[serde(default)]
+    pub tunnel_id: String,
     /// True when this route effectively requires an access code.
     pub gated: bool,
     /// One of: route, inherited, public, open.

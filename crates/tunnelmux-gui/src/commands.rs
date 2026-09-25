@@ -752,6 +752,7 @@ pub async fn set_default_route_access(
     client
         .set_route_access(&SetRouteAccessRequest {
             route_id: DEFAULT_ROUTE_ACCESS_ID.to_string(),
+            tunnel_id: None,
             require_access_code: code,
             public: None,
             cookie_ttl_ms: preserved_ttl_ms,
@@ -1381,6 +1382,17 @@ pub async fn save_route_from_settings_dir(
         .current_tunnel()
         .map(|tunnel| tunnel.id.as_str())
         .ok_or_else(|| "no tunnel selected".to_string())?;
+    let previous_route = if let Some(original_id) = form.original_id.as_deref() {
+        client
+            .list_routes(tunnel_id)
+            .await
+            .map_err(command_error)?
+            .routes
+            .into_iter()
+            .find(|route| route.id == original_id)
+    } else {
+        None
+    };
     let request = form.into_create_request(tunnel_id);
     if let Some(original_id) = form.original_id.as_deref() {
         client
@@ -1396,7 +1408,28 @@ pub async fn save_route_from_settings_dir(
             .map_err(|error| friendly_route_save_error(error, &request))?;
     }
 
-    sync_route_access_from_form(&client, &request.id, &form).await?;
+    if let Err(error) = sync_route_access_from_form(&client, tunnel_id, &request.id, &form).await {
+        let rollback: anyhow::Result<()> = match previous_route {
+            Some(previous) => {
+                let previous_request = route_rule_to_create_request(&previous, tunnel_id);
+                client
+                    .update_route_with_options(&previous.id, &previous_request, false)
+                    .await
+                    .map(|_| ())
+            }
+            None => client
+                .delete_route(&request.id, tunnel_id, false)
+                .await
+                .map(|_| ()),
+        };
+        return match rollback {
+            Ok(_) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "{error}; route rollback also failed: {}",
+                command_error(rollback_error)
+            )),
+        };
+    }
 
     let routes = client.list_routes(tunnel_id).await.map_err(command_error)?;
     let filtered = routes.routes;
@@ -1406,8 +1439,33 @@ pub async fn save_route_from_settings_dir(
     ))
 }
 
+fn route_rule_to_create_request(
+    route: &tunnelmux_core::RouteRule,
+    tunnel_id: &str,
+) -> tunnelmux_core::CreateRouteRequest {
+    tunnelmux_core::CreateRouteRequest {
+        tunnel_id: tunnel_id.to_string(),
+        id: route.id.clone(),
+        match_host: route.match_host.clone(),
+        match_path_prefix: route.match_path_prefix.clone(),
+        strip_path_prefix: route.strip_path_prefix.clone(),
+        upstream_url: route.upstream_url.clone(),
+        fallback_upstream_url: route.fallback_upstream_url.clone(),
+        health_check_path: route
+            .health_check_path
+            .as_ref()
+            .filter(|_| tunnelmux_core::route_health_check_enabled(route))
+            .cloned(),
+        health_check_enabled: Some(tunnelmux_core::route_health_check_enabled(route)),
+        enabled: Some(route.enabled),
+        forward_host_header: Some(route.forward_host_header),
+        rewrite_response_paths: Some(route.rewrite_response_paths),
+    }
+}
+
 async fn sync_route_access_from_form(
     client: &TunnelmuxControlClient,
+    tunnel_id: &str,
     route_id: &str,
     form: &RouteFormData,
 ) -> Result<(), String> {
@@ -1428,9 +1486,11 @@ async fn sync_route_access_from_form(
     // long-lived unlock cookie back to the daemon default. The read is
     // best-effort: it must not turn a working save into a failure.
     let current = client.list_route_access().await.ok();
-    let existing = current
-        .as_ref()
-        .and_then(|list| list.routes.iter().find(|gate| gate.route_id == route_id));
+    let existing = current.as_ref().and_then(|list| {
+        list.routes.iter().find(|gate| {
+            gate.route_id == route_id && (gate.tunnel_id.is_empty() || gate.tunnel_id == tunnel_id)
+        })
+    });
     let preserved_ttl_ms = existing.and_then(|gate| gate.cookie_ttl_ms);
 
     match mode {
@@ -1438,6 +1498,7 @@ async fn sync_route_access_from_form(
             client
                 .set_route_access(&SetRouteAccessRequest {
                     route_id: route_id.to_string(),
+                    tunnel_id: Some(tunnel_id.to_string()),
                     require_access_code: None,
                     public: None,
                     cookie_ttl_ms: None,
@@ -1449,6 +1510,7 @@ async fn sync_route_access_from_form(
             client
                 .set_route_access(&SetRouteAccessRequest {
                     route_id: route_id.to_string(),
+                    tunnel_id: Some(tunnel_id.to_string()),
                     require_access_code: None,
                     public: Some(true),
                     cookie_ttl_ms: None,
@@ -1461,6 +1523,7 @@ async fn sync_route_access_from_form(
                 client
                     .set_route_access(&SetRouteAccessRequest {
                         route_id: route_id.to_string(),
+                        tunnel_id: Some(tunnel_id.to_string()),
                         require_access_code: Some(code),
                         public: None,
                         cookie_ttl_ms: preserved_ttl_ms,
@@ -1485,6 +1548,7 @@ async fn sync_route_access_from_form(
                 client
                     .set_route_access(&SetRouteAccessRequest {
                         route_id: route_id.to_string(),
+                        tunnel_id: Some(tunnel_id.to_string()),
                         require_access_code: trimmed_code,
                         public: None,
                         cookie_ttl_ms: None,
@@ -5201,6 +5265,7 @@ mod tests {
             default_cookie_ttl_ms: Some(TEST_GATE_TTL_MS),
             routes: vec![tunnelmux_core::RouteAccessSummary {
                 route_id: "svc-a".to_string(),
+                tunnel_id: "primary".to_string(),
                 gated: true,
                 mode: "inherited".to_string(),
                 explicit: false,
@@ -5219,6 +5284,7 @@ mod tests {
             .push(request.clone());
         Json(tunnelmux_core::SetRouteAccessResponse {
             route_id: request.route_id,
+            tunnel_id: request.tunnel_id,
             require_access_code: request.require_access_code,
             public: request.public,
             cookie_ttl_ms: request.cookie_ttl_ms,

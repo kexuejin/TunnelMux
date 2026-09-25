@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tunnelmux_core::TunnelProvider;
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:4765";
@@ -123,6 +125,8 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
     Ok(settings)
 }
 
+static SETTINGS_TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow::Result<()> {
     std::fs::create_dir_all(config_dir).map_err(|error| {
         anyhow::anyhow!(
@@ -147,9 +151,38 @@ pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow
 
     let raw = serde_json::to_string_pretty(&normalized)
         .map_err(|error| anyhow::anyhow!("failed to serialize settings: {error}"))?;
-    std::fs::write(&path, format!("{raw}\n")).map_err(|error| {
-        anyhow::anyhow!("failed to write settings file {}: {error}", path.display())
-    })?;
+    let sequence = SETTINGS_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = path.with_extension(format!("json.tmp-{sequence}"));
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to create settings temp file {}: {error}",
+                temp_path.display()
+            )
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| anyhow::anyhow!("failed to secure settings temp file: {error}"))?;
+    }
+    file.write_all(format!("{raw}\n").as_bytes())
+        .map_err(|error| anyhow::anyhow!("failed to write settings temp file: {error}"))?;
+    file.sync_all()
+        .map_err(|error| anyhow::anyhow!("failed to sync settings temp file: {error}"))?;
+    drop(file);
+    if let Err(error) = std::fs::rename(&temp_path, &path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(anyhow::anyhow!(
+            "failed to move settings temp file {} -> {}: {error}",
+            temp_path.display(),
+            path.display()
+        ));
+    }
     Ok(())
 }
 

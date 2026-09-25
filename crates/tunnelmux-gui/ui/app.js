@@ -1984,12 +1984,17 @@ async function refreshDashboard() {
 
 async function refreshRoutes() {
   try {
-    const [snapshot, gates] = await Promise.all([
-      invoke('list_routes'),
-      invoke('list_route_access').catch(() => ({ routes: [] })),
-    ]);
-    applyRouteGateSnapshot(gates);
-    renderDefaultRouteAccessStatus();
+    const snapshot = await invoke('list_routes');
+    let gates = null;
+    try {
+      gates = await invoke('list_route_access');
+    } catch (error) {
+      renderStatus(`Service gate status is unavailable (${formatError(error)}); keeping the last known gate snapshot.`, true);
+    }
+    if (gates) {
+      applyRouteGateSnapshot(gates);
+      renderDefaultRouteAccessStatus();
+    }
     renderRoutes(snapshot);
   } catch (error) {
     if (state.daemonBootstrapping) {
@@ -2984,6 +2989,10 @@ async function saveDefaultRouteAccess() {
   }
 }
 
+function routeGateKey(tunnelId, routeId) {
+  return `${tunnelId || ''}\u0000${routeId || ''}`;
+}
+
 /** Keep the cached gate snapshot (defaults + per-route) in one place. */
 function applyRouteGateSnapshot(gates) {
   state.defaultRouteGate = {
@@ -2993,7 +3002,7 @@ function applyRouteGateSnapshot(gates) {
   };
   state.routeGates = {};
   for (const gate of Array.isArray(gates?.routes) ? gates.routes : []) {
-    state.routeGates[gate.route_id] = gate;
+    state.routeGates[routeGateKey(gate.tunnel_id, gate.route_id)] = gate;
   }
 }
 
@@ -3033,8 +3042,14 @@ function renderDefaultRouteAccessStatus() {
 }
 
 function routeGateFor(routeId) {
-  return state.routeGates?.[routeId] ?? {
+  const tunnelId = state.tunnelWorkspace?.current_tunnel_id || '';
+  const exact = state.routeGates?.[routeGateKey(tunnelId, routeId)];
+  const legacy = exact ?? Object.values(state.routeGates || {}).find((gate) =>
+    gate.route_id === routeId && (!gate.tunnel_id || gate.tunnel_id === tunnelId)
+  );
+  return legacy ?? {
     route_id: routeId,
+    tunnel_id: tunnelId,
     gated: Boolean(state.defaultRouteGate?.gated),
     mode: state.defaultRouteGate?.gated ? 'inherited' : 'open',
     explicit: false,

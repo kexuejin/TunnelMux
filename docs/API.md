@@ -189,6 +189,26 @@ curl -N -H "Authorization: Bearer dev-token" \
 }
 ```
 
+### Route access gates
+
+- `GET /v1/routes/access` — list the default and per-route gate state
+- `PUT /v1/routes/access` — set or clear a gate
+
+A non-default route request must include its tunnel scope:
+
+```json
+{
+  "route_id": "app-web",
+  "tunnel_id": "primary",
+  "require_access_code": "secret-code",
+  "public": null,
+  "cookie_ttl_ms": 3600000
+}
+```
+
+`route_id` values are scoped by `(tunnel_id, route_id)`. Legacy clients may omit
+`tunnel_id` only when the route id is unique; ambiguous requests are rejected.
+
 ## 4. Settings
 
 - `GET /v1/settings/health-check`

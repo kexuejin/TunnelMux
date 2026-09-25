@@ -226,13 +226,14 @@ curl -N -H "Authorization: Bearer dev-token" \
 公网路由可以在流量进入上游之前先要求访问码。相关端点：
 
 - `GET /v1/routes/access` — 汇总默认门禁与每个路由的门禁状态
-- `POST /v1/routes/access` — 设置默认门禁或某个路由的门禁
+- `PUT /v1/routes/access` — 设置默认门禁或某个路由的门禁
 
 `POST /v1/routes/access` 请求示例：
 
 ```json
 {
-  "route_id": "__default__",
+  "route_id": "app-web",
+  "tunnel_id": "primary",
   "require_access_code": "secret-code",
   "public": null,
   "cookie_ttl_ms": 3600000
@@ -240,7 +241,8 @@ curl -N -H "Authorization: Bearer dev-token" \
 ```
 
 - `route_id` 为 `__default__`（或 `default` / `*`）时设置全局默认门禁
-- 对普通路由设置 `require_access_code` 使用自定义访问码
+- 普通路由的 access 配置按 `(tunnel_id, route_id)` 隔离
+- 旧客户端只有在 route id 全局唯一时才可以省略 `tunnel_id`；同名歧义请求会被拒绝
 - `public: true` 让该路由显式公开
 
 ## 6. 诊断与观测

@@ -20,7 +20,7 @@ pub(super) async fn route_access_gate_response(
     let config = {
         let runtime = state.runtime.lock().await;
         resolve_effective_route_access(
-            runtime.persisted.route_access.get(&route.id),
+            route_access_config_for_route(&runtime.persisted.route_access, route),
             &runtime.persisted.default_route_access,
         )
     };
@@ -115,7 +115,7 @@ fn trimmed_access_code(value: Option<&str>) -> Option<&str> {
 async fn effective_route_access_code(state: &Arc<AppState>, route: &RouteRule) -> Option<String> {
     let runtime = state.runtime.lock().await;
     resolve_effective_route_access(
-        runtime.persisted.route_access.get(&route.id),
+        route_access_config_for_route(&runtime.persisted.route_access, route),
         &runtime.persisted.default_route_access,
     )?
     .require_access_code
@@ -329,7 +329,7 @@ pub(super) async fn proxy_request_for_tunnel(
     let method = request.method().clone();
     let uri = request.uri().clone();
     let headers = request.headers().clone();
-    let path = uri.path().to_string();
+    let path = canonical_request_path(uri.path());
     let query = uri.query().map(|value| value.to_string());
     let host = extract_host_from_headers(&headers);
 
@@ -1131,6 +1131,12 @@ pub(super) fn join_upstream_path(base_path: &str, forwarded_path: &str) -> Strin
     format!("{base}{forwarded_path}")
 }
 
+pub(super) fn canonical_request_path(path: &str) -> String {
+    let mut url = Url::parse("http://gateway.invalid").expect("static gateway URL is valid");
+    url.set_path(path);
+    url.path().to_string()
+}
+
 pub(super) fn select_route<'a>(
     routes: &'a [RouteRule],
     host: Option<&str>,
@@ -1148,7 +1154,7 @@ pub(super) fn select_route<'a>(
             None => true,
         })
         .filter(|route| match route.match_path_prefix.as_deref() {
-            Some(prefix) => path.starts_with(prefix),
+            Some(prefix) => path_has_prefix(path, prefix),
             None => true,
         })
         .max_by_key(|route| {
@@ -1353,6 +1359,9 @@ fn rewrite_cookie_path(cookie: &str, prefix: &str) -> Option<String> {
 }
 
 fn path_has_prefix(path: &str, prefix: &str) -> bool {
+    if prefix == "/" {
+        return path.starts_with('/');
+    }
     path == prefix
         || path
             .strip_prefix(prefix)
@@ -1395,8 +1404,9 @@ mod tests {
     use http_body_util::BodyExt;
 
     use super::{
-        build_http_proxy_response, cookie_value_matches, rewrite_cookie_path,
-        rewrite_root_location, rewrite_root_paths, strip_cookie_header,
+        build_http_proxy_response, canonical_request_path, cookie_value_matches,
+        rewrite_cookie_path, rewrite_root_location, rewrite_root_paths, select_route,
+        strip_cookie_header,
     };
 
     #[test]
@@ -1421,6 +1431,27 @@ mod tests {
             ),
             Some("other=1".to_string())
         );
+    }
+
+    #[test]
+    fn request_paths_are_canonical_and_prefixes_respect_segment_boundaries() {
+        let routes = vec![tunnelmux_core::RouteRule {
+            tunnel_id: "primary".to_string(),
+            id: "app".to_string(),
+            match_host: None,
+            match_path_prefix: Some("/app".to_string()),
+            strip_path_prefix: None,
+            upstream_url: "http://127.0.0.1:3000".to_string(),
+            fallback_upstream_url: None,
+            health_check_path: None,
+            enabled: true,
+            forward_host_header: false,
+            rewrite_response_paths: false,
+        }];
+
+        assert_eq!(canonical_request_path("/app/../admin"), "/admin");
+        assert!(select_route(&routes, None, "/application").is_none());
+        assert!(select_route(&routes, None, "/app/item").is_some());
     }
 
     #[test]

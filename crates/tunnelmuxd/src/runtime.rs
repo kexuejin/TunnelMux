@@ -2,6 +2,7 @@ use super::*;
 use std::path::Path;
 
 pub(super) async fn persist_from_runtime(state: &Arc<AppState>) -> Result<(), ApiError> {
+    let _persist_guard = state.persist_lock.lock().await;
     let snapshot = {
         let runtime = state.runtime.lock().await;
         runtime.persisted.clone()
@@ -51,11 +52,14 @@ pub(super) async fn stop_running_process(
     state: &Arc<AppState>,
     tunnel_id: &str,
 ) -> anyhow::Result<bool> {
-    let (running, pending_cleared) = {
+    let (running, pending_cleared, start_cancelled) = {
         let mut runtime = state.runtime.lock().await;
+        let start_cancelled = runtime.in_flight_starts.contains_key(tunnel_id);
+        runtime.cancel_start(tunnel_id);
         (
             runtime.running_tunnels.remove(tunnel_id),
             runtime.pending_restarts.remove(tunnel_id).is_some(),
+            start_cancelled,
         )
     };
 
@@ -64,7 +68,7 @@ pub(super) async fn stop_running_process(
         return Ok(true);
     }
 
-    Ok(pending_cleared)
+    Ok(pending_cleared || start_cancelled)
 }
 
 /// How the startup reclaim pass is configured.
@@ -855,15 +859,16 @@ pub(super) async fn process_pending_restart(state: &Arc<AppState>) -> Result<boo
 
     let mut changed = false;
     for tunnel_id in due_tunnels {
-        let pending = {
+        let (pending, generation) = {
             let mut runtime = state.runtime.lock().await;
             let Some(pending) = runtime.pending_restarts.remove(&tunnel_id) else {
                 continue;
             };
+            let generation = runtime.begin_start(&tunnel_id);
             let tunnel = runtime.persisted.ensure_tunnel_status_mut(&tunnel_id);
             tunnel.state = TunnelState::Starting;
             tunnel.updated_at = now_iso();
-            pending
+            (pending, generation)
         };
 
         let request = TunnelStartRequest {
@@ -877,37 +882,73 @@ pub(super) async fn process_pending_restart(state: &Arc<AppState>) -> Result<boo
 
         match spawn_provider_process(state, &request).await {
             Ok(spawned) => {
-                let status = TunnelStatus {
-                    state: TunnelState::Running,
-                    provider: Some(pending.provider.clone()),
-                    target_url: Some(pending.target_url.clone()),
-                    public_base_url: spawned.public_url.clone(),
-                    started_at: Some(pending.started_at.clone()),
-                    updated_at: now_iso(),
-                    process_id: spawned.process_id,
-                    auto_restart: pending.auto_restart,
-                    restart_count: pending.restart_count,
-                    last_error: None,
+                let SpawnedTunnel {
+                    child,
+                    public_url,
+                    process_id,
+                } = spawned;
+                let mut child = Some(child);
+                let committed = {
+                    let mut runtime = state.runtime.lock().await;
+                    if state.is_shutting_down() || !runtime.start_is_current(&tunnel_id, generation)
+                    {
+                        false
+                    } else {
+                        runtime.in_flight_starts.remove(&tunnel_id);
+                        let status = TunnelStatus {
+                            state: TunnelState::Running,
+                            provider: Some(pending.provider.clone()),
+                            target_url: Some(pending.target_url.clone()),
+                            public_base_url: public_url.clone(),
+                            started_at: Some(pending.started_at.clone()),
+                            updated_at: now_iso(),
+                            process_id,
+                            auto_restart: pending.auto_restart,
+                            restart_count: pending.restart_count,
+                            last_error: None,
+                        };
+                        runtime.running_tunnels.insert(
+                            tunnel_id.clone(),
+                            RunningTunnel {
+                                child: child.take().expect("child is committed once"),
+                                provider: pending.provider.clone(),
+                                target_url: pending.target_url.clone(),
+                                metadata: pending.metadata.clone(),
+                                auto_restart: pending.auto_restart,
+                                restart_count: pending.restart_count,
+                                started_at: pending.started_at.clone(),
+                                public_base_url: public_url.clone(),
+                                process_id,
+                            },
+                        );
+                        *runtime.persisted.ensure_tunnel_status_mut(&tunnel_id) = status;
+                        true
+                    }
                 };
-                let mut runtime = state.runtime.lock().await;
-                runtime.running_tunnels.insert(
-                    tunnel_id.clone(),
-                    RunningTunnel {
-                        child: spawned.child,
-                        provider: pending.provider,
-                        target_url: pending.target_url,
-                        metadata: pending.metadata,
-                        auto_restart: pending.auto_restart,
-                        restart_count: pending.restart_count,
-                        started_at: pending.started_at,
-                        public_base_url: spawned.public_url,
-                        process_id: spawned.process_id,
-                    },
-                );
-                *runtime.persisted.ensure_tunnel_status_mut(&tunnel_id) = status;
+                if !committed {
+                    terminate_child(
+                        child
+                            .as_mut()
+                            .expect("cancelled child is still owned by restart"),
+                    )
+                    .await
+                    .ok();
+                    continue;
+                }
                 changed = true;
             }
             Err(err) => {
+                let current = {
+                    let mut runtime = state.runtime.lock().await;
+                    let current = runtime.start_is_current(&tunnel_id, generation);
+                    if current {
+                        runtime.in_flight_starts.remove(&tunnel_id);
+                    }
+                    current
+                };
+                if !current {
+                    continue;
+                }
                 let action = determine_exit_action(
                     pending.auto_restart,
                     pending.restart_count,

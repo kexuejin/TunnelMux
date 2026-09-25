@@ -1,4 +1,5 @@
 use super::*;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct DeclarativeConfigFile {
@@ -166,6 +167,7 @@ pub(super) async fn load_persisted_state_for_reclaim(
     let mut parsed = parse_persisted_state(&raw)
         .with_context(|| format!("failed to parse state file: {}", path.display()))?;
 
+    migrate_route_access_keys(&mut parsed);
     if parsed.current_tunnel_id.is_none() {
         parsed.current_tunnel_id = Some("primary".to_string());
     }
@@ -224,6 +226,8 @@ fn legacy_persisted_state_to_current(raw: &str) -> Option<PersistedState> {
     })
 }
 
+static STATE_TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub(super) async fn save_state_file(path: &Path, state: &PersistedState) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -232,18 +236,37 @@ pub(super) async fn save_state_file(path: &Path, state: &PersistedState) -> anyh
     }
 
     let raw = serde_json::to_string_pretty(state)?;
-    let tmp_path = path.with_extension("json.tmp");
+    let sequence = STATE_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp_path = path.with_extension(format!("json.tmp-{sequence}"));
 
-    fs::write(&tmp_path, format!("{raw}\n"))
+    let mut file = fs::File::create(&tmp_path)
+        .await
+        .with_context(|| format!("failed to create state temp file: {}", tmp_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .await
+            .with_context(|| format!("failed to secure state temp file: {}", tmp_path.display()))?;
+    }
+    file.write_all(format!("{raw}\n").as_bytes())
         .await
         .with_context(|| format!("failed to write state temp file: {}", tmp_path.display()))?;
-    fs::rename(&tmp_path, path).await.with_context(|| {
-        format!(
-            "failed to move state temp file {} -> {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
+    file.sync_all()
+        .await
+        .with_context(|| format!("failed to sync state temp file: {}", tmp_path.display()))?;
+    drop(file);
+
+    if let Err(error) = fs::rename(&tmp_path, path).await {
+        let _ = fs::remove_file(&tmp_path).await;
+        return Err(error).with_context(|| {
+            format!(
+                "failed to move state temp file {} -> {}",
+                tmp_path.display(),
+                path.display()
+            )
+        });
+    }
 
     Ok(())
 }
@@ -252,6 +275,44 @@ pub(super) async fn save_state_file(path: &Path, state: &PersistedState) -> anyh
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[tokio::test]
+    async fn load_persisted_state_migrates_legacy_route_access_keys() {
+        let path = unique_temp_path("legacy-route-access.json");
+        fs::write(
+            &path,
+            r#"{
+  "current_tunnel_id": "primary",
+  "tunnels": [],
+  "routes": [{
+    "tunnel_id": "primary",
+    "id": "svc-a",
+    "match_path_prefix": "/",
+    "upstream_url": "http://127.0.0.1:3000",
+    "enabled": true
+  }],
+  "default_route_access": {},
+  "route_access": {
+    "svc-a": { "require_access_code": "legacy-code" }
+  }
+}
+"#,
+        )
+        .await
+        .expect("state fixture should write");
+
+        let state = load_persisted_state(&path)
+            .await
+            .expect("state should load");
+        assert_eq!(
+            state
+                .route_access
+                .get(&RouteAccessKey::scoped("primary", "svc-a"))
+                .and_then(|config| config.require_access_code.as_deref()),
+            Some("legacy-code")
+        );
+        let _ = fs::remove_file(&path).await;
+    }
 
     #[tokio::test]
     async fn load_persisted_state_migrates_legacy_single_tunnel_shape() {

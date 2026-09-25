@@ -50,13 +50,14 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 use tunnelmux_core::{
     ApplyRoutesRequest, ApplyRoutesResponse, ControlAuthMode, CreateRouteRequest,
-    DEFAULT_CONTROL_ADDR, DEFAULT_GATEWAY_TARGET_URL, DISABLED_HEALTH_CHECK_SENTINEL,
-    DashboardResponse, DeleteRouteResponse, DiagnosticsResponse, ErrorResponse,
-    HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse, MetricsResponse,
-    ReloadSettingsResponse, RouteAccessConfig, RouteMatchResponse, RouteMatchTarget, RouteRule,
-    RoutesResponse, TunnelLogsResponse, TunnelProvider, TunnelStartRequest, TunnelState,
-    TunnelStatus, TunnelStatusResponse, UpdateHealthCheckSettingsRequest, UpstreamHealthEntry,
-    UpstreamsHealthResponse, effective_route_health_check_path, route_health_check_enabled,
+    DEFAULT_CONTROL_ADDR, DEFAULT_GATEWAY_TARGET_URL, DEFAULT_ROUTE_ACCESS_ID,
+    DISABLED_HEALTH_CHECK_SENTINEL, DashboardResponse, DeleteRouteResponse, DiagnosticsResponse,
+    ErrorResponse, HealthCheckSettings, HealthCheckSettingsResponse, HealthResponse,
+    MetricsResponse, ReloadSettingsResponse, RouteAccessConfig, RouteMatchResponse,
+    RouteMatchTarget, RouteRule, RoutesResponse, TunnelLogsResponse, TunnelProvider,
+    TunnelStartRequest, TunnelState, TunnelStatus, TunnelStatusResponse,
+    UpdateHealthCheckSettingsRequest, UpstreamHealthEntry, UpstreamsHealthResponse,
+    effective_route_health_check_path, route_health_check_enabled,
 };
 use url::Url;
 
@@ -293,6 +294,13 @@ impl DaemonHandle {
     /// the public hostname pointed at a gateway nobody manages any more.
     pub async fn shutdown(mut self) {
         stop_all_running_tunnels(&self.state).await;
+        let gateway_bindings = {
+            let mut bindings = self.state.gateway_bindings.lock().await;
+            std::mem::take(&mut *bindings)
+        };
+        for binding in gateway_bindings.into_values() {
+            stop_gateway_binding(binding).await;
+        }
         if let Some(sender) = self.shutdown.take() {
             let _ = sender.send(());
         }
@@ -306,10 +314,16 @@ async fn stop_all_running_tunnels(state: &Arc<AppState>) {
     // tunnels out from under them.
     state.begin_shutdown();
 
-    let tunnel_ids: Vec<String> = {
-        let runtime = state.runtime.lock().await;
-        runtime.running_tunnels.keys().cloned().collect()
+    let (tunnel_ids, in_flight_ids) = {
+        let mut runtime = state.runtime.lock().await;
+        let tunnel_ids = runtime.running_tunnels.keys().cloned().collect::<Vec<_>>();
+        let in_flight_ids = runtime.in_flight_starts.keys().cloned().collect::<Vec<_>>();
+        for tunnel_id in &in_flight_ids {
+            runtime.cancel_start(tunnel_id);
+        }
+        (tunnel_ids, in_flight_ids)
     };
+    let _ = in_flight_ids;
 
     for tunnel_id in tunnel_ids {
         if let Err(err) = stop_running_process(state, &tunnel_id).await {
@@ -372,6 +386,66 @@ struct PersistedTunnelState {
     status: TunnelStatus,
 }
 
+const ROUTE_ACCESS_KEY_SEPARATOR: char = '\u{1f}';
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct RouteAccessKey {
+    tunnel_id: String,
+    route_id: String,
+}
+
+impl RouteAccessKey {
+    fn scoped(tunnel_id: &str, route_id: &str) -> Self {
+        Self {
+            tunnel_id: tunnel_id.to_string(),
+            route_id: route_id.to_string(),
+        }
+    }
+
+    fn legacy(route_id: &str) -> Self {
+        Self {
+            tunnel_id: String::new(),
+            route_id: route_id.to_string(),
+        }
+    }
+
+    fn storage_key(&self) -> String {
+        if self.tunnel_id.is_empty() {
+            self.route_id.clone()
+        } else {
+            format!(
+                "{}{}{}",
+                self.tunnel_id, ROUTE_ACCESS_KEY_SEPARATOR, self.route_id
+            )
+        }
+    }
+}
+
+impl Serialize for RouteAccessKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.storage_key())
+    }
+}
+
+impl<'de> Deserialize<'de> for RouteAccessKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.split_once(ROUTE_ACCESS_KEY_SEPARATOR) {
+            Some((tunnel_id, route_id)) => Self {
+                tunnel_id: tunnel_id.to_string(),
+                route_id: route_id.to_string(),
+            },
+            None => Self::legacy(&raw),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedState {
     current_tunnel_id: Option<String>,
@@ -381,9 +455,9 @@ struct PersistedState {
     /// Daemon-wide default gateway access gate inherited by services without an override.
     #[serde(default)]
     default_route_access: RouteAccessConfig,
-    /// Per-route gateway access gate overrides keyed by route id (parallel to routes).
+    /// Per-route gateway access gate overrides keyed by tunnel and route id.
     #[serde(default)]
-    route_access: HashMap<String, RouteAccessConfig>,
+    route_access: HashMap<RouteAccessKey, RouteAccessConfig>,
 }
 
 impl Default for PersistedState {
@@ -454,6 +528,54 @@ impl PersistedState {
     }
 }
 
+fn route_access_config_for_route<'a>(
+    route_access: &'a HashMap<RouteAccessKey, RouteAccessConfig>,
+    route: &RouteRule,
+) -> Option<&'a RouteAccessConfig> {
+    route_access
+        .get(&RouteAccessKey::scoped(&route.tunnel_id, &route.id))
+        .or_else(|| route_access.get(&RouteAccessKey::legacy(&route.id)))
+}
+
+fn migrate_route_access_keys(state: &mut PersistedState) {
+    let routes = state.routes.clone();
+    let existing = std::mem::take(&mut state.route_access);
+    state.route_access = existing
+        .into_iter()
+        .map(|(key, config)| {
+            if !key.tunnel_id.is_empty() {
+                return (key, config);
+            }
+            let matching_routes = routes
+                .iter()
+                .filter(|route| route.id == key.route_id)
+                .collect::<Vec<_>>();
+            match matching_routes.as_slice() {
+                [route] => (RouteAccessKey::scoped(&route.tunnel_id, &route.id), config),
+                _ => (key, config),
+            }
+        })
+        .collect();
+}
+
+fn remove_route_access_for_route(runtime: &mut RuntimeState, route: &RouteRule) {
+    runtime
+        .persisted
+        .route_access
+        .remove(&RouteAccessKey::scoped(&route.tunnel_id, &route.id));
+    if !runtime
+        .persisted
+        .routes
+        .iter()
+        .any(|remaining| remaining.id == route.id)
+    {
+        runtime
+            .persisted
+            .route_access
+            .remove(&RouteAccessKey::legacy(&route.id));
+    }
+}
+
 #[derive(Debug)]
 struct RunningTunnel {
     child: Child,
@@ -484,6 +606,27 @@ struct RuntimeState {
     persisted: PersistedState,
     running_tunnels: HashMap<String, RunningTunnel>,
     pending_restarts: HashMap<String, PendingRestart>,
+    in_flight_starts: HashMap<String, u64>,
+    next_start_generation: u64,
+}
+
+impl RuntimeState {
+    fn begin_start(&mut self, tunnel_id: &str) -> u64 {
+        self.next_start_generation = self.next_start_generation.wrapping_add(1);
+        let generation = self.next_start_generation;
+        self.in_flight_starts
+            .insert(tunnel_id.to_string(), generation);
+        generation
+    }
+
+    fn start_is_current(&self, tunnel_id: &str, generation: u64) -> bool {
+        self.in_flight_starts.get(tunnel_id) == Some(&generation)
+    }
+
+    fn cancel_start(&mut self, tunnel_id: &str) {
+        self.next_start_generation = self.next_start_generation.wrapping_add(1);
+        self.in_flight_starts.remove(tunnel_id);
+    }
 }
 
 #[derive(Debug)]
@@ -525,6 +668,7 @@ struct ControlLockState {
 #[derive(Debug)]
 struct AppState {
     runtime: Mutex<RuntimeState>,
+    persist_lock: Mutex<()>,
     gateway_bindings: Mutex<HashMap<String, GatewayBinding>>,
     upstream_health: Mutex<HashMap<UpstreamHealthKey, UpstreamHealth>>,
     health_check_settings: RwLock<HealthCheckSettings>,
@@ -775,7 +919,10 @@ pub async fn start(args: DaemonArgs) -> anyhow::Result<DaemonHandle> {
             persisted,
             running_tunnels: HashMap::new(),
             pending_restarts: HashMap::new(),
+            in_flight_starts: HashMap::new(),
+            next_start_generation: 0,
         }),
+        persist_lock: Mutex::new(()),
         gateway_bindings: Mutex::new(HashMap::new()),
         upstream_health: Mutex::new(HashMap::new()),
         health_check_settings: RwLock::new(health_check_settings),
@@ -795,10 +942,6 @@ pub async fn start(args: DaemonArgs) -> anyhow::Result<DaemonHandle> {
         ws_proxy_client,
         shutting_down: AtomicBool::new(false),
     });
-
-    tokio::spawn(monitor_runtime_state(shared.clone()));
-    tokio::spawn(monitor_upstream_health(shared.clone()));
-    tokio::spawn(monitor_config_file(shared.clone()));
 
     // The reclaim pass rewrote statuses that came from disk, so the file has to
     // agree before anything can read either one.
@@ -888,6 +1031,10 @@ pub async fn start(args: DaemonArgs) -> anyhow::Result<DaemonHandle> {
         shared.provider_log.max_files()
     );
     info!("gateway listening on {}", gateway_addr);
+
+    tokio::spawn(monitor_runtime_state(shared.clone()));
+    tokio::spawn(monitor_upstream_health(shared.clone()));
+    tokio::spawn(monitor_config_file(shared.clone()));
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let finished = Arc::new(Notify::new());
@@ -1036,10 +1183,28 @@ fn gateway_socket_addr_from_target_url(target_url: &str) -> anyhow::Result<Socke
     })
 }
 
+fn validate_resource_id(value: &str, field: &str) -> Result<(), ApiError> {
+    if value.is_empty() || value.len() > 128 {
+        return Err(ApiError::bad_request(format!(
+            "{field} must be 1..=128 characters"
+        )));
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(ApiError::bad_request(format!(
+            "{field} may contain only ASCII letters, digits, '-', '_' and '.'"
+        )));
+    }
+    Ok(())
+}
+
 fn normalize_route_request(request: CreateRouteRequest) -> Result<RouteRule, ApiError> {
     let id = request.id.trim().to_string();
-    if id.is_empty() {
-        return Err(ApiError::bad_request("route id is required"));
+    validate_resource_id(&id, "route id")?;
+    if id == DEFAULT_ROUTE_ACCESS_ID {
+        return Err(ApiError::bad_request("route id is reserved"));
     }
 
     let match_host = normalize_optional(request.match_host);
@@ -1084,10 +1249,7 @@ fn normalize_route_request(request: CreateRouteRequest) -> Result<RouteRule, Api
         validate_target_url(fallback)?;
     }
     let tunnel_id = request.tunnel_id.trim().to_string();
-    if tunnel_id.is_empty() {
-        return Err(ApiError::bad_request("tunnel_id is required"));
-    }
-
+    validate_resource_id(&tunnel_id, "tunnel_id")?;
     Ok(RouteRule {
         tunnel_id,
         id,
@@ -1390,7 +1552,7 @@ fn normalize_match_route_path(value: &str) -> Result<String, ApiError> {
     if !path.starts_with('/') {
         return Err(ApiError::bad_request("path must start with '/'"));
     }
-    Ok(path.to_string())
+    Ok(canonical_request_path(path))
 }
 
 fn tail_lines(source: &str, count: usize) -> Vec<String> {
@@ -1551,7 +1713,10 @@ mod tests {
                 },
                 running_tunnels: HashMap::new(),
                 pending_restarts: HashMap::new(),
+                in_flight_starts: HashMap::new(),
+                next_start_generation: 0,
             }),
+            persist_lock: Mutex::new(()),
             gateway_bindings: Mutex::new(HashMap::new()),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
@@ -1618,7 +1783,10 @@ mod tests {
                 },
                 running_tunnels: HashMap::new(),
                 pending_restarts: HashMap::new(),
+                in_flight_starts: HashMap::new(),
+                next_start_generation: 0,
             }),
+            persist_lock: Mutex::new(()),
             gateway_bindings: Mutex::new(HashMap::new()),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
@@ -1907,7 +2075,10 @@ mod tests {
                 },
                 running_tunnels: HashMap::new(),
                 pending_restarts: HashMap::new(),
+                in_flight_starts: HashMap::new(),
+                next_start_generation: 0,
             }),
+            persist_lock: Mutex::new(()),
             gateway_bindings: Mutex::new(HashMap::new()),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
@@ -4499,6 +4670,8 @@ mod tests {
                 },
             )]),
             pending_restarts: HashMap::new(),
+            in_flight_starts: HashMap::new(),
+            next_start_generation: 0,
         };
 
         let changed = reconcile_runtime_tunnel_state(&mut runtime, 5).expect("reconcile succeeds");
@@ -4539,6 +4712,8 @@ mod tests {
                 },
             )]),
             pending_restarts: HashMap::new(),
+            in_flight_starts: HashMap::new(),
+            next_start_generation: 0,
         };
 
         let changed = reconcile_runtime_tunnel_state(&mut runtime, 2).expect("reconcile succeeds");
@@ -4739,6 +4914,38 @@ mod tests {
     }
 
     #[test]
+    fn route_access_lookup_is_scoped_by_tunnel_and_route() {
+        let route_a = route_for_tunnel("tunnel-a", "svc", None, Some("/"), None, true);
+        let route_b = route_for_tunnel("tunnel-b", "svc", None, Some("/"), None, true);
+        let mut access = HashMap::new();
+        access.insert(
+            RouteAccessKey::scoped("tunnel-a", "svc"),
+            RouteAccessConfig {
+                require_access_code: Some("code-a".to_string()),
+                ..RouteAccessConfig::default()
+            },
+        );
+        access.insert(
+            RouteAccessKey::scoped("tunnel-b", "svc"),
+            RouteAccessConfig {
+                require_access_code: Some("code-b".to_string()),
+                ..RouteAccessConfig::default()
+            },
+        );
+
+        assert_eq!(
+            route_access_config_for_route(&access, &route_a)
+                .and_then(|config| config.require_access_code.as_deref()),
+            Some("code-a")
+        );
+        assert_eq!(
+            route_access_config_for_route(&access, &route_b)
+                .and_then(|config| config.require_access_code.as_deref()),
+            Some("code-b")
+        );
+    }
+
+    #[test]
     fn route_access_gate_allows_public_and_blocks_protected_routes() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -4760,7 +4967,7 @@ mod tests {
             {
                 let mut runtime = state.runtime.lock().await;
                 runtime.persisted.route_access.insert(
-                    "svc-a".to_string(),
+                    RouteAccessKey::scoped("primary", "svc-a"),
                     RouteAccessConfig {
                         require_access_code: Some("sekrit".to_string()),
                         public: None,

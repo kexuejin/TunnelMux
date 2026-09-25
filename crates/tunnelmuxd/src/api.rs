@@ -1,4 +1,5 @@
 use super::*;
+use tokio::io::AsyncWriteExt;
 use tunnelmux_core::{
     DEFAULT_ROUTE_ACCESS_ID, RouteAccessConfig, RouteAccessSummary, RouteAccessSummaryResponse,
     SetRouteAccessRequest, SetRouteAccessResponse, TunnelProfileSummary, TunnelWorkspaceResponse,
@@ -52,6 +53,8 @@ pub(super) async fn reusable_api_token(token_file: &std::path::Path) -> anyhow::
     generate_api_token()
 }
 
+static API_TOKEN_TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// Persist the token so local clients can auto-discover it, owner-only.
 pub(super) async fn persist_api_token(
     token_file: &std::path::Path,
@@ -59,17 +62,33 @@ pub(super) async fn persist_api_token(
 ) -> anyhow::Result<()> {
     if let Ok(raw) = tokio::fs::read_to_string(token_file).await {
         if raw.trim() == token {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                tokio::fs::set_permissions(token_file, std::fs::Permissions::from_mode(0o600))
+                    .await?;
+            }
             return Ok(());
         }
     }
     if let Some(parent) = token_file.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    std::fs::write(token_file, format!("{token}\n"))?;
+    let sequence = API_TOKEN_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_path = token_file.with_extension(format!("tmp-{sequence}"));
+    let mut file = tokio::fs::File::create(&temp_path).await?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(token_file, std::fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .await?;
+    }
+    file.write_all(format!("{token}\n").as_bytes()).await?;
+    file.sync_all().await?;
+    drop(file);
+    if let Err(error) = tokio::fs::rename(&temp_path, token_file).await {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(error.into());
     }
     Ok(())
 }
@@ -352,6 +371,9 @@ pub(super) async fn stream_tunnel_status(
 
     tokio::spawn(async move {
         loop {
+            if state_for_task.is_shutting_down() {
+                return;
+            }
             match build_tunnel_status_snapshot(&state_for_task, &tunnel_id).await {
                 Ok(snapshot) => {
                     let payload = match serde_json::to_string(&snapshot) {
@@ -510,9 +532,13 @@ pub(super) async fn stream_tunnel_logs(
     let poll_ms = normalize_log_stream_poll_ms(query.poll_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(128);
     let log_file = state.provider_log.path().to_path_buf();
+    let state_for_task = state.clone();
     let tunnel_id = query.tunnel_id.clone();
 
     tokio::spawn(async move {
+        if state_for_task.is_shutting_down() {
+            return;
+        }
         let mut last_offset = 0usize;
         if let Ok(source) = fs::read_to_string(&log_file).await {
             last_offset = source.len();
@@ -530,6 +556,9 @@ pub(super) async fn stream_tunnel_logs(
         }
 
         loop {
+            if state_for_task.is_shutting_down() {
+                return;
+            }
             match fs::read_to_string(&log_file).await {
                 Ok(source) => {
                     if source.len() < last_offset {
@@ -588,6 +617,9 @@ pub(super) async fn start_tunnel(
     if request.tunnel_id.trim().is_empty() {
         return Err(ApiError::bad_request("tunnel_id is required"));
     }
+    if state.is_shutting_down() {
+        return Err(ApiError::conflict("daemon is shutting down"));
+    }
     validate_target_url(&request.target_url)?;
     request.target_url = request.target_url.trim().to_string();
     let request_metadata = request.metadata.clone();
@@ -597,8 +629,9 @@ pub(super) async fn start_tunnel(
         .await
         .map_err(|err| ApiError::internal(format!("failed to stop existing tunnel: {err}")))?;
 
-    {
+    let generation = {
         let mut runtime = state.runtime.lock().await;
+        let generation = runtime.begin_start(&tunnel_id);
         runtime.persisted.current_tunnel_id = Some(tunnel_id.clone());
         let tunnel = runtime.persisted.ensure_tunnel_status_mut(&tunnel_id);
         *tunnel = default_tunnel_status(TunnelState::Starting);
@@ -606,58 +639,92 @@ pub(super) async fn start_tunnel(
         tunnel.target_url = Some(request.target_url.clone());
         tunnel.auto_restart = request.auto_restart.unwrap_or(true);
         runtime.pending_restarts.remove(&tunnel_id);
+        generation
+    };
+    if let Err(error) = persist_from_runtime(&state).await {
+        let mut runtime = state.runtime.lock().await;
+        runtime.cancel_start(&tunnel_id);
+        return Err(error);
     }
-    persist_from_runtime(&state).await?;
 
     let spawned = match spawn_provider_process(&state, &request).await {
         Ok(spawned) => spawned,
         Err(err) => {
-            {
+            let still_current = {
                 let mut runtime = state.runtime.lock().await;
-                let tunnel = runtime.persisted.ensure_tunnel_status_mut(&tunnel_id);
-                *tunnel = default_tunnel_status(TunnelState::Error);
-                tunnel.provider = Some(request.provider);
-                tunnel.target_url = Some(request.target_url);
-                tunnel.last_error = Some(err.to_string());
+                let current = runtime.start_is_current(&tunnel_id, generation);
+                if current {
+                    runtime.in_flight_starts.remove(&tunnel_id);
+                    let tunnel = runtime.persisted.ensure_tunnel_status_mut(&tunnel_id);
+                    *tunnel = default_tunnel_status(TunnelState::Error);
+                    tunnel.provider = Some(request.provider.clone());
+                    tunnel.target_url = Some(request.target_url.clone());
+                    tunnel.last_error = Some(err.to_string());
+                }
+                current
+            };
+            if !still_current {
+                return Err(ApiError::conflict("tunnel start was cancelled"));
             }
             persist_from_runtime(&state).await?;
             return Err(ApiError::internal(err.to_string()));
         }
     };
 
+    let SpawnedTunnel {
+        child,
+        public_url,
+        process_id,
+    } = spawned;
+    let mut child = Some(child);
     let status = {
         let mut runtime = state.runtime.lock().await;
-        let started_at = now_iso();
-        let auto_restart = request.auto_restart.unwrap_or(true);
-        let status = TunnelStatus {
-            state: TunnelState::Running,
-            provider: Some(request.provider.clone()),
-            target_url: Some(request.target_url.clone()),
-            public_base_url: spawned.public_url.clone(),
-            started_at: Some(started_at.clone()),
-            updated_at: now_iso(),
-            process_id: spawned.process_id,
-            auto_restart,
-            restart_count: 0,
-            last_error: None,
-        };
-        runtime.running_tunnels.insert(
-            tunnel_id.clone(),
-            RunningTunnel {
-                child: spawned.child,
-                provider: request.provider,
-                target_url: request.target_url,
-                metadata: request_metadata,
+        if state.is_shutting_down() || !runtime.start_is_current(&tunnel_id, generation) {
+            None
+        } else {
+            runtime.in_flight_starts.remove(&tunnel_id);
+            let started_at = now_iso();
+            let auto_restart = request.auto_restart.unwrap_or(true);
+            let status = TunnelStatus {
+                state: TunnelState::Running,
+                provider: Some(request.provider.clone()),
+                target_url: Some(request.target_url.clone()),
+                public_base_url: public_url.clone(),
+                started_at: Some(started_at.clone()),
+                updated_at: now_iso(),
+                process_id,
                 auto_restart,
                 restart_count: 0,
-                started_at,
-                public_base_url: spawned.public_url,
-                process_id: spawned.process_id,
-            },
-        );
-        runtime.pending_restarts.remove(&tunnel_id);
-        *runtime.persisted.ensure_tunnel_status_mut(&tunnel_id) = status.clone();
-        status
+                last_error: None,
+            };
+            runtime.running_tunnels.insert(
+                tunnel_id.clone(),
+                RunningTunnel {
+                    child: child.take().expect("child is committed once"),
+                    provider: request.provider,
+                    target_url: request.target_url,
+                    metadata: request_metadata,
+                    auto_restart,
+                    restart_count: 0,
+                    started_at,
+                    public_base_url: public_url,
+                    process_id,
+                },
+            );
+            runtime.pending_restarts.remove(&tunnel_id);
+            *runtime.persisted.ensure_tunnel_status_mut(&tunnel_id) = status.clone();
+            Some(status)
+        }
+    };
+    let Some(status) = status else {
+        terminate_child(
+            child
+                .as_mut()
+                .expect("cancelled child is still owned by start"),
+        )
+        .await
+        .map_err(|err| ApiError::internal(format!("failed to cancel tunnel start: {err}")))?;
+        return Err(ApiError::conflict("tunnel start was cancelled"));
     };
     persist_from_runtime(&state).await?;
 
@@ -733,11 +800,21 @@ pub(super) async fn delete_tunnel(
             .retain(|tunnel| tunnel.id != request.tunnel_id);
         let tunnels_removed = before_tunnels != runtime.persisted.tunnels.len();
 
+        let removed_routes = runtime
+            .persisted
+            .routes
+            .iter()
+            .filter(|route| route.tunnel_id == request.tunnel_id)
+            .cloned()
+            .collect::<Vec<_>>();
         let before_routes = runtime.persisted.routes.len();
         runtime
             .persisted
             .routes
             .retain(|route| route.tunnel_id != request.tunnel_id);
+        for route in &removed_routes {
+            remove_route_access_for_route(&mut runtime, route);
+        }
         let routes_removed = before_routes != runtime.persisted.routes.len();
 
         if runtime.persisted.current_tunnel_id.as_deref() == Some(request.tunnel_id.as_str()) {
@@ -854,6 +931,9 @@ pub(super) async fn stream_routes(
 
     tokio::spawn(async move {
         loop {
+            if state_for_task.is_shutting_down() {
+                return;
+            }
             let snapshot = build_routes_snapshot(&state_for_task).await;
             let payload = match serde_json::to_string(&snapshot) {
                 Ok(value) => value,
@@ -904,6 +984,9 @@ pub(super) async fn stream_upstreams_health(
 
     tokio::spawn(async move {
         loop {
+            if state_for_task.is_shutting_down() {
+                return;
+            }
             let snapshot =
                 build_upstreams_health_snapshot(&state_for_task, tunnel_id.as_deref()).await;
             let payload = match serde_json::to_string(&snapshot) {
@@ -955,6 +1038,9 @@ pub(super) async fn stream_metrics(
 
     tokio::spawn(async move {
         loop {
+            if state_for_task.is_shutting_down() {
+                return;
+            }
             let snapshot = build_metrics_snapshot(&state_for_task, tunnel_id.as_deref()).await;
             let payload = match serde_json::to_string(&snapshot) {
                 Ok(value) => value,
@@ -1013,6 +1099,9 @@ pub(super) async fn stream_dashboard(
 
     tokio::spawn(async move {
         loop {
+            if state_for_task.is_shutting_down() {
+                return;
+            }
             match build_dashboard_snapshot(&state_for_task, tunnel_id.as_deref()).await {
                 Ok(snapshot) => {
                     let payload = match serde_json::to_string(&snapshot) {
@@ -1416,12 +1505,22 @@ pub(super) async fn delete_route(
     };
     let removed = {
         let mut runtime = state.runtime.lock().await;
-        let before = runtime.persisted.routes.len();
-        runtime
+        let removed_route = runtime
             .persisted
             .routes
-            .retain(|item| !(item.id == id && item.tunnel_id == tunnel_id));
-        before != runtime.persisted.routes.len()
+            .iter()
+            .find(|item| item.id == id && item.tunnel_id == tunnel_id)
+            .cloned();
+        if let Some(route) = removed_route {
+            runtime
+                .persisted
+                .routes
+                .retain(|item| !(item.id == id && item.tunnel_id == tunnel_id));
+            remove_route_access_for_route(&mut runtime, &route);
+            true
+        } else {
+            false
+        }
     };
 
     if !removed {
@@ -1446,6 +1545,18 @@ pub(super) async fn set_route_access(
     let cookie_ttl_ms = request.cookie_ttl_ms.filter(|v| *v > 0);
 
     let mut runtime = state.runtime.lock().await;
+    let tunnel_id = if is_default {
+        None
+    } else {
+        Some(resolve_route_access_tunnel_id(
+            &runtime.persisted,
+            &route_id,
+            request.tunnel_id.as_deref(),
+        )?)
+    };
+    let access_key = tunnel_id
+        .as_deref()
+        .map(|tunnel_id| RouteAccessKey::scoped(tunnel_id, &route_id));
     let stored = if is_default {
         runtime.persisted.default_route_access = RouteAccessConfig {
             require_access_code,
@@ -1453,29 +1564,35 @@ pub(super) async fn set_route_access(
             cookie_ttl_ms,
         };
         runtime.persisted.default_route_access.clone()
-    } else if public.is_some() || require_access_code.is_some() || cookie_ttl_ms.is_some() {
-        let config = RouteAccessConfig {
-            require_access_code: if public.is_some() {
-                None
-            } else {
-                require_access_code
-            },
-            public,
-            cookie_ttl_ms,
-        };
-        runtime
-            .persisted
-            .route_access
-            .insert(route_id.clone(), config.clone());
-        config
     } else {
-        runtime.persisted.route_access.remove(&route_id);
-        RouteAccessConfig::default()
+        let access_key = access_key.ok_or_else(|| {
+            ApiError::bad_request("tunnel_id is required for a non-default route")
+        })?;
+        if public.is_some() || require_access_code.is_some() || cookie_ttl_ms.is_some() {
+            let config = RouteAccessConfig {
+                require_access_code: if public.is_some() {
+                    None
+                } else {
+                    require_access_code
+                },
+                public,
+                cookie_ttl_ms,
+            };
+            runtime
+                .persisted
+                .route_access
+                .insert(access_key, config.clone());
+            config
+        } else {
+            runtime.persisted.route_access.remove(&access_key);
+            RouteAccessConfig::default()
+        }
     };
     drop(runtime);
     persist_from_runtime(&state).await?;
     Ok(Json(SetRouteAccessResponse {
         route_id,
+        tunnel_id,
         require_access_code: stored.require_access_code,
         public: stored.public,
         cookie_ttl_ms: stored.cookie_ttl_ms,
@@ -1493,11 +1610,16 @@ pub(super) async fn list_route_access(
             .routes
             .iter()
             .map(|route| {
-                let route_config = runtime.persisted.route_access.get(&route.id);
-                summarize_route_access(&route.id, route_config, &default_config)
+                let route_config =
+                    route_access_config_for_route(&runtime.persisted.route_access, route);
+                summarize_route_access(&route.tunnel_id, &route.id, route_config, &default_config)
             })
             .collect::<Vec<_>>();
-        summaries.sort_by(|left, right| left.route_id.cmp(&right.route_id));
+        summaries.sort_by(|left, right| {
+            left.tunnel_id
+                .cmp(&right.tunnel_id)
+                .then_with(|| left.route_id.cmp(&right.route_id))
+        });
         (default_config, summaries)
     };
     Ok(Json(RouteAccessSummaryResponse {
@@ -1509,6 +1631,42 @@ pub(super) async fn list_route_access(
         default_cookie_ttl_ms: default_config.cookie_ttl_ms,
         routes,
     }))
+}
+
+fn resolve_route_access_tunnel_id(
+    state: &PersistedState,
+    route_id: &str,
+    requested_tunnel_id: Option<&str>,
+) -> Result<String, ApiError> {
+    if let Some(tunnel_id) = requested_tunnel_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if state
+            .routes
+            .iter()
+            .any(|route| route.id == route_id && route.tunnel_id == tunnel_id)
+        {
+            return Ok(tunnel_id.to_string());
+        }
+        return Err(ApiError::not_found(format!(
+            "route '{route_id}' not found in tunnel '{tunnel_id}'"
+        )));
+    }
+
+    let matching = state
+        .routes
+        .iter()
+        .filter(|route| route.id == route_id)
+        .map(|route| route.tunnel_id.as_str())
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [tunnel_id] => Ok((*tunnel_id).to_string()),
+        [] => Err(ApiError::not_found(format!("route '{route_id}' not found"))),
+        _ => Err(ApiError::bad_request(format!(
+            "tunnel_id is required for ambiguous route id '{route_id}'"
+        ))),
+    }
 }
 
 fn normalize_route_access_id(route_id: &str) -> Result<String, ApiError> {
@@ -1530,6 +1688,7 @@ fn trimmed_access_code(value: Option<&str>) -> Option<&str> {
 }
 
 fn summarize_route_access(
+    tunnel_id: &str,
     route_id: &str,
     route_config: Option<&RouteAccessConfig>,
     default_config: &RouteAccessConfig,
@@ -1546,6 +1705,7 @@ fn summarize_route_access(
     {
         return RouteAccessSummary {
             route_id: route_id.to_string(),
+            tunnel_id: tunnel_id.to_string(),
             gated: false,
             mode: "public".to_string(),
             explicit: true,
@@ -1559,6 +1719,7 @@ fn summarize_route_access(
     {
         return RouteAccessSummary {
             route_id: route_id.to_string(),
+            tunnel_id: tunnel_id.to_string(),
             gated: true,
             mode: "route".to_string(),
             explicit: true,
@@ -1569,6 +1730,7 @@ fn summarize_route_access(
 
     RouteAccessSummary {
         route_id: route_id.to_string(),
+        tunnel_id: tunnel_id.to_string(),
         gated: default_code.is_some(),
         mode: if default_code.is_some() {
             "inherited"
@@ -1603,16 +1765,27 @@ pub(super) async fn apply_routes(
     ensure_apply_payload_safe(&normalized, replace, allow_empty)?;
 
     let applied = normalized.len();
-    let plan = if dry_run {
-        let runtime = state.runtime.lock().await;
-        build_route_apply_plan(&runtime.persisted.routes, &normalized, replace)
-    } else {
-        let mut runtime = state.runtime.lock().await;
-        let plan = build_route_apply_plan(&runtime.persisted.routes, &normalized, replace);
-        runtime.persisted.routes =
-            apply_route_rules(&runtime.persisted.routes, normalized, replace);
-        plan
-    };
+    let plan =
+        if dry_run {
+            let runtime = state.runtime.lock().await;
+            build_route_apply_plan(&runtime.persisted.routes, &normalized, replace)
+        } else {
+            let mut runtime = state.runtime.lock().await;
+            let plan = build_route_apply_plan(&runtime.persisted.routes, &normalized, replace);
+            let previous_routes = runtime.persisted.routes.clone();
+            let next_routes = apply_route_rules(&runtime.persisted.routes, normalized, replace);
+            runtime.persisted.routes = next_routes.clone();
+            if replace {
+                for previous in &previous_routes {
+                    if !runtime.persisted.routes.iter().any(|route| {
+                        route.id == previous.id && route.tunnel_id == previous.tunnel_id
+                    }) {
+                        remove_route_access_for_route(&mut runtime, previous);
+                    }
+                }
+            }
+            plan
+        };
 
     if !dry_run {
         persist_from_runtime(&state).await?;
