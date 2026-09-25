@@ -2255,6 +2255,7 @@ struct ProviderInstallInvocation {
     args: Vec<String>,
 }
 
+#[cfg(target_os = "macos")]
 fn provider_install_command(provider: &TunnelProvider) -> &'static str {
     match provider {
         TunnelProvider::Cloudflared => "brew install cloudflared",

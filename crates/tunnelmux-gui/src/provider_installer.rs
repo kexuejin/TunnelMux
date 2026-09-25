@@ -119,10 +119,12 @@ pub fn provider_binary_name(provider: &TunnelProvider) -> &'static str {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn current_cloudflared_version() -> &'static str {
     "2026.2.0"
 }
 
+#[cfg(target_os = "macos")]
 fn current_ngrok_version() -> &'static str {
     "3.37.1"
 }
