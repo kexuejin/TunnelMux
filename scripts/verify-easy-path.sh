@@ -3,6 +3,9 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+if ! command -v cargo >/dev/null 2>&1 && [[ -x "$HOME/.cargo/bin/cargo" ]]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
 
 echo "==> Verifier drift guard"
 node --test scripts/verify-easy-path.test.mjs
@@ -12,6 +15,8 @@ node --test crates/tunnelmux-gui/ui/app.test.mjs
 
 echo "==> GUI app syntax"
 node --check crates/tunnelmux-gui/ui/app.js
+node scripts/gui-e2e.mjs
+node --test scripts/verify-release-manifest.test.mjs
 
 echo "==> Provider availability Rust tests"
 cargo test -p tunnelmux-gui provider_availability

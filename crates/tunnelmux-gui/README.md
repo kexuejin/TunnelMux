@@ -24,6 +24,11 @@ running on exit.
 Quitting the app stops the embedded daemon and the tunnels it owns. Closing the
 window only hides it to the tray.
 
+GUI control/provider tokens are stored in the platform credential store
+(macOS Keychain, Windows Credential Manager, or Linux Secret Service/keyutils)
+under the `com.tunnelmux.gui` service. `settings.json` keeps only non-secret
+configuration; legacy plaintext token fields are migrated and removed on load.
+
 ## Local Run
 
 ```bash

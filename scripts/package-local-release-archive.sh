@@ -17,7 +17,7 @@ package_dir="$dist_dir/$package_name"
 archive_path="$dist_dir/$package_name.tar.gz"
 checksum_path="$dist_dir/SHA256SUMS"
 
-required_binaries=(tunnelmuxd tunnelmux-cli tunnelmux-gui)
+required_binaries=(tunnelmuxd tunnelmux-cli tunnelmux-gui tunnelmux-updater)
 required_docs=(README.md README.zh-CN.md LICENSE CHANGELOG.md)
 
 mkdir -p "$dist_dir"

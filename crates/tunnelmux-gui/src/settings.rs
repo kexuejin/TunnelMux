@@ -90,6 +90,13 @@ pub fn settings_path(config_dir: &Path) -> PathBuf {
 pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> {
     let path = settings_path(config_dir);
     if !path.exists() {
+        #[cfg(not(test))]
+        {
+            let mut settings = GuiSettings::default();
+            hydrate_settings_secrets(&mut settings)?;
+            return Ok(settings);
+        }
+        #[cfg(test)]
         return Ok(GuiSettings::default());
     }
 
@@ -104,13 +111,34 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
     let mut settings: GuiSettings = serde_json::from_value(value.clone()).map_err(|error| {
         anyhow::anyhow!("failed to parse settings file {}: {error}", path.display())
     })?;
+    settings = normalize_settings(settings, &value);
+    let had_plaintext_secrets = has_plaintext_secrets(&settings);
+    hydrate_settings_secrets(&mut settings)?;
+    if had_plaintext_secrets {
+        let mut sanitized = settings.clone();
+        clear_settings_secrets(&mut sanitized);
+        write_settings_file(config_dir, &sanitized)?;
+    }
+    Ok(settings)
+}
 
+static SETTINGS_TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow::Result<()> {
+    let normalized = normalize_settings(settings.clone(), &serde_json::Value::Null);
+    persist_settings_secrets(&normalized)?;
+    let mut sanitized = normalized;
+    clear_settings_secrets(&mut sanitized);
+    write_settings_file(config_dir, &sanitized)
+}
+
+fn normalize_settings(mut settings: GuiSettings, legacy_value: &serde_json::Value) -> GuiSettings {
     settings.base_url = normalize_base_url(&settings.base_url);
     settings.token = normalize_token(settings.token);
     settings.current_tunnel_id = normalize_token(settings.current_tunnel_id);
     settings.tunnels = normalize_tunnel_profiles(settings.tunnels);
     if settings.tunnels.is_empty() {
-        if let Some(legacy) = migrate_legacy_tunnel_profile(&value) {
+        if let Some(legacy) = migrate_legacy_tunnel_profile(legacy_value) {
             settings.current_tunnel_id = Some(legacy.id.clone());
             settings.tunnels = vec![legacy];
         }
@@ -122,12 +150,108 @@ pub fn load_settings_from_dir(config_dir: &Path) -> anyhow::Result<GuiSettings> 
     {
         settings.current_tunnel_id = settings.tunnels.first().map(|tunnel| tunnel.id.clone());
     }
-    Ok(settings)
+    settings
 }
 
-static SETTINGS_TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
+fn has_plaintext_secrets(settings: &GuiSettings) -> bool {
+    settings.token.is_some()
+        || settings.tunnels.iter().any(|profile| {
+            profile.cloudflared_tunnel_token.is_some() || profile.ngrok_authtoken.is_some()
+        })
+}
 
-pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow::Result<()> {
+fn provider_secret_user(profile_id: &str, provider: &TunnelProvider) -> String {
+    let provider = match provider {
+        TunnelProvider::Cloudflared => "cloudflared",
+        TunnelProvider::Ngrok => "ngrok",
+    };
+    crate::secret_store::provider_token_user(profile_id, provider)
+}
+
+fn hydrate_settings_secrets(settings: &mut GuiSettings) -> anyhow::Result<()> {
+    let control_user = crate::secret_store::control_token_user();
+    if let Some(file_token) = settings.token.clone() {
+        if crate::secret_store::get(control_user)?.is_none() {
+            crate::secret_store::set(control_user, &file_token)?;
+        }
+    } else if let Some(stored) = crate::secret_store::get(control_user)? {
+        settings.token = Some(stored);
+    }
+
+    for profile in &mut settings.tunnels {
+        hydrate_profile_secret(profile, true)?;
+        hydrate_profile_secret(profile, false)?;
+    }
+    Ok(())
+}
+
+fn hydrate_profile_secret(
+    profile: &mut TunnelProfileSettings,
+    cloudflared: bool,
+) -> anyhow::Result<()> {
+    let user = provider_secret_user(
+        &profile.id,
+        if cloudflared {
+            &TunnelProvider::Cloudflared
+        } else {
+            &TunnelProvider::Ngrok
+        },
+    );
+    let file_value = if cloudflared {
+        profile.cloudflared_tunnel_token.clone()
+    } else {
+        profile.ngrok_authtoken.clone()
+    };
+    let stored = crate::secret_store::get(&user)?;
+    if let Some(file_value) = file_value {
+        if stored.is_none() {
+            crate::secret_store::set(&user, &file_value)?;
+        }
+        return Ok(());
+    }
+    if let Some(stored) = stored {
+        if cloudflared {
+            profile.cloudflared_tunnel_token = Some(stored);
+        } else {
+            profile.ngrok_authtoken = Some(stored);
+        }
+    }
+    Ok(())
+}
+
+fn persist_settings_secrets(settings: &GuiSettings) -> anyhow::Result<()> {
+    let control_user = crate::secret_store::control_token_user();
+    if let Some(token) = settings.token.as_deref() {
+        crate::secret_store::set(control_user, token)?;
+    } else {
+        crate::secret_store::delete(control_user)?;
+    }
+    for profile in &settings.tunnels {
+        let cloudflared_user = provider_secret_user(&profile.id, &TunnelProvider::Cloudflared);
+        if let Some(token) = profile.cloudflared_tunnel_token.as_deref() {
+            crate::secret_store::set(&cloudflared_user, token)?;
+        } else {
+            crate::secret_store::delete(&cloudflared_user)?;
+        }
+        let ngrok_user = provider_secret_user(&profile.id, &TunnelProvider::Ngrok);
+        if let Some(token) = profile.ngrok_authtoken.as_deref() {
+            crate::secret_store::set(&ngrok_user, token)?;
+        } else {
+            crate::secret_store::delete(&ngrok_user)?;
+        }
+    }
+    Ok(())
+}
+
+fn clear_settings_secrets(settings: &mut GuiSettings) {
+    settings.token = None;
+    for profile in &mut settings.tunnels {
+        profile.cloudflared_tunnel_token = None;
+        profile.ngrok_authtoken = None;
+    }
+}
+
+fn write_settings_file(config_dir: &Path, settings: &GuiSettings) -> anyhow::Result<()> {
     std::fs::create_dir_all(config_dir).map_err(|error| {
         anyhow::anyhow!(
             "failed to create settings directory {}: {error}",
@@ -135,21 +259,7 @@ pub fn save_settings_to_dir(config_dir: &Path, settings: &GuiSettings) -> anyhow
         )
     })?;
     let path = settings_path(config_dir);
-    let mut normalized = settings.clone();
-    normalized.base_url = normalize_base_url(&normalized.base_url);
-    normalized.token = normalize_token(normalized.token);
-    normalized.current_tunnel_id = normalize_token(normalized.current_tunnel_id);
-    normalized.tunnels = normalize_tunnel_profiles(normalized.tunnels);
-    if normalized
-        .current_tunnel_id
-        .as_deref()
-        .map(|id| normalized.tunnels.iter().any(|tunnel| tunnel.id == id))
-        != Some(true)
-    {
-        normalized.current_tunnel_id = normalized.tunnels.first().map(|tunnel| tunnel.id.clone());
-    }
-
-    let raw = serde_json::to_string_pretty(&normalized)
+    let raw = serde_json::to_string_pretty(settings)
         .map_err(|error| anyhow::anyhow!("failed to serialize settings: {error}"))?;
     let sequence = SETTINGS_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_path = path.with_extension(format!("json.tmp-{sequence}"));
@@ -362,8 +472,12 @@ mod tests {
         };
 
         save_settings_to_dir(&temp_dir, &expected).expect("settings should save");
+        let raw =
+            std::fs::read_to_string(settings_path(&temp_dir)).expect("settings file should read");
+        assert!(!raw.contains("dev-token"));
+        assert!(!raw.contains("cf-token"));
+        assert!(!raw.contains("ngrok-token"));
         let loaded = load_settings_from_dir(&temp_dir).expect("saved settings should reload");
-
         assert_eq!(
             loaded,
             GuiSettings {
@@ -387,6 +501,8 @@ mod tests {
         .expect("legacy settings should write");
 
         let loaded = load_settings_from_dir(&temp_dir).expect("legacy settings should load");
+        let migrated_raw = std::fs::read_to_string(&path).expect("migrated settings should read");
+        assert!(!migrated_raw.contains("legacy-token"));
 
         assert_eq!(loaded.base_url, "http://127.0.0.1:8765");
         assert_eq!(loaded.token.as_deref(), Some("legacy-token"));

@@ -10,6 +10,8 @@ test('verify-easy-path script covers focused GUI readiness, ngrok start prefligh
   assert.match(script, /GUI helper tests \(empty-state recovery, passive provider refresh, service-save recovery, startup recovery, pending-live handoff, save-flow momentum\)/);
   assert.match(script, /node --test crates\/tunnelmux-gui\/ui\/app\.test\.mjs/);
   assert.match(script, /node --check crates\/tunnelmux-gui\/ui\/app\.js/);
+  assert.match(script, /node scripts\/gui-e2e\.mjs/);
+  assert.match(script, /scripts\/verify-release-manifest\.test\.mjs/);
   assert.match(script, /cargo test -p tunnelmux-gui provider_availability/);
   assert.match(script, /cargo test -p tunnelmux-gui settings_save_reconnect/);
   assert.match(script, /cargo test -p tunnelmux-gui startup_reconnect_mode/);

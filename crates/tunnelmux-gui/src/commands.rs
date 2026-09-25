@@ -338,7 +338,9 @@ fn os_vendor_component() -> &'static str {
 }
 
 fn is_update_asset_for_target(name: &str, target: &str) -> bool {
-    name.starts_with("tunnelmux-") && name.contains(target) && name.ends_with(".tar.gz")
+    name.starts_with("tunnelmux-")
+        && name.contains(target)
+        && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
 }
 
 fn is_valid_release_version(value: &str) -> bool {
@@ -351,7 +353,7 @@ fn is_valid_release_version(value: &str) -> bool {
 }
 
 fn is_safe_update_asset_name(value: &str) -> bool {
-    value.ends_with(".tar.gz")
+    (value.ends_with(".tar.gz") || value.ends_with(".zip"))
         && !value.contains('/')
         && !value.contains('\\')
         && Path::new(value).file_name().and_then(OsStr::to_str) == Some(value)
@@ -464,14 +466,25 @@ async fn download_and_install_app_update_impl(
     fs::create_dir_all(&extract_dir)?;
     extract_update_archive(&archive_path, &extract_dir)?;
 
-    let installed_binaries = install_update_binaries(&extract_dir, &install_dir)?;
+    let (installed_binaries, message) = if cfg!(windows) {
+        let binaries = stage_windows_update(&extract_dir, &install_dir)?;
+        (
+            binaries,
+            "Update staged. Restart TunnelMux to apply the replacement safely.".to_string(),
+        )
+    } else {
+        (
+            install_update_binaries(&extract_dir, &install_dir)?,
+            "Update installed. Restart TunnelMux to use the new binaries.".to_string(),
+        )
+    };
     Ok(AppUpdateInstallVm {
         version: version.to_string(),
         asset_name: asset_name.to_string(),
         archive_path: archive_path.display().to_string(),
         install_dir: install_dir.display().to_string(),
         installed_binaries,
-        message: "Update installed. Restart TunnelMux to use the new binaries.".to_string(),
+        message,
     })
 }
 
@@ -493,7 +506,42 @@ fn extract_update_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Re
         archive.unpack(extract_dir)?;
         return Ok(());
     }
-    anyhow::bail!("automatic install currently supports .tar.gz raw archives only")
+    if archive_name.ends_with(".zip") {
+        let file = fs::File::open(archive_path)?;
+        let mut archive = zip::ZipArchive::new(file)?;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index)?;
+            if entry
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 == 0o120000)
+            {
+                anyhow::bail!("update archive contains a symlink entry");
+            }
+            let Some(relative_path) = entry.enclosed_name() else {
+                anyhow::bail!("update archive contains an unsafe path");
+            };
+            let output_path = extract_dir.join(relative_path);
+            if !output_path.starts_with(extract_dir) {
+                anyhow::bail!("update archive escapes the extraction directory");
+            }
+            if entry.is_dir() {
+                fs::create_dir_all(&output_path)?;
+                continue;
+            }
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut output = fs::File::create(&output_path)?;
+            std::io::copy(&mut entry, &mut output)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&output_path, fs::Permissions::from_mode(0o755))?;
+            }
+        }
+        return Ok(());
+    }
+    anyhow::bail!("automatic install supports only .tar.gz or .zip raw archives")
 }
 
 fn is_native_bundle_executable(path: &Path) -> bool {
@@ -530,11 +578,53 @@ fn install_update_binaries(extract_dir: &Path, install_dir: &Path) -> anyhow::Re
     Ok(installed)
 }
 
+fn stage_windows_update(extract_dir: &Path, install_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let pending_dir = install_dir.join(format!(".tunnelmux-update-pending-{}", std::process::id()));
+    if pending_dir.exists() {
+        fs::remove_dir_all(&pending_dir)?;
+    }
+    fs::create_dir_all(&pending_dir)?;
+
+    let mut staged = Vec::new();
+    for name in update_binary_names() {
+        let Some(source) = find_file_recursive(extract_dir, name) else {
+            anyhow::bail!("update archive did not contain {name}");
+        };
+        fs::copy(&source, pending_dir.join(name))?;
+        staged.push((*name).to_string());
+    }
+    let helper = pending_dir.join("tunnelmux-updater.exe");
+    if !helper.exists() {
+        anyhow::bail!("update archive did not contain the Windows updater helper");
+    }
+    std::process::Command::new(&helper)
+        .args([
+            "--pid",
+            &std::process::id().to_string(),
+            "--payload-dir",
+            &pending_dir.to_string_lossy(),
+            "--install-dir",
+            &install_dir.to_string_lossy(),
+        ])
+        .spawn()?;
+    Ok(staged)
+}
+
 fn update_binary_names() -> &'static [&'static str] {
     if cfg!(windows) {
-        &["tunnelmux-gui.exe", "tunnelmuxd.exe", "tunnelmux-cli.exe"]
+        &[
+            "tunnelmux-gui.exe",
+            "tunnelmuxd.exe",
+            "tunnelmux-cli.exe",
+            "tunnelmux-updater.exe",
+        ]
     } else {
-        &["tunnelmux-gui", "tunnelmuxd", "tunnelmux-cli"]
+        &[
+            "tunnelmux-gui",
+            "tunnelmuxd",
+            "tunnelmux-cli",
+            "tunnelmux-updater",
+        ]
     }
 }
 
@@ -2677,6 +2767,7 @@ mod tests {
     };
     use flate2::{Compression, write::GzEncoder};
     use std::{
+        io::{Cursor, Write},
         net::SocketAddr,
         path::Path,
         sync::atomic::{AtomicU64, Ordering},
@@ -2684,6 +2775,7 @@ mod tests {
     use tar::{Builder, Header};
     use tokio::net::TcpListener;
     use tunnelmux_core::{TunnelStartRequest, TunnelStatus, TunnelStatusResponse};
+    use zip::{ZipWriter, write::FileOptions};
 
     #[test]
     fn update_inputs_fail_closed_for_unsafe_paths_and_missing_hash() {
@@ -2701,6 +2793,45 @@ mod tests {
         assert!(validate_update_inputs(url, "../evil.tar.gz", Some(&hash), "0.3.1").is_err());
         assert!(validate_update_inputs(url, "evil.tar.gz", None, "0.3.1").is_err());
         assert!(validate_update_inputs(url, "evil.tar.gz", Some(&hash), "../0.3.1").is_err());
+    }
+
+    #[test]
+    fn zip_update_archive_extracts_regular_files_safely() {
+        let temp_dir = prepare_temp_dir();
+        let archive_path = temp_dir.join("update.zip");
+        let extract_dir = temp_dir.join("extract");
+        let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+        archive
+            .start_file("package/tunnelmux-gui.exe", FileOptions::<()>::default())
+            .expect("zip entry should start");
+        archive
+            .write_all(b"binary")
+            .expect("zip entry should write");
+        let bytes = archive.finish().expect("zip should finish").into_inner();
+        std::fs::write(&archive_path, bytes).expect("zip should save");
+
+        extract_update_archive(&archive_path, &extract_dir).expect("zip should extract");
+        assert_eq!(
+            std::fs::read(extract_dir.join("package/tunnelmux-gui.exe"))
+                .expect("extracted file should exist"),
+            b"binary"
+        );
+    }
+
+    #[test]
+    fn zip_update_archive_rejects_path_traversal() {
+        let temp_dir = prepare_temp_dir();
+        let archive_path = temp_dir.join("unsafe.zip");
+        let extract_dir = temp_dir.join("extract");
+        let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+        archive
+            .start_file("../escape.txt", FileOptions::<()>::default())
+            .expect("zip entry should start");
+        archive.write_all(b"nope").expect("zip entry should write");
+        let bytes = archive.finish().expect("zip should finish").into_inner();
+        std::fs::write(&archive_path, bytes).expect("zip should save");
+
+        assert!(extract_update_archive(&archive_path, &extract_dir).is_err());
     }
 
     #[test]

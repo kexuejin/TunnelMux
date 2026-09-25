@@ -2,6 +2,7 @@ pub mod commands;
 pub mod daemon_manager;
 pub mod embedded_daemon;
 pub mod provider_installer;
+pub mod secret_store;
 pub mod settings;
 pub mod state;
 pub mod tray;

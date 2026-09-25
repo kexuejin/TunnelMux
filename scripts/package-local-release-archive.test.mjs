@@ -14,7 +14,7 @@ test('package-local-release-archive creates the current raw archive layout from 
   const distDir = path.join(workDir, 'dist');
 
   mkdirSync(releaseDir, { recursive: true });
-  for (const name of ['tunnelmuxd', 'tunnelmux-cli', 'tunnelmux-gui']) {
+  for (const name of ['tunnelmuxd', 'tunnelmux-cli', 'tunnelmux-gui', 'tunnelmux-updater']) {
     const binaryPath = path.join(releaseDir, name);
     writeFileSync(binaryPath, `#!/usr/bin/env bash\necho ${name}\n`);
     chmodSync(binaryPath, 0o755);
@@ -43,6 +43,7 @@ test('package-local-release-archive creates the current raw archive layout from 
   assert.match(listing.stdout, /tunnelmux-9\.9\.9-test-test-target\/tunnelmuxd/);
   assert.match(listing.stdout, /tunnelmux-9\.9\.9-test-test-target\/tunnelmux-cli/);
   assert.match(listing.stdout, /tunnelmux-9\.9\.9-test-test-target\/tunnelmux-gui/);
+  assert.match(listing.stdout, /tunnelmux-9\.9\.9-test-test-target\/tunnelmux-updater/);
   assert.match(listing.stdout, /tunnelmux-9\.9\.9-test-test-target\/README\.md/);
   assert.match(listing.stdout, /tunnelmux-9\.9\.9-test-test-target\/README\.zh-CN\.md/);
   assert.match(listing.stdout, /tunnelmux-9\.9\.9-test-test-target\/LICENSE/);
@@ -62,7 +63,7 @@ test('package-local-release-archive trims the derived host target in the archive
     .trim();
 
   mkdirSync(releaseDir, { recursive: true });
-  for (const name of ['tunnelmuxd', 'tunnelmux-cli', 'tunnelmux-gui']) {
+  for (const name of ['tunnelmuxd', 'tunnelmux-cli', 'tunnelmux-gui', 'tunnelmux-updater']) {
     const binaryPath = path.join(releaseDir, name);
     writeFileSync(binaryPath, `#!/usr/bin/env bash\necho ${name}\n`);
     chmodSync(binaryPath, 0o755);

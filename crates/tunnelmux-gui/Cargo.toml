@@ -15,12 +15,14 @@ build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 flate2 = "1.1"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 tar = "0.4"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 tauri = { version = "2.10.3", features = ["tray-icon", "image-png"] }
 tokio.workspace = true
 tunnelmux-control-client.workspace = true
@@ -38,6 +40,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "tunnelmux-gui"
 path = "src/main.rs"
+
+[[bin]]
+name = "tunnelmux-updater"
+path = "src/bin/tunnelmux-updater.rs"
 
 [dev-dependencies]
 axum.workspace = true

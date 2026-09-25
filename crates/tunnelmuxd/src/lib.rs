@@ -42,7 +42,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     net::TcpListener,
     process::{Child, Command},
-    sync::{Mutex, Notify, RwLock, mpsc, oneshot},
+    sync::{Mutex, Notify, RwLock, Semaphore, mpsc, oneshot},
     task::JoinHandle,
     time::{Instant, sleep, timeout},
 };
@@ -368,6 +368,20 @@ impl ApiError {
         }
     }
 
+    fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.into(),
+        }
+    }
+
+    fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
+
     fn payload_too_large(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
@@ -658,6 +672,44 @@ impl RuntimeState {
     }
 }
 
+const DEFAULT_GATEWAY_MAX_IN_FLIGHT: usize = 128;
+const DEFAULT_GATEWAY_RATE_LIMIT: usize = 60;
+const GATEWAY_RATE_WINDOW: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone)]
+struct RateBucket {
+    started: Instant,
+    count: usize,
+}
+
+#[derive(Debug, Default)]
+struct GatewayRateLimiter {
+    buckets: Mutex<HashMap<String, RateBucket>>,
+}
+
+impl GatewayRateLimiter {
+    async fn allow(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().await;
+        if buckets.len() > 4096 {
+            buckets.retain(|_, bucket| now.duration_since(bucket.started) < GATEWAY_RATE_WINDOW);
+        }
+        let bucket = buckets.entry(key.to_string()).or_insert(RateBucket {
+            started: now,
+            count: 0,
+        });
+        if now.duration_since(bucket.started) >= GATEWAY_RATE_WINDOW {
+            bucket.started = now;
+            bucket.count = 0;
+        }
+        if bucket.count >= DEFAULT_GATEWAY_RATE_LIMIT {
+            return false;
+        }
+        bucket.count += 1;
+        true
+    }
+}
+
 #[derive(Debug)]
 struct GatewayBinding {
     listen_addr: SocketAddr,
@@ -699,6 +751,8 @@ struct AppState {
     runtime: Mutex<RuntimeState>,
     persist_lock: Mutex<()>,
     gateway_bindings: Mutex<HashMap<String, GatewayBinding>>,
+    gateway_rate_limiter: Arc<GatewayRateLimiter>,
+    gateway_slots: Arc<Semaphore>,
     upstream_health: Mutex<HashMap<UpstreamHealthKey, UpstreamHealth>>,
     health_check_settings: RwLock<HealthCheckSettings>,
     data_file: PathBuf,
@@ -948,6 +1002,8 @@ pub async fn start(args: DaemonArgs) -> anyhow::Result<DaemonHandle> {
         }),
         persist_lock: Mutex::new(()),
         gateway_bindings: Mutex::new(HashMap::new()),
+        gateway_rate_limiter: Arc::new(GatewayRateLimiter::default()),
+        gateway_slots: Arc::new(Semaphore::new(DEFAULT_GATEWAY_MAX_IN_FLIGHT)),
         upstream_health: Mutex::new(HashMap::new()),
         health_check_settings: RwLock::new(health_check_settings),
         data_file,
@@ -1748,6 +1804,8 @@ mod tests {
             }),
             persist_lock: Mutex::new(()),
             gateway_bindings: Mutex::new(HashMap::new()),
+            gateway_rate_limiter: Arc::new(GatewayRateLimiter::default()),
+            gateway_slots: Arc::new(Semaphore::new(DEFAULT_GATEWAY_MAX_IN_FLIGHT)),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
                 interval_ms: 5_000,
@@ -1818,6 +1876,8 @@ mod tests {
             }),
             persist_lock: Mutex::new(()),
             gateway_bindings: Mutex::new(HashMap::new()),
+            gateway_rate_limiter: Arc::new(GatewayRateLimiter::default()),
+            gateway_slots: Arc::new(Semaphore::new(DEFAULT_GATEWAY_MAX_IN_FLIGHT)),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
                 interval_ms: 5_000,
@@ -1957,6 +2017,16 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         (format!("http://{}", addr), task)
+    }
+
+    #[tokio::test]
+    async fn gateway_rate_limiter_allows_burst_then_rejects_same_key() {
+        let limiter = GatewayRateLimiter::default();
+        for _ in 0..DEFAULT_GATEWAY_RATE_LIMIT {
+            assert!(limiter.allow("ip:127.0.0.1").await);
+        }
+        assert!(!limiter.allow("ip:127.0.0.1").await);
+        assert!(limiter.allow("ip:127.0.0.2").await);
     }
 
     #[test]
@@ -2110,6 +2180,8 @@ mod tests {
             }),
             persist_lock: Mutex::new(()),
             gateway_bindings: Mutex::new(HashMap::new()),
+            gateway_rate_limiter: Arc::new(GatewayRateLimiter::default()),
+            gateway_slots: Arc::new(Semaphore::new(DEFAULT_GATEWAY_MAX_IN_FLIGHT)),
             upstream_health: Mutex::new(HashMap::new()),
             health_check_settings: RwLock::new(HealthCheckSettings {
                 interval_ms: 5_000,

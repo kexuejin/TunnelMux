@@ -25,6 +25,7 @@ Each platform archive contains:
 - `tunnelmuxd`
 - `tunnelmux-cli`
 - `tunnelmux-gui`
+- `tunnelmux-updater` (Windows delayed replacement helper)
 - `README.md`
 - `LICENSE`
 - `CHANGELOG.md`

@@ -330,6 +330,24 @@ pub(super) async fn proxy_request_for_tunnel(
     let method = request.method().clone();
     let uri = request.uri().clone();
     let headers = request.headers().clone();
+    let _request_permit = match state.gateway_slots.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return Err(ApiError::service_unavailable(
+                "gateway concurrency limit reached; retry shortly",
+            ));
+        }
+    };
+    let peer_key = request_peer_key(&request);
+    if !state
+        .gateway_rate_limiter
+        .allow(&format!("ip:{peer_key}"))
+        .await
+    {
+        return Err(ApiError::too_many_requests(
+            "too many requests from this client; retry shortly",
+        ));
+    }
     let path = canonical_request_path(uri.path());
     let query = uri.query().map(|value| value.to_string());
     let host = extract_host_from_headers(&headers);
@@ -363,6 +381,15 @@ pub(super) async fn proxy_request_for_tunnel(
             });
         }
     };
+    if !state
+        .gateway_rate_limiter
+        .allow(&format!("route:{peer_key}:{}", route.id))
+        .await
+    {
+        return Err(ApiError::too_many_requests(
+            "too many requests for this route; retry shortly",
+        ));
+    }
 
     let gate_code = effective_route_access_code(state, &route).await;
     let gate_cookie_name = route_access_cookie_name(&route.id);
@@ -1441,6 +1468,14 @@ fn rewrite_cookie_path(cookie: &str, prefix: &str) -> Option<String> {
         .collect::<Vec<_>>();
 
     changed.then(|| parts.join(";"))
+}
+
+fn request_peer_key(request: &Request) -> String {
+    request
+        .extensions()
+        .get::<axum::extract::connect_info::ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn path_has_prefix(path: &str, prefix: &str) -> bool {

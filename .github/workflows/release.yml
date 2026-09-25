@@ -376,6 +376,14 @@ jobs:
       - build
       - gui_bundle
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Resolve release version
         shell: bash
         run: |
@@ -447,6 +455,9 @@ jobs:
           }
           pathlib.Path('tunnelmux-latest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
           PY
+
+      - name: Verify release manifest
+        run: node scripts/verify-release-manifest.mjs dist
 
       - name: Upload rehearsal artifacts
         if: github.event_name == 'workflow_dispatch'
