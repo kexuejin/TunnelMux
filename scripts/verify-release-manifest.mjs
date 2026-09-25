@@ -11,6 +11,15 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 if (!manifest.version || !manifest.tag || !Array.isArray(manifest.assets) || manifest.assets.length === 0) {
   throw new Error('release manifest is missing version/tag/assets');
 }
+if (manifest.tag !== `v${manifest.version}`) {
+  throw new Error(`release tag ${manifest.tag} does not match version ${manifest.version}`);
+}
+if (
+  typeof manifest.release_url !== 'string' ||
+  !manifest.release_url.endsWith(`/releases/tag/${manifest.tag}`)
+) {
+  throw new Error(`release URL does not point to ${manifest.tag}`);
+}
 
 const checksumText = readFileSync(join(distDir, 'SHA256SUMS'), 'utf8');
 const checksums = new Map(
@@ -24,6 +33,10 @@ const checksums = new Map(
 for (const asset of manifest.assets) {
   if (!asset.name || basename(asset.name) !== asset.name || asset.name.includes('..')) {
     throw new Error(`unsafe release asset name: ${asset.name}`);
+  }
+  const expectedUrl = `${manifest.release_url.replace('/releases/tag/', '/releases/download/')}/${asset.name}`;
+  if (asset.url !== expectedUrl) {
+    throw new Error(`release URL mismatch for ${asset.name}: expected ${expectedUrl}`);
   }
   const assetPath = join(distDir, asset.name);
   if (relative(distDir, assetPath).startsWith('..')) {

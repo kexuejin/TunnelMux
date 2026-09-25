@@ -90,6 +90,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             librsvg2-dev \
+            libdbus-1-dev \
+            pkg-config \
             patchelf
 
       - name: Setup Rust
@@ -120,13 +122,15 @@ jobs:
             cp "target/${TARGET}/release/tunnelmuxd.exe" "${PKG_DIR}/"
             cp "target/${TARGET}/release/tunnelmux-cli.exe" "${PKG_DIR}/"
             cp "target/${TARGET}/release/tunnelmux-gui.exe" "${PKG_DIR}/"
+            cp "target/${TARGET}/release/tunnelmux-updater.exe" "${PKG_DIR}/"
           else
             cp "target/${TARGET}/release/tunnelmuxd" "${PKG_DIR}/"
             cp "target/${TARGET}/release/tunnelmux-cli" "${PKG_DIR}/"
             cp "target/${TARGET}/release/tunnelmux-gui" "${PKG_DIR}/"
+            cp "target/${TARGET}/release/tunnelmux-updater" "${PKG_DIR}/"
           fi
 
-          cp README.md LICENSE CHANGELOG.md "${PKG_DIR}/"
+          cp README.md README.zh-CN.md LICENSE CHANGELOG.md "${PKG_DIR}/"
 
           if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
             python -c "import pathlib,zipfile; d=pathlib.Path('dist'); ps=[p for p in d.iterdir() if p.is_dir() and p.name.startswith('tunnelmux-')]; assert len(ps)==1, f'expected one package dir, got {len(ps)}'; p=ps[0]; z=zipfile.ZipFile(d / f'{p.name}.zip','w',compression=zipfile.ZIP_DEFLATED); [z.write(f,f.relative_to(d)) for f in p.rglob('*') if f.is_file()]; z.close()"
@@ -184,6 +188,8 @@ jobs:
             libgtk-3-dev \
             libappindicator3-dev \
             librsvg2-dev \
+            libdbus-1-dev \
+            pkg-config \
             patchelf \
             fakeroot
 
@@ -417,7 +423,7 @@ jobs:
           python - <<'PY'
           import json, os, pathlib
           version = os.environ['RELEASE_VERSION']
-          tag = os.environ.get('GITHUB_REF_NAME') or 'v' + version
+          tag = 'v' + version
           repo = os.environ['GITHUB_REPOSITORY']
           checksums = {}
           for line in pathlib.Path('SHA256SUMS').read_text().splitlines():

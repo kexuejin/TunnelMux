@@ -5033,7 +5033,7 @@ dependencies = [
 
 [[package]]
 name = "tunnelmux-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -5050,7 +5050,7 @@ dependencies = [
 
 [[package]]
 name = "tunnelmux-control-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5064,14 +5064,14 @@ dependencies = [
 
 [[package]]
 name = "tunnelmux-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "tunnelmux-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5095,7 +5095,7 @@ dependencies = [
 
 [[package]]
 name = "tunnelmuxd"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",

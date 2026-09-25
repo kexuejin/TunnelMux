@@ -20,7 +20,16 @@ test('release manifest verifier checks paths, sizes, and checksums', () => {
     JSON.stringify({
       version: '9.9.9',
       tag: 'v9.9.9',
-      assets: [{ name: asset, size: body.length, sha256: hash, kind: 'raw_archive' }],
+      release_url: 'https://github.com/kexuejin/TunnelMux/releases/tag/v9.9.9',
+      assets: [
+        {
+          name: asset,
+          url: `https://github.com/kexuejin/TunnelMux/releases/download/v9.9.9/${asset}`,
+          size: body.length,
+          sha256: hash,
+          kind: 'raw_archive',
+        },
+      ],
     }),
   );
 

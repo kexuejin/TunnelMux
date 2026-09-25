@@ -42,6 +42,10 @@ test('release and installer configuration stays fail-closed and embedded-daemon-
   const installer = readFileSync(new URL('./install.sh', import.meta.url), 'utf8');
 
   assert.doesNotMatch(release, /externalBin|tauri\.gui\.daemon\.bundle/);
+  assert.match(release, /tunnelmux-updater\.exe/);
+  assert.match(release, /tunnelmux-updater" "\$\{PKG_DIR\}\/"/);
+  assert.match(release, /cp README\.md README\.zh-CN\.md LICENSE CHANGELOG\.md/);
+  assert.match(release, /tag = 'v' \+ version/);
   assert.equal(tauriConfig.bundle?.externalBin, undefined);
   assert.match(installer, /refusing to install without checksum verification/);
   assert.match(installer, /exit 1/);

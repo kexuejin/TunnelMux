@@ -1964,26 +1964,38 @@ mod runtime_tests {
         }
 
         // A stand-in for a provider: the command line carries the target URL, so
-        // it has the shape `build_provider_command` produces.
-        let mut child = Command::new("sleep")
-            .arg("300")
-            .arg(GATEWAY_URL)
+        // it has the shape `build_provider_command` produces. `sleep` cannot be
+        // used here because both BSD and GNU sleep reject the URL as a second
+        // duration operand and exit immediately. Python accepts the extra
+        // argument and stays alive until this test signals it.
+        let python = match std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+        {
+            Ok(output) if output.status.success() => "python3",
+            _ => {
+                eprintln!("skipping: python3 is not available to host the process-table probe");
+                return;
+            }
+        };
+        let mut child = Command::new(python)
+            .args(["-c", "import time; time.sleep(300)", GATEWAY_URL])
             .spawn()
-            .expect("sleep should spawn");
+            .expect("python3 should spawn");
         let pid = child.id().expect("a spawned child has a pid");
 
         let command_line = match SystemProcessTable.process_state(pid) {
             ProcessState::Running(command_line) => command_line,
             other => panic!("a live process should have a readable command line, got {other:?}"),
         };
-        assert!(command_line.contains("sleep") && command_line.contains(GATEWAY_URL));
+        assert!(command_line.contains("python3") && command_line.contains(GATEWAY_URL));
 
         // Reap concurrently: this child is *ours*, so without a waiter it would
         // sit as a zombie and never read as gone.
         let reaper = tokio::spawn(async move { child.wait().await });
         assert!(
             terminate_process(pid, &SystemProcessTable).await,
-            "SIGTERM should end a plain sleep"
+            "SIGTERM should end the process-table probe"
         );
         let _ = reaper.await;
         assert_eq!(SystemProcessTable.process_state(pid), ProcessState::Gone);
