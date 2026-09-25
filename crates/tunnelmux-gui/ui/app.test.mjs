@@ -2375,3 +2375,18 @@ test('every string the SPA preset writes has a translation keyed to its source',
   assert.ok(appJs.includes(`'${status}': '`), `missing Chinese translation for: ${status}`);
   assert.match(appJs, new RegExp(`renderRouteTestStatus\\('${status.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'\\)`));
 });
+
+test('console ships CSP and keyboard/status accessibility hooks', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const tauriConfig = JSON.parse(
+    readFileSync(new URL('../tauri.conf.json', import.meta.url), 'utf8'),
+  );
+
+  assert.notEqual(tauriConfig.app?.security?.csp, null);
+  assert.match(html, /id="app-status"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(html, /id="service-drawer"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(html, /id="tunnel-drawer"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(appJs, /state\.serviceDrawerOpen/);
+  assert.match(appJs, /state\.tunnelDrawerOpen/);
+});

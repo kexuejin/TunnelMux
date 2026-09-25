@@ -89,6 +89,14 @@ pub const DEFAULT_UNLOCK_WINDOW_MS: u64 = 4 * 60 * 60 * 1000;
 pub const DEFAULT_PROVIDER_LOG_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// How many rotated `provider.log.N` files to keep alongside the live one.
 pub const DEFAULT_PROVIDER_LOG_MAX_FILES: usize = 3;
+/// Maximum request body accepted by the reverse proxy before route access is evaluated.
+pub const MAX_GATEWAY_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum response body buffered for HTML/JavaScript path rewriting.
+pub const MAX_GATEWAY_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum non-upgraded WebSocket error body returned to the client.
+pub const MAX_GATEWAY_WS_ERROR_BODY_BYTES: usize = 64 * 1024;
+/// Default upstream connect/request timeout for the gateway data plane.
+pub const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS: u64 = 30_000;
 
 /// Everything needed to start one daemon instance.
 ///
@@ -356,6 +364,27 @@ impl ApiError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
+    fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: message.into(),
+        }
+    }
+
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+        }
+    }
+
+    fn gateway_timeout(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::GATEWAY_TIMEOUT,
             message: message.into(),
         }
     }
@@ -933,7 +962,13 @@ pub async fn start(args: DaemonArgs) -> anyhow::Result<DaemonHandle> {
         ngrok_bin: args.ngrok_bin,
         ready_timeout_ms: args.ready_timeout_ms,
         max_auto_restarts: args.max_auto_restarts,
-        proxy_client: reqwest::Client::new(),
+        proxy_client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_millis(
+                DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS.min(5_000),
+            ))
+            .timeout(Duration::from_millis(DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS))
+            .build()?,
         ws_proxy_client,
         shutting_down: AtomicBool::new(false),
     });

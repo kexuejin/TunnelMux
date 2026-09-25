@@ -1,4 +1,5 @@
 use super::*;
+use axum::body::HttpBody;
 use tokio_stream::StreamExt;
 
 /// Return the route access cookie name: `tunnelmux_access_<route_id>`.
@@ -384,9 +385,17 @@ pub(super) async fn proxy_request_for_tunnel(
         .await;
     }
 
-    let body = to_bytes(request.into_body(), 16 * 1024 * 1024)
+    if request.body().size_hint().lower() > MAX_GATEWAY_REQUEST_BODY_BYTES as u64 {
+        return Err(ApiError::payload_too_large(format!(
+            "request body exceeds {} bytes",
+            MAX_GATEWAY_REQUEST_BODY_BYTES
+        )));
+    }
+    let body = to_bytes(request.into_body(), MAX_GATEWAY_REQUEST_BODY_BYTES)
         .await
-        .map_err(|err| ApiError::internal(format!("failed to read request body: {err}")))?;
+        .map_err(|err| {
+            ApiError::payload_too_large(format!("failed to read request body: {err}"))
+        })?;
 
     if let Some(gate_response) =
         route_access_gate_response(state, &route, &method, &headers, &path, Some(&body)).await
@@ -649,7 +658,30 @@ pub(super) async fn proxy_websocket_request(
             ApiError::internal(format!("failed to build websocket upstream request: {err}"))
         })?;
 
-        match state.ws_proxy_client.request(upstream_request).await {
+        let request_result = match tokio::time::timeout(
+            Duration::from_millis(DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS),
+            state.ws_proxy_client.request(upstream_request),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) if index + 1 < targets.len() => {
+                warn!(
+                    "websocket handshake timed out, trying next upstream: route={}, upstream={}",
+                    route.id, target
+                );
+                last_request_error = Some("websocket handshake timed out".to_string());
+                continue;
+            }
+            Err(_) => {
+                return Err(ApiError::gateway_timeout(format!(
+                    "upstream websocket handshake timed out for route '{}'",
+                    route.id
+                )));
+            }
+        };
+
+        match request_result {
             Ok(response) => {
                 let status = response.status();
                 if status == StatusCode::SWITCHING_PROTOCOLS {
@@ -783,9 +815,9 @@ pub(super) async fn build_http_proxy_response(
             // The whole body must be visible to rewrite root-relative URLs;
             // text/html and JavaScript responses are bounded by the client
             // bundle sizes DSH serves (a few hundred KB).
-            let bytes = upstream_response.bytes().await.map_err(|err| {
-                ApiError::internal(format!("failed reading upstream response: {err}"))
-            })?;
+            let bytes =
+                read_reqwest_body_limited(upstream_response, MAX_GATEWAY_REWRITE_BODY_BYTES)
+                    .await?;
             let rewritten = rewrite_root_paths(&String::from_utf8_lossy(&bytes), prefix);
             let mut response_builder = Response::builder().status(status);
             if let Some(headers_map) = response_builder.headers_mut() {
@@ -932,23 +964,75 @@ pub(super) fn rewrite_prefix_for(route: &RouteRule) -> Option<String> {
         .cloned()
 }
 
+async fn read_reqwest_body_limited(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<axum::body::Bytes, ApiError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(ApiError::bad_gateway(format!(
+            "upstream response exceeds {} bytes",
+            max_bytes
+        )));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| ApiError::bad_gateway(format!("failed reading upstream response: {err}")))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(ApiError::bad_gateway(format!(
+                "upstream response exceeds {} bytes",
+                max_bytes
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(axum::body::Bytes::from(bytes))
+}
+
+async fn read_hyper_body_limited(
+    mut body: hyper::body::Incoming,
+    max_bytes: usize,
+) -> Result<axum::body::Bytes, ApiError> {
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|err| {
+            ApiError::bad_gateway(format!("failed reading websocket handshake body: {err}"))
+        })?;
+        if let Ok(data) = frame.into_data() {
+            if bytes.len().saturating_add(data.len()) > max_bytes {
+                return Err(ApiError::bad_gateway(format!(
+                    "websocket handshake body exceeds {} bytes",
+                    max_bytes
+                )));
+            }
+            bytes.extend_from_slice(&data);
+        }
+    }
+    Ok(axum::body::Bytes::from(bytes))
+}
+
 pub(super) async fn build_ws_handshake_failure_response(
     upstream_response: hyper::Response<hyper::body::Incoming>,
 ) -> Result<Response, ApiError> {
     let status = upstream_response.status();
     let upstream_headers = upstream_response.headers().clone();
-    let upstream_body = upstream_response
-        .into_body()
-        .collect()
-        .await
-        .map_err(|err| {
-            ApiError::internal(format!("failed reading websocket handshake body: {err}"))
-        })?
-        .to_bytes();
+    let upstream_body = read_hyper_body_limited(
+        upstream_response.into_body(),
+        MAX_GATEWAY_WS_ERROR_BODY_BYTES,
+    )
+    .await?;
     let mut response_builder = Response::builder().status(status);
     if let Some(headers_map) = response_builder.headers_mut() {
         for (name, value) in &upstream_headers {
-            if is_hop_by_hop_header(name) {
+            if should_skip_hop_by_hop_header(name, &upstream_headers) {
+                continue;
+            }
+            if is_forwarded_identity_header(name) {
                 continue;
             }
             headers_map.insert(name, value.clone());
@@ -1176,7 +1260,7 @@ pub(super) fn copy_headers_to_upstream(
     gate_cookie_name: &str,
 ) -> reqwest::RequestBuilder {
     for (name, value) in headers {
-        if is_hop_by_hop_header(name) {
+        if should_skip_hop_by_hop_header(name, headers) || is_forwarded_identity_header(name) {
             continue;
         }
         if !forward_host_header
@@ -1213,9 +1297,10 @@ pub(super) fn copy_headers_for_websocket_upstream(
     gate_cookie_name: &str,
 ) {
     for (name, value) in source {
-        if is_hop_by_hop_header(name)
-            && !name.as_str().eq_ignore_ascii_case("connection")
-            && !name.as_str().eq_ignore_ascii_case("upgrade")
+        let websocket_hop = name.as_str().eq_ignore_ascii_case("connection")
+            || name.as_str().eq_ignore_ascii_case("upgrade");
+        if (should_skip_hop_by_hop_header(name, source) && !websocket_hop)
+            || is_forwarded_identity_header(name)
         {
             continue;
         }
@@ -1250,7 +1335,7 @@ pub(super) fn copy_headers_from_upstream(
     rewrite_prefix: Option<&str>,
 ) {
     for (name, value) in headers {
-        if is_hop_by_hop_header(name) {
+        if should_skip_hop_by_hop_header(name, headers) || is_forwarded_identity_header(name) {
             continue;
         }
 
@@ -1379,8 +1464,36 @@ fn normalize_rewrite_prefix(prefix: &str) -> String {
     }
 }
 
+fn connection_nominated_headers(headers: &HeaderMap) -> HashSet<String> {
+    headers
+        .get_all(reqwest::header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn should_skip_hop_by_hop_header(name: &HeaderName, headers: &HeaderMap) -> bool {
+    is_hop_by_hop_header(name)
+        || connection_nominated_headers(headers).contains(&name.as_str().to_ascii_lowercase())
+}
+
+fn is_forwarded_identity_header(name: &HeaderName) -> bool {
+    let name = name.as_str().to_ascii_lowercase();
+    name == "forwarded" || name.starts_with("x-forwarded-")
+}
+
 pub(super) fn copy_headers_unfiltered(target: &mut HeaderMap, headers: &HeaderMap) {
     for (name, value) in headers {
+        let websocket_hop = name.as_str().eq_ignore_ascii_case("connection")
+            || name.as_str().eq_ignore_ascii_case("upgrade");
+        if (should_skip_hop_by_hop_header(name, headers) && !websocket_hop)
+            || is_forwarded_identity_header(name)
+        {
+            continue;
+        }
         target.insert(name, value.clone());
     }
 }
@@ -1405,9 +1518,39 @@ mod tests {
 
     use super::{
         build_http_proxy_response, canonical_request_path, cookie_value_matches,
-        rewrite_cookie_path, rewrite_root_location, rewrite_root_paths, select_route,
-        strip_cookie_header,
+        copy_headers_to_upstream, rewrite_cookie_path, rewrite_root_location, rewrite_root_paths,
+        select_route, strip_cookie_header,
     };
+
+    #[test]
+    fn upstream_headers_drop_nominated_and_forwarded_identity_values() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("connection", "x-secret".parse().expect("valid header"));
+        headers.insert("x-secret", "do-not-forward".parse().expect("valid header"));
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.1".parse().expect("valid header"),
+        );
+        headers.insert(
+            "forwarded",
+            "for=203.0.113.1".parse().expect("valid header"),
+        );
+        headers.insert("x-keep", "yes".parse().expect("valid header"));
+
+        let request = copy_headers_to_upstream(
+            reqwest::Client::new().get("http://upstream.invalid/"),
+            &headers,
+            false,
+            None,
+            "tunnelmux_access_route",
+        )
+        .build()
+        .expect("request should build");
+        assert!(request.headers().get("x-secret").is_none());
+        assert!(request.headers().get("x-forwarded-for").is_none());
+        assert!(request.headers().get("forwarded").is_none());
+        assert_eq!(request.headers().get("x-keep").unwrap(), "yes");
+    }
 
     #[test]
     fn cookie_value_matches_decodes_form_encoding() {

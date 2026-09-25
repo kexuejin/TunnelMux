@@ -1,5 +1,6 @@
 use super::*;
-use tokio::io::AsyncWriteExt;
+use std::io::SeekFrom;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tunnelmux_core::{
     DEFAULT_ROUTE_ACCESS_ID, RouteAccessConfig, RouteAccessSummary, RouteAccessSummaryResponse,
     SetRouteAccessRequest, SetRouteAccessResponse, TunnelProfileSummary, TunnelWorkspaceResponse,
@@ -524,6 +525,21 @@ pub(super) async fn get_tunnel_logs(
     }))
 }
 
+async fn read_log_delta(path: &Path, offset: usize) -> std::io::Result<(String, usize)> {
+    let mut file = fs::File::open(path).await?;
+    let length = file.metadata().await?.len() as usize;
+    let start = if length < offset { 0 } else { offset };
+    if start > 0 {
+        file.seek(SeekFrom::Start(start as u64)).await?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await?;
+    Ok((
+        String::from_utf8_lossy(&bytes).into_owned(),
+        start.saturating_add(bytes.len()),
+    ))
+}
+
 pub(super) async fn stream_tunnel_logs(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TunnelLogsStreamQuery>,
@@ -559,13 +575,9 @@ pub(super) async fn stream_tunnel_logs(
             if state_for_task.is_shutting_down() {
                 return;
             }
-            match fs::read_to_string(&log_file).await {
-                Ok(source) => {
-                    if source.len() < last_offset {
-                        last_offset = 0;
-                    }
-                    if source.len() > last_offset {
-                        let chunk = &source[last_offset..];
+            match read_log_delta(&log_file, last_offset).await {
+                Ok((chunk, next_offset)) => {
+                    if !chunk.is_empty() {
                         for line in filter_log_lines_for_tunnel(
                             chunk.lines().map(ToString::to_string).collect(),
                             tunnel_id.as_deref(),
@@ -578,8 +590,8 @@ pub(super) async fn stream_tunnel_logs(
                                 return;
                             }
                         }
-                        last_offset = source.len();
                     }
+                    last_offset = next_offset;
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     last_offset = 0;
