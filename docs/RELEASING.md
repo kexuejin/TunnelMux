@@ -56,7 +56,7 @@ Current first-release native GUI installers include:
 - `.msi`
 - `.deb`
 
-Unsigned mode remains the default release posture today. The repository now prepares an opt-in signed GUI release path for macOS and Windows, but public installers may still be unsigned until maintainers enable the signing toggles and provision credentials. Linux `.deb` remains unsigned in this iteration. The desktop GUI's automatic updater is limited to verified raw `.tar.gz` archives for raw-binary installations; native `.dmg`/`.msi`/`.deb` bundles use the platform package/release flow.
+Unsigned mode remains the default release posture today. The repository now prepares an opt-in signed GUI release path for macOS and Windows, but public installers may still be unsigned until maintainers enable the signing toggles and provision credentials. Linux `.deb` remains unsigned in this iteration. The desktop GUI's automatic updater supports verified raw `.tar.gz` and `.zip` archives for raw-binary installations; native `.dmg`/`.msi`/`.deb` bundles use the platform package/release flow.
 
 ## Linux GUI Build Dependencies
 
@@ -70,7 +70,10 @@ sudo apt-get install -y \
   libwebkit2gtk-4.1-dev \
   libgtk-3-dev \
   libappindicator3-dev \
+  libxdo-dev \
   librsvg2-dev \
+  libdbus-1-dev \
+  pkg-config \
   patchelf \
   fakeroot
 ```
@@ -108,7 +111,7 @@ Expected result:
 
 - one raw archive named like `tunnelmux-<current-version>-<host-target>.tar.gz`
 - one `SHA256SUMS`
-- archive contents include `tunnelmuxd`, `tunnelmux-cli`, `tunnelmux-gui`, `README.md`, `README.zh-CN.md`, `LICENSE`, and `CHANGELOG.md`
+- archive contents include `tunnelmuxd`, `tunnelmux-cli`, `tunnelmux-gui`, `tunnelmux-updater`, `README.md`, `README.zh-CN.md`, `LICENSE`, and `CHANGELOG.md`
 
 ## In-app Updater Smoke Check
 
@@ -125,7 +128,7 @@ The Settings drawer includes an App Updates section. The checker uses GitHub Rel
 
 Notes:
 
-- Automatic install currently targets verified raw `.tar.gz` archives only; platform-native installers (`.dmg`, `.msi`, `.deb`) remain manual install assets.
+- Automatic install currently targets verified raw `.tar.gz` and `.zip` archives only; platform-native installers (`.dmg`, `.msi`, `.deb`) remain manual install assets.
 - The static manifest reduces GitHub API rate-limit exposure; unauthenticated API fallback can still fail temporarily if GitHub rate limits the client.
 
 ## GUI Easy-Path Smoke Check
