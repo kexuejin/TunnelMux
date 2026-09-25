@@ -36,6 +36,6 @@ tunnelmux-core.workspace = true
 
 [dev-dependencies]
 futures-util = "0.3"
-rcgen = "0.13"
+rcgen = "0.14"
 tokio-rustls = "0.26"
 tokio-tungstenite = "0.24"
