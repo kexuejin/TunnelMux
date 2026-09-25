@@ -741,11 +741,6 @@ struct TunnelLogsStreamQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct StreamIntervalQuery {
-    interval_ms: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
 struct TunnelStreamQuery {
     tunnel_id: Option<String>,
     interval_ms: Option<u64>,

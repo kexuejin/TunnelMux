@@ -197,8 +197,30 @@ impl TunnelmuxControlClient {
         self.get("/v1/dashboard").await
     }
 
+    pub async fn dashboard_for_tunnel(&self, tunnel_id: &str) -> anyhow::Result<DashboardResponse> {
+        let url = self.url("/v1/dashboard");
+        let response = self
+            .request_with_token(self.client.get(&url))
+            .query(&[("tunnel_id", tunnel_id)])
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
+    }
+
     pub async fn metrics(&self) -> anyhow::Result<MetricsResponse> {
         self.get("/v1/metrics").await
+    }
+
+    pub async fn metrics_for_tunnel(&self, tunnel_id: &str) -> anyhow::Result<MetricsResponse> {
+        let url = self.url("/v1/metrics");
+        let response = self
+            .request_with_token(self.client.get(&url))
+            .query(&[("tunnel_id", tunnel_id)])
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        decode_response(response).await
     }
 
     pub async fn list_routes(&self, tunnel_id: &str) -> anyhow::Result<RoutesResponse> {

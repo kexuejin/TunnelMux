@@ -328,6 +328,8 @@ const state = {
   statusIsError: false,
   passiveProviderRefreshInFlight: false,
   servicesAttentionTimer: null,
+  liveRefreshTimer: null,
+  liveRefreshInFlight: false,
   diagnostics: {
     logLines: 100,
     summary: null,
@@ -390,6 +392,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     renderRoutes({ routes: [], message: 'Create a tunnel before adding services.' });
     renderProviderStatusSummary(null);
   }
+  startLiveRefresh();
 });
 
 function bindElements() {
@@ -586,7 +589,13 @@ function showView(name) {
     panel.hidden = panel.dataset.viewPanel !== name;
   });
   document.querySelectorAll('.nav-item').forEach((button) => {
-    button.classList.toggle('is-active', button.dataset.view === name);
+    const active = button.dataset.view === name;
+    button.classList.toggle('is-active', active);
+    if (active) {
+      button.setAttribute('aria-current', 'page');
+    } else {
+      button.removeAttribute('aria-current');
+    }
   });
 
   const title = document.getElementById('view-title');
@@ -683,6 +692,14 @@ function bindEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && state.confirmResolver) {
       closeConfirmDialog(false);
+      return;
+    }
+    if (event.key === 'Escape' && state.serviceDrawerOpen) {
+      closeServiceDrawer();
+      return;
+    }
+    if (event.key === 'Escape' && state.tunnelDrawerOpen) {
+      closeTunnelDrawer();
       return;
     }
     if (event.key === 'Escape' && state.tunnelPickerOpen) {
@@ -1917,6 +1934,25 @@ async function ensureLocalDaemonAndRefresh() {
   }
 
   await refreshAll();
+}
+
+function startLiveRefresh() {
+  if (state.liveRefreshTimer || !isTauri) return;
+  state.liveRefreshTimer = window.setInterval(async () => {
+    if (document.visibilityState !== 'visible' || state.busy || state.liveRefreshInFlight || !state.daemonConnected) {
+      return;
+    }
+    state.liveRefreshInFlight = true;
+    try {
+      await refreshTunnelWorkspace();
+      await refreshDashboard();
+      await refreshRoutes();
+    } catch {
+      // Keep the last usable snapshot; the next bounded tick retries.
+    } finally {
+      state.liveRefreshInFlight = false;
+    }
+  }, 15000);
 }
 
 async function refreshAll() {

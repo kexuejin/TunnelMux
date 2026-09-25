@@ -20,6 +20,7 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tunnelmux-core.workspace = true
+url.workspace = true
 
 tunnelmux-control-client.workspace = true
 

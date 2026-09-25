@@ -362,12 +362,12 @@ pub(super) async fn get_tunnel_workspace(
 
 pub(super) async fn stream_tunnel_status(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<StreamIntervalQuery>,
+    Query(query): Query<TunnelStreamQuery>,
 ) -> Result<Response, ApiError> {
     let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     let state_for_task = state.clone();
-    let tunnel_id = "primary".to_string();
+    let tunnel_id = query.tunnel_id.unwrap_or_else(|| "primary".to_string());
 
     tokio::spawn(async move {
         loop {
@@ -923,18 +923,20 @@ pub(super) async fn match_route(
 
 pub(super) async fn stream_routes(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<StreamIntervalQuery>,
+    Query(query): Query<TunnelStreamQuery>,
 ) -> Result<Response, ApiError> {
     let interval_ms = normalize_stream_interval_ms(query.interval_ms)?;
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     let state_for_task = state.clone();
+    let tunnel_id = query.tunnel_id.clone();
 
     tokio::spawn(async move {
         loop {
             if state_for_task.is_shutting_down() {
                 return;
             }
-            let snapshot = build_routes_snapshot(&state_for_task).await;
+            let snapshot =
+                build_routes_snapshot_for_tunnel(&state_for_task, tunnel_id.as_deref()).await;
             let payload = match serde_json::to_string(&snapshot) {
                 Ok(value) => value,
                 Err(err) => {
@@ -1278,10 +1280,6 @@ pub(super) async fn build_upstreams_health_snapshot(
             &health_map,
         ),
     }
-}
-
-pub(super) async fn build_routes_snapshot(state: &Arc<AppState>) -> RoutesResponse {
-    build_routes_snapshot_for_tunnel(state, None).await
 }
 
 pub(super) async fn build_routes_snapshot_for_tunnel(

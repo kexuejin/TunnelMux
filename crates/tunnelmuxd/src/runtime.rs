@@ -1,5 +1,6 @@
 use super::*;
 use std::path::Path;
+use tokio::task::JoinSet;
 
 pub(super) async fn persist_from_runtime(state: &Arc<AppState>) -> Result<(), ApiError> {
     let _persist_guard = state.persist_lock.lock().await;
@@ -553,50 +554,58 @@ pub(super) async fn refresh_upstream_health(
     }
 
     let mut latest = HashMap::new();
+    let mut tasks = JoinSet::new();
     for upstream_key in upstreams {
-        let checked_at = now_iso();
-        let check_url = match build_health_check_url(
-            &upstream_key.upstream_url,
-            &upstream_key.health_check_path,
-        ) {
-            Ok(url) => url,
-            Err(err) => {
-                latest.insert(
-                    upstream_key,
-                    UpstreamHealth {
-                        healthy: false,
-                        last_checked_at: checked_at,
-                        last_error: Some(err.to_string()),
-                    },
-                );
-                continue;
-            }
-        };
-        let check_result = state
-            .proxy_client
-            .get(check_url)
-            .timeout(Duration::from_millis(settings.timeout_ms))
-            .send()
-            .await;
-
-        let health = match check_result {
-            Ok(response) if response.status().is_success() => UpstreamHealth {
-                healthy: true,
-                last_checked_at: checked_at.clone(),
-                last_error: None,
-            },
-            Ok(response) => UpstreamHealth {
-                healthy: false,
-                last_checked_at: checked_at.clone(),
-                last_error: Some(format!("status {}", response.status())),
-            },
-            Err(err) => UpstreamHealth {
-                healthy: false,
-                last_checked_at: checked_at,
-                last_error: Some(err.to_string()),
-            },
-        };
-        latest.insert(upstream_key, health);
+        let state = state.clone();
+        let timeout_ms = settings.timeout_ms;
+        tasks.spawn(async move {
+            let checked_at = now_iso();
+            let check_url = match build_health_check_url(
+                &upstream_key.upstream_url,
+                &upstream_key.health_check_path,
+            ) {
+                Ok(url) => url,
+                Err(err) => {
+                    return (
+                        upstream_key,
+                        UpstreamHealth {
+                            healthy: false,
+                            last_checked_at: checked_at,
+                            last_error: Some(err.to_string()),
+                        },
+                    );
+                }
+            };
+            let check_result = state
+                .proxy_client
+                .get(check_url)
+                .timeout(Duration::from_millis(timeout_ms))
+                .send()
+                .await;
+            let health = match check_result {
+                Ok(response) if response.status().is_success() => UpstreamHealth {
+                    healthy: true,
+                    last_checked_at: checked_at,
+                    last_error: None,
+                },
+                Ok(response) => UpstreamHealth {
+                    healthy: false,
+                    last_checked_at: checked_at,
+                    last_error: Some(format!("status {}", response.status())),
+                },
+                Err(err) => UpstreamHealth {
+                    healthy: false,
+                    last_checked_at: checked_at,
+                    last_error: Some(err.to_string()),
+                },
+            };
+            (upstream_key, health)
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        if let Ok((key, health)) = result {
+            latest.insert(key, health);
+        }
     }
 
     let mut health_map = state.upstream_health.lock().await;

@@ -9,6 +9,11 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             "remote TunnelMux connections require --token or TUNNELMUX_API_TOKEN"
         ));
     }
+    let tunnel_id = cli
+        .tunnel_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| PRIMARY_TUNNEL_ID.to_string());
     let base_url = control_client.base_url().to_string();
     let token = control_client.token().map(str::to_string);
     let client = Client::new();
@@ -27,16 +32,23 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     &client,
                     &base_url,
                     token.as_deref(),
+                    &tunnel_id,
                     interval_ms,
                     retry_policy,
                 )
                 .await?;
             } else if watch {
-                watch_status(&client, &base_url, token.as_deref(), interval_ms).await?;
+                watch_status(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    &tunnel_id,
+                    interval_ms,
+                )
+                .await?;
             } else {
                 let health: HealthResponse = control_client.health().await?;
-                let tunnel: TunnelStatusResponse =
-                    control_client.tunnel_status(PRIMARY_TUNNEL_ID).await?;
+                let tunnel: TunnelStatusResponse = control_client.tunnel_status(&tunnel_id).await?;
                 println!("{}", format_status_output(&health, &tunnel)?);
             }
         }
@@ -76,14 +88,23 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     &client,
                     &base_url,
                     token.as_deref(),
+                    &tunnel_id,
                     interval_ms,
                     retry_policy,
                 )
                 .await?;
             } else if watch {
-                watch_dashboard(&client, &base_url, token.as_deref(), interval_ms).await?;
+                watch_dashboard(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    &tunnel_id,
+                    interval_ms,
+                )
+                .await?;
             } else {
-                let dashboard: DashboardResponse = control_client.dashboard().await?;
+                let dashboard: DashboardResponse =
+                    control_client.dashboard_for_tunnel(&tunnel_id).await?;
                 println!("{}", serde_json::to_string_pretty(&dashboard)?);
             }
         }
@@ -100,14 +121,23 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     &client,
                     &base_url,
                     token.as_deref(),
+                    &tunnel_id,
                     interval_ms,
                     retry_policy,
                 )
                 .await?;
             } else if watch {
-                watch_metrics(&client, &base_url, token.as_deref(), interval_ms).await?;
+                watch_metrics(
+                    &client,
+                    &base_url,
+                    token.as_deref(),
+                    &tunnel_id,
+                    interval_ms,
+                )
+                .await?;
             } else {
-                let metrics: MetricsResponse = control_client.metrics().await?;
+                let metrics: MetricsResponse =
+                    control_client.metrics_for_tunnel(&tunnel_id).await?;
                 println!("{}", serde_json::to_string_pretty(&metrics)?);
             }
         }
@@ -120,12 +150,13 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 provider,
                 target_url,
                 auto_restart,
+                no_auto_restart,
             } => {
                 let payload = TunnelStartRequest {
-                    tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
+                    tunnel_id: tunnel_id.clone(),
                     provider: provider.into(),
                     target_url,
-                    auto_restart: Some(auto_restart),
+                    auto_restart: Some(auto_restart && !no_auto_restart),
                     metadata: None,
                 };
                 let status: TunnelStatusResponse = control_client.start_tunnel(&payload).await?;
@@ -144,25 +175,21 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         &client,
                         &base_url,
                         token.as_deref(),
+                        &tunnel_id,
                         lines,
                         poll_ms,
                         retry_policy,
                     )
                     .await?;
                 } else {
-                    let url = format!("{}/v1/tunnel/logs", base_url);
-                    let response = request_with_token(client.get(&url), token.as_deref())
-                        .query(&[("lines", lines)])
-                        .send()
-                        .await
-                        .with_context(|| format!("request failed: {url}"))?;
-                    let logs: TunnelLogsResponse = decode_response(response).await?;
+                    let logs: TunnelLogsResponse = control_client
+                        .tunnel_logs_for_tunnel(&tunnel_id, lines)
+                        .await?;
                     println!("{}", serde_json::to_string_pretty(&logs)?);
                 }
             }
             TunnelCommand::Stop => {
-                let status: TunnelStatusResponse =
-                    control_client.stop_tunnel(PRIMARY_TUNNEL_ID).await?;
+                let status: TunnelStatusResponse = control_client.stop_tunnel(&tunnel_id).await?;
                 println!("{}", serde_json::to_string_pretty(&status)?);
             }
         },
@@ -180,6 +207,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             provider,
             target_url,
             auto_restart,
+            no_auto_restart,
             dry_run,
             restart_if_mismatch,
             wait_ready,
@@ -188,7 +216,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let provider: TunnelProvider = provider.into();
             let route_payload = CreateRouteRequest {
-                tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
+                tunnel_id: tunnel_id.clone(),
                 id: id.clone(),
                 match_host: host,
                 match_path_prefix: path_prefix,
@@ -201,11 +229,10 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 forward_host_header: Some(forward_host_header),
                 rewrite_response_paths: Some(rewrite_response_paths),
             };
-            let routes: RoutesResponse = control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
+            let routes: RoutesResponse = control_client.list_routes(&tunnel_id).await?;
             let existing_route = routes.routes.iter().find(|item| item.id == id).cloned();
             let route_action = infer_expose_route_action(existing_route.as_ref(), &route_payload);
-            let mut tunnel: TunnelStatusResponse =
-                control_client.tunnel_status(PRIMARY_TUNNEL_ID).await?;
+            let mut tunnel: TunnelStatusResponse = control_client.tunnel_status(&tunnel_id).await?;
             let tunnel_action = resolve_expose_tunnel_action(
                 &tunnel,
                 &provider,
@@ -255,10 +282,10 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     ExposeTunnelAction::Noop => {}
                     ExposeTunnelAction::Start => {
                         let start_request = TunnelStartRequest {
-                            tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
+                            tunnel_id: tunnel_id.clone(),
                             provider: provider.clone(),
                             target_url: target_url.clone(),
-                            auto_restart: Some(auto_restart),
+                            auto_restart: Some(auto_restart && !no_auto_restart),
                             metadata: None,
                         };
                         tunnel = control_client.start_tunnel(&start_request).await?;
@@ -266,12 +293,12 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                     ExposeTunnelAction::Restart => {
                         let _stopped: TunnelStatusResponse =
-                            control_client.stop_tunnel(PRIMARY_TUNNEL_ID).await?;
+                            control_client.stop_tunnel(&tunnel_id).await?;
                         let start_request = TunnelStartRequest {
-                            tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
+                            tunnel_id: tunnel_id.clone(),
                             provider: provider.clone(),
                             target_url: target_url.clone(),
-                            auto_restart: Some(auto_restart),
+                            auto_restart: Some(auto_restart && !no_auto_restart),
                             metadata: None,
                         };
                         tunnel = control_client.start_tunnel(&start_request).await?;
@@ -286,6 +313,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         &client,
                         &base_url,
                         token.as_deref(),
+                        &tunnel_id,
                         wait_ready_timeout_ms,
                         wait_ready_poll_ms,
                     )
@@ -312,13 +340,12 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
             ignore_missing,
             dry_run,
         } => {
-            let routes: RoutesResponse = control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
+            let routes: RoutesResponse = control_client.list_routes(&tunnel_id).await?;
             let route_exists = routes.routes.iter().any(|item| item.id == id);
             if !route_exists && !ignore_missing {
                 return Err(anyhow!("route '{}' not found", id));
             }
-            let mut tunnel: TunnelStatusResponse =
-                control_client.tunnel_status(PRIMARY_TUNNEL_ID).await?;
+            let mut tunnel: TunnelStatusResponse = control_client.tunnel_status(&tunnel_id).await?;
             let remaining_routes =
                 project_remaining_routes_after_unexpose(routes.routes.len(), route_exists);
             let tunnel_stopped =
@@ -337,10 +364,10 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 );
             } else {
                 let remove = control_client
-                    .delete_route(&id, PRIMARY_TUNNEL_ID, ignore_missing)
+                    .delete_route(&id, &tunnel_id, ignore_missing)
                     .await?;
                 if tunnel_stopped {
-                    tunnel = control_client.stop_tunnel(PRIMARY_TUNNEL_ID).await?;
+                    tunnel = control_client.stop_tunnel(&tunnel_id).await?;
                 }
                 println!(
                     "{}",
@@ -373,16 +400,24 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         &client,
                         &base_url,
                         token.as_deref(),
+                        &tunnel_id,
                         interval_ms,
                         format,
                         retry_policy,
                     )
                     .await?;
                 } else if watch {
-                    watch_routes(&client, &base_url, token.as_deref(), interval_ms, format).await?;
+                    watch_routes(
+                        &client,
+                        &base_url,
+                        token.as_deref(),
+                        &tunnel_id,
+                        interval_ms,
+                        format,
+                    )
+                    .await?;
                 } else {
-                    let routes: RoutesResponse =
-                        control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
+                    let routes: RoutesResponse = control_client.list_routes(&tunnel_id).await?;
                     println!("{}", format_routes(&routes, format)?);
                 }
             }
@@ -403,7 +438,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                     load_route_request_from_file(Path::new(&path))?
                 } else {
                     CreateRouteRequest {
-                        tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
+                        tunnel_id: tunnel_id.clone(),
                         id: id.ok_or_else(|| anyhow!("missing --id"))?,
                         match_host: host,
                         match_path_prefix: path_prefix,
@@ -423,15 +458,14 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&route)?);
             }
             RoutesCommand::Remove { id } => {
-                let response: DeleteRouteResponse = control_client
-                    .delete_route(&id, PRIMARY_TUNNEL_ID, false)
-                    .await?;
+                let response: DeleteRouteResponse =
+                    control_client.delete_route(&id, &tunnel_id, false).await?;
                 println!("{}", serde_json::to_string_pretty(&response)?);
             }
             RoutesCommand::Match { path, host, table } => {
                 let path = normalize_match_route_path(path)?;
                 let payload: RouteMatchResponse = control_client
-                    .match_route(PRIMARY_TUNNEL_ID, &path, host.as_deref())
+                    .match_route(&tunnel_id, &path, host.as_deref())
                     .await?;
                 if table {
                     println!("{}", format_route_match_table(&payload));
@@ -440,7 +474,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             RoutesCommand::Export { id, out } => {
-                let routes: RoutesResponse = control_client.list_routes(PRIMARY_TUNNEL_ID).await?;
+                let routes: RoutesResponse = control_client.list_routes(&tunnel_id).await?;
                 if let Some(id) = id {
                     let route = routes
                         .routes
@@ -494,11 +528,11 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                 let payload = if let Some(path) = from_json {
                     let mut loaded = load_route_request_from_file(Path::new(&path))?;
                     loaded.id = id.clone();
-                    loaded.tunnel_id = PRIMARY_TUNNEL_ID.to_string();
+                    loaded.tunnel_id = tunnel_id.clone();
                     loaded
                 } else {
                     CreateRouteRequest {
-                        tunnel_id: PRIMARY_TUNNEL_ID.to_string(),
+                        tunnel_id: tunnel_id.clone(),
                         id: id.clone(),
                         match_host: host,
                         match_path_prefix: path_prefix,
@@ -539,6 +573,7 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         &client,
                         &base_url,
                         token.as_deref(),
+                        &tunnel_id,
                         interval_ms,
                         format,
                         retry_policy,
@@ -549,13 +584,15 @@ pub(super) async fn run(cli: Cli) -> anyhow::Result<()> {
                         &client,
                         &base_url,
                         token.as_deref(),
+                        &tunnel_id,
                         interval_ms,
                         format,
                     )
                     .await?;
                 } else {
-                    let response: UpstreamsHealthResponse =
-                        control_client.upstreams_health().await?;
+                    let response: UpstreamsHealthResponse = control_client
+                        .upstreams_health_for_tunnel(&tunnel_id)
+                        .await?;
                     println!("{}", format_upstreams_health(&response, format)?);
                 }
             }

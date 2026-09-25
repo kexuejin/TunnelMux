@@ -34,6 +34,10 @@ struct Cli {
     #[arg(long)]
     token: Option<String>,
 
+    /// Target tunnel for tunnel-scoped commands; defaults to primary for compatibility.
+    #[arg(long)]
+    tunnel_id: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -154,6 +158,14 @@ enum Command {
         #[arg(
             long,
             default_value_t = false,
+            conflicts_with = "auto_restart",
+            help = "Disable provider auto-restart for this run"
+        )]
+        no_auto_restart: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
             help = "Preview planned actions without applying changes"
         )]
         dry_run: bool,
@@ -168,7 +180,7 @@ enum Command {
         #[arg(
             long,
             default_value_t = false,
-            help = "Wait until tunnel is ready (running with public_base_url)"
+            help = "Wait until the tunnel is running (public URL is optional for named Cloudflare tunnels)"
         )]
         wait_ready: bool,
 
@@ -239,6 +251,14 @@ enum TunnelCommand {
 
         #[arg(long, default_value_t = true)]
         auto_restart: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            conflicts_with = "auto_restart",
+            help = "Disable provider auto-restart for this start"
+        )]
+        no_auto_restart: bool,
     },
     /// Tail provider logs
     Logs {
@@ -552,14 +572,20 @@ async fn wait_for_tunnel_ready(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     timeout_ms: u64,
     poll_ms: u64,
 ) -> anyhow::Result<TunnelStatusResponse> {
     let start = tokio::time::Instant::now();
     let timeout = Duration::from_millis(timeout_ms);
     loop {
-        let status: TunnelStatusResponse =
-            get_json(client, base_url, "/v1/tunnel/status", token).await?;
+        let status: TunnelStatusResponse = get_json(
+            client,
+            base_url,
+            &tunnel_scoped_path("/v1/tunnel/status", tunnel_id),
+            token,
+        )
+        .await?;
         if is_tunnel_ready(&status) {
             return Ok(status);
         }
@@ -579,11 +605,16 @@ async fn stream_logs(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     lines: usize,
     poll_ms: u64,
     retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
-    let url = format!("{}/v1/tunnel/logs/stream", base_url);
+    let url = format!(
+        "{}{}",
+        base_url,
+        tunnel_scoped_path("/v1/tunnel/logs/stream", tunnel_id)
+    );
     let mut retry_delay_ms = retry_policy.initial_ms;
 
     loop {
@@ -677,16 +708,28 @@ async fn stream_logs_once(
     }
 }
 
+fn tunnel_scoped_path(path: &str, tunnel_id: &str) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("tunnel_id", tunnel_id);
+    format!("{path}?{}", query.finish())
+}
+
 async fn watch_status(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
 ) -> anyhow::Result<()> {
     loop {
         let health: HealthResponse = get_json(client, base_url, "/v1/health", None).await?;
-        let tunnel: TunnelStatusResponse =
-            get_json(client, base_url, "/v1/tunnel/status", token).await?;
+        let tunnel: TunnelStatusResponse = get_json(
+            client,
+            base_url,
+            &tunnel_scoped_path("/v1/tunnel/status", tunnel_id),
+            token,
+        )
+        .await?;
         print!("\x1B[2J\x1B[H");
         println!("{}", format_status_output(&health, &tunnel)?);
         println!();
@@ -709,6 +752,7 @@ async fn stream_status(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
     retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
@@ -717,7 +761,7 @@ async fn stream_status(
         client,
         base_url,
         token,
-        "/v1/tunnel/status/stream",
+        &tunnel_scoped_path("/v1/tunnel/status/stream", tunnel_id),
         interval_ms,
         retry_policy,
         "status",
@@ -730,11 +774,18 @@ async fn watch_routes(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
     format: RoutesOutputFormat,
 ) -> anyhow::Result<()> {
     loop {
-        let routes: RoutesResponse = get_json(client, base_url, "/v1/routes", token).await?;
+        let routes: RoutesResponse = get_json(
+            client,
+            base_url,
+            &tunnel_scoped_path("/v1/routes", tunnel_id),
+            token,
+        )
+        .await?;
         print!("\x1B[2J\x1B[H");
         println!("{}", format_routes(&routes, format)?);
         println!();
@@ -757,6 +808,7 @@ async fn stream_routes(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
     format: RoutesOutputFormat,
     retry_policy: StreamRetryPolicy,
@@ -765,7 +817,7 @@ async fn stream_routes(
         client,
         base_url,
         token,
-        "/v1/routes/stream",
+        &tunnel_scoped_path("/v1/routes/stream", tunnel_id),
         interval_ms,
         retry_policy,
         "routes",
@@ -778,12 +830,18 @@ async fn watch_upstreams_health(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
     format: UpstreamsOutputFormat,
 ) -> anyhow::Result<()> {
     loop {
-        let response: UpstreamsHealthResponse =
-            get_json(client, base_url, "/v1/upstreams/health", token).await?;
+        let response: UpstreamsHealthResponse = get_json(
+            client,
+            base_url,
+            &tunnel_scoped_path("/v1/upstreams/health", tunnel_id),
+            token,
+        )
+        .await?;
         print!("\x1B[2J\x1B[H");
         println!("{}", format_upstreams_health(&response, format)?);
         println!();
@@ -804,10 +862,17 @@ async fn watch_metrics(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
 ) -> anyhow::Result<()> {
     loop {
-        let metrics: MetricsResponse = get_json(client, base_url, "/v1/metrics", token).await?;
+        let metrics: MetricsResponse = get_json(
+            client,
+            base_url,
+            &tunnel_scoped_path("/v1/metrics", tunnel_id),
+            token,
+        )
+        .await?;
         print!("\x1B[2J\x1B[H");
         println!("{}", serde_json::to_string_pretty(&metrics)?);
         println!();
@@ -828,6 +893,7 @@ async fn stream_metrics(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
     retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
@@ -835,7 +901,7 @@ async fn stream_metrics(
         client,
         base_url,
         token,
-        "/v1/metrics/stream",
+        &tunnel_scoped_path("/v1/metrics/stream", tunnel_id),
         interval_ms,
         retry_policy,
         "metrics",
@@ -848,11 +914,17 @@ async fn watch_dashboard(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
 ) -> anyhow::Result<()> {
     loop {
-        let dashboard: DashboardResponse =
-            get_json(client, base_url, "/v1/dashboard", token).await?;
+        let dashboard: DashboardResponse = get_json(
+            client,
+            base_url,
+            &tunnel_scoped_path("/v1/dashboard", tunnel_id),
+            token,
+        )
+        .await?;
         print!("\x1B[2J\x1B[H");
         println!("{}", serde_json::to_string_pretty(&dashboard)?);
         println!();
@@ -873,6 +945,7 @@ async fn stream_dashboard(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
     retry_policy: StreamRetryPolicy,
 ) -> anyhow::Result<()> {
@@ -880,7 +953,7 @@ async fn stream_dashboard(
         client,
         base_url,
         token,
-        "/v1/dashboard/stream",
+        &tunnel_scoped_path("/v1/dashboard/stream", tunnel_id),
         interval_ms,
         retry_policy,
         "dashboard",
@@ -893,6 +966,7 @@ async fn stream_upstreams_health(
     client: &Client,
     base_url: &str,
     token: Option<&str>,
+    tunnel_id: &str,
     interval_ms: u64,
     format: UpstreamsOutputFormat,
     retry_policy: StreamRetryPolicy,
@@ -901,7 +975,7 @@ async fn stream_upstreams_health(
         client,
         base_url,
         token,
-        "/v1/upstreams/health/stream",
+        &tunnel_scoped_path("/v1/upstreams/health/stream", tunnel_id),
         interval_ms,
         retry_policy,
         "upstreams",
@@ -1057,13 +1131,19 @@ fn is_tunnel_ready(status: &TunnelStatusResponse) -> bool {
     if !matches!(status.tunnel.state, TunnelState::Running) {
         return false;
     }
-    status
+    if status
         .tunnel
         .public_base_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .is_some()
+    {
+        return true;
+    }
+    // Named cloudflared tunnels intentionally have no public URL in status;
+    // the daemon only reports Running after the connector is healthy.
+    status.tunnel.provider == Some(tunnelmux_core::TunnelProvider::Cloudflared)
 }
 
 fn should_auto_stop_tunnel_after_unexpose(
@@ -1301,6 +1381,29 @@ mod tests {
     #[test]
     fn parses_diagnostics_command() {
         assert!(Cli::try_parse_from(["tunnelmux", "diagnostics"]).is_ok());
+    }
+
+    #[test]
+    fn parses_tunnel_scope_and_no_auto_restart_flag() {
+        let cli = Cli::try_parse_from([
+            "tunnelmux",
+            "--tunnel-id",
+            "tunnel-2",
+            "tunnel",
+            "start",
+            "--no-auto-restart",
+        ])
+        .expect("scoped start should parse");
+        assert_eq!(cli.tunnel_id.as_deref(), Some("tunnel-2"));
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                command: TunnelCommand::Start {
+                    no_auto_restart: true,
+                    ..
+                }
+            }
+        ));
     }
 
     #[test]
@@ -1936,7 +2039,7 @@ mod tests {
     }
 
     #[test]
-    fn is_tunnel_ready_requires_running_state_and_public_url() {
+    fn is_tunnel_ready_accepts_named_cloudflared_without_public_url() {
         let running_ready = TunnelStatusResponse {
             tunnel_id: "primary".to_string(),
             tunnel: tunnelmux_core::TunnelStatus {
@@ -1961,7 +2064,7 @@ mod tests {
                 ..running_ready.tunnel.clone()
             },
         };
-        assert!(!is_tunnel_ready(&running_without_public));
+        assert!(is_tunnel_ready(&running_without_public));
 
         let starting_with_public = TunnelStatusResponse {
             tunnel_id: "primary".to_string(),

@@ -4519,6 +4519,7 @@ dependencies = [
  "tokio",
  "tunnelmux-control-client",
  "tunnelmux-core",
+ "url",
 ]
 
 [[package]]

@@ -523,11 +523,16 @@ pub(super) fn upstream_health_label(value: Option<bool>) -> &'static str {
 }
 
 pub(super) fn truncate_cell(value: &str, max_len: usize) -> String {
-    if value.len() <= max_len {
+    if value.chars().count() <= max_len {
         return value.to_string();
     }
     let keep = max_len.saturating_sub(3);
-    format!("{}...", &value[..keep])
+    let end = value
+        .char_indices()
+        .nth(keep)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len());
+    format!("{}...", &value[..end])
 }
 
 pub(super) fn write_output_or_stdout(output: &str, out: Option<&Path>) -> anyhow::Result<()> {
@@ -539,4 +544,15 @@ pub(super) fn write_output_or_stdout(output: &str, out: Option<&Path>) -> anyhow
 
     println!("{output}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_cell;
+
+    #[test]
+    fn truncate_cell_respects_unicode_boundaries() {
+        assert_eq!(truncate_cell("服务名称很长", 4), "服...");
+        assert_eq!(truncate_cell("🙂🙂", 2), "🙂🙂");
+    }
 }
