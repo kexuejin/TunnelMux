@@ -188,6 +188,14 @@ pub async fn ensure_local_daemon(
         return wait_for_bootstrap_completion(runtime_state).await;
     }
 
+    let previous_embedded = {
+        let mut runtime = runtime_state.lock().expect(LOCK_POISONED);
+        runtime.embedded.take()
+    };
+    if let Some(previous_embedded) = previous_embedded {
+        previous_embedded.shutdown().await;
+    }
+
     let started = embedded_daemon::start(settings).await;
 
     let mut runtime = runtime_state.lock().expect(LOCK_POISONED);

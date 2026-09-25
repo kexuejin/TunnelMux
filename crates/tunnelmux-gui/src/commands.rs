@@ -1753,11 +1753,14 @@ pub async fn delete_tunnel_profile_from_settings_dir(
     settings_dir: &Path,
     id: &str,
 ) -> Result<TunnelWorkspaceVm, String> {
-    if let Ok((_, client)) = load_client(settings_dir) {
-        if client.health().await.is_ok() {
-            client.delete_tunnel(id).await.map_err(command_error)?;
-        }
-    }
+    let (_, client) = load_client(settings_dir)?;
+    client.health().await.map_err(|error| {
+        format!(
+            "TunnelMux is unavailable; the local profile was kept so it can be retried: {}",
+            command_error(error)
+        )
+    })?;
+    client.delete_tunnel(id).await.map_err(command_error)?;
     delete_tunnel_profile_from_settings_dir_without_daemon(settings_dir, id)
 }
 
