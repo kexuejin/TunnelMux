@@ -35,6 +35,7 @@ test('verify-easy-path script covers focused GUI readiness, ngrok start prefligh
 });
 
 test('release and installer configuration stays fail-closed and embedded-daemon-only', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const tauriConfig = JSON.parse(
     readFileSync(new URL('../crates/tunnelmux-gui/tauri.conf.json', import.meta.url), 'utf8'),
@@ -42,6 +43,11 @@ test('release and installer configuration stays fail-closed and embedded-daemon-
   const installer = readFileSync(new URL('./install.sh', import.meta.url), 'utf8');
 
   assert.doesNotMatch(release, /externalBin|tauri\.gui\.daemon\.bundle/);
+  for (const packageName of ['libappindicator3-dev', 'libxdo-dev', 'libdbus-1-dev', 'pkg-config']) {
+    assert.match(ci, new RegExp(packageName.replace(/[.-]/g, '\\$&')));
+    assert.ok(release.includes(packageName), `release workflow should install ${packageName}`);
+  }
+  assert.equal((release.match(/libxdo-dev/g) ?? []).length, 2);
   assert.match(release, /tunnelmux-updater\.exe/);
   assert.match(release, /tunnelmux-updater" "\$\{PKG_DIR\}\/"/);
   assert.match(release, /cp README\.md README\.zh-CN\.md LICENSE CHANGELOG\.md/);
