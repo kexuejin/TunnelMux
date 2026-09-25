@@ -22,7 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 tar = "0.4"
-zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 tauri = { version = "2.10.3", features = ["tray-icon", "image-png"] }
 tokio.workspace = true
 tunnelmux-control-client.workspace = true
