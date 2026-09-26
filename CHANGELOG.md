@@ -8,14 +8,14 @@ All notable changes to this project should be documented in this file.
 
 - Merge `tunnelmuxd` into the desktop app as an in-process library. The GUI now owns one control port, state directory, API token, and provider process tree; an already-running daemon is adopted and left untouched, while an embedded daemon and its tunnels stop cleanly with the app.
 - Remove the daemon sidecar from GUI builds and release packaging while keeping the standalone `tunnelmuxd` and `tunnelmux-cli` entry points.
-- Rebuild the desktop console around Overview, Services, Tunnels, Diagnostics, and Settings views, with a persistent sidebar, clearer primary actions, semantic light/dark themes, and matching public access/welcome pages.
+- Rebuild the desktop console around Overview, Tunnels, Services, Diagnostics, and Settings views, with a persistent sidebar, clearer primary actions, semantic light/dark themes, and matching public access/welcome pages.
 - Make tunnel-scoped operations consistent across the daemon, GUI, and CLI. Route access state is isolated by tunnel and route, duplicate route IDs no longer collide across tunnels, and delete/replace operations clean up stale gates.
 - Add unified CLI tunnel selection with `--tunnel-id`, named Cloudflare readiness without a public-URL requirement, safer route/tunnel ID validation, and Unicode-safe table truncation.
 - Harden the control plane: local API-token discovery is restricted to loopback URLs, authentication endpoints require the control bearer token, health probes omit credentials, and gateway requests strip route-gate authorization/cookie material before reaching an upstream.
 - Remove API-level provider executable overrides. Provider binaries now come only from daemon startup configuration, with embedded GUI startup resolving the local tools or system installation.
 - Store GUI control and provider tokens in the platform credential store, migrate legacy plaintext fields on load, and keep non-secret configuration in `settings.json`.
 - Add per-tunnel operation generations and cancellation so stop/delete/shutdown cannot race an in-flight start or revive a provider after shutdown; monitor, gateway, SSE, and WebSocket tasks now participate in coordinated teardown.
-- Make state, settings, and API-token writes atomic and owner-only on Unix, add single-writer protection, and surface persistence failures instead of reporting a successful write.
+- Make state, settings, and API-token writes atomic and owner-only on Unix, and surface persistence failures instead of reporting a successful write.
 - Harden gateway forwarding with upstream identity/header filtering, encoded-body safeguards, route snapshots, bounded health checks, rate limiting, streaming/WebSocket support, and mounted-app rewriting for both `/api` and `/plugins` JavaScript literals.
 - Expand the desktop updater to verified `.tar.gz` and `.zip` raw archives, require SHA-256, enforce semver/basename/size/timeout limits, add the Windows delayed-replacement helper, and direct native `.dmg`/`.msi`/`.deb` installations to the platform package flow.
 - Fix provider log rotation, custom data-file/token path handling, production settings reload, cloudflared transport auto-negotiation, and access-code TTL preservation.

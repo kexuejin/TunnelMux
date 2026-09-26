@@ -69,7 +69,7 @@ This is what makes `https://your-domain/deepseek` map cleanly to `http://127.0.0
 
 Set a default service access code under **Settings → Default service access**, or choose per-service **inherit / custom / public**. Now opening the public route asks for the code once and stores a route-scoped cookie — other routes are untouched.
 
-Use **Test** on the service card to verify the public route and upstream health before you share the link.
+Use **Test** on the service row to verify the public route and upstream health before you share the link.
 
 <!-- screenshot: access gate page on the public URL -->
 

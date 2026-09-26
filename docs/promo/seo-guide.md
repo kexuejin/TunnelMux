@@ -30,5 +30,5 @@ Run this checklist to make TunnelMux findable in Google / Bing search.
 - docs site (MkDocs Material) + auto sitemap + robots.txt — done
 - submit sitemap to Search Console / Bing — needs your Google / Microsoft account
 - backlinks from dev.to / 掘金 / Show HN / Reddit posts linking the repo + docs site — launch posts (see promo/)
-- release cadence + green CI (freshness signal) — v0.3.0 live, CI green
+- release cadence + green CI (freshness signal) — v0.4.0 live, CI green
 - optional: full Chinese docs site under /zh/ with its own sitemap entries

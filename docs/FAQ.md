@@ -7,7 +7,7 @@ description: TunnelMux 常见问题：如何暴露本地服务、与 ngrok/cloud
 
 **How do I expose a local service with a public URL?**
 
-Create a tunnel (`cloudflared` or `ngrok`), start it, then add a service pointing at your local URL (for example `http://127.0.0.1:3000`). TunnelMux shows the public URL and the routing state on each service card.
+Create a tunnel (`cloudflared` or `ngrok`), start it, then add a service pointing at your local URL (for example `http://127.0.0.1:3000`). TunnelMux shows the public URL and the routing state on each service row.
 
 **How is TunnelMux different from using the `cloudflared` or `ngrok` CLI directly?**
 
@@ -21,6 +21,15 @@ Yes. Add a service, then use the **DeepSeek / SPA Preset**. It mounts loopback-p
 
 Set a default service access code under Settings → Default service access, or choose per-service inherit / custom / public. Visitors unlock each route with the code once; TunnelMux stores a route-scoped cookie so other routes stay unaffected.
 
+**Where are GUI control tokens and provider tokens stored?**
+In the operating-system credential store under the `com.tunnelmux.gui` service: macOS Keychain, Windows Credential Manager, or the Linux Secret Service integration. `settings.json` keeps only non-secret configuration. On Linux, a working Secret Service / keyring session is required for GUI token storage.
+
+**Does the in-app updater replace `.dmg`, `.msi`, or `.deb` installations?**
+No. Automatic replacement is limited to verified raw `.tar.gz` / `.zip` binary installations. Native bundles direct you to the platform package flow or the GitHub Release page.
+
+**How do I operate a non-default tunnel from the CLI?**
+Pass the global `--tunnel-id <id>` before the subcommand. Routes, access gates, logs, health, metrics, status, and dashboard calls then all target that tunnel; omitting it keeps the legacy `primary` default.
+
 **Which platforms does TunnelMux support?**
 
 macOS (Intel + Apple Silicon), Windows, and Linux. GitHub Releases ships raw archives and native installers (`.dmg`, `.msi`, `.deb`) for all three.
@@ -31,4 +40,4 @@ Use the language selector in the header or Settings → Interface and choose **�
 
 **How do I keep root `/` closed while exposing a subpath?**
 
-Do not add a service with path `/`. Each service card shows whether root `/` is exposed or stays closed, and the DeepSeek / SPA preset keeps root closed by default.
+Do not add a service with path `/`. Each service row shows whether root `/` is exposed or stays closed, and the DeepSeek / SPA preset keeps root closed by default.

@@ -48,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/ins
 - **Public Path**：例如 `/app`
 - **Service enabled** 保持开启
 
-保存后服务卡片会显示暴露方式、健康状态和门禁状态。
+保存后服务行会显示暴露方式、健康状态和门禁状态。
 
 <!-- 截图：服务编辑抽屉 -->
 
@@ -69,7 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/kexuejin/TunnelMux/main/scripts/ins
 
 在 **Settings → Default service access** 设置默认访问码，或对每个服务选择 **继承 / 自定义 / 公开**。之后访问公网路由会先要求输入一次访问码，然后按路由写 Cookie，互不干扰。
 
-分享前用服务卡片上的 **Test** 验证公网路由和上游健康。
+分享前用服务行上的 **Test** 验证公网路由和上游健康。
 
 <!-- 截图：公网访问门禁页 -->
 
